@@ -77,3 +77,15 @@ The native macOS overlay experiment and bundled inference/model-download integra
 Independent review also corrects the microphone setup instructions to match the explicit permission request in Setup.
 Windows/Linux now describe system-managed microphone access and omit the no-op permission action.
 Linux Settings describes clipboard delivery and omits the unsupported Accessibility action.
+
+## Checks for 0.2.0
+
+- The frontend suite passes 13 component tests and the desktop configuration harness test.
+- The Rust suite passes 20 unit tests and six integration tests.
+- The opt-in packaged-worker test and verified model-download test pass separately.
+- TypeScript, ESLint, Prettier, Rust formatting, Clippy, and diff whitespace checks pass.
+- The macOS application bundle and DMG build with local ad-hoc signing.
+- The native overlay focus-preservation experiment passes after the final Rust changes.
+
+Full v1 acceptance remains blocked on permission-enabled native insertion, representative recordings, and the untested release desktops.
+The app's setup controls request the microphone permission and open macOS Accessibility settings; they cannot grant the user's system permissions.
