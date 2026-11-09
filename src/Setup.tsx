@@ -22,6 +22,7 @@ export function Setup({
   onSettings,
   toggle = false,
   clipboardOnly = false,
+  mac = false,
 }: {
   installed: boolean;
   onDownload: () => void;
@@ -35,6 +36,7 @@ export function Setup({
   onSettings?: () => void;
   toggle?: boolean;
   clipboardOnly?: boolean;
+  mac?: boolean;
 }) {
   return (
     <section className="setup-card" aria-label="Dictation setup">
@@ -48,7 +50,7 @@ export function Setup({
           </h2>
         </div>
         <span className="badge">
-          {installed ? "Offline ready" : "Setup needed"}
+          {installed ? "Model installed" : "Setup needed"}
         </span>
       </div>
       <div className="setup-step">
@@ -78,16 +80,20 @@ export function Setup({
         <div>
           <h3>Microphone</h3>
           <p>
-            {microphone === "granted"
-              ? "Microphone access is ready."
-              : microphone === "denied"
-                ? "Allow Conch in your microphone privacy settings."
-                : "Allow microphone access before your first recording."}
+            {microphone === "system"
+              ? "Your system manages microphone access. Check its privacy settings if recording fails."
+              : microphone === "granted"
+                ? "Microphone access is ready."
+                : microphone === "denied"
+                  ? "Allow Conch in your microphone privacy settings."
+                  : "Allow microphone access before your first recording."}
           </p>
         </div>
-        {microphone !== "granted" && onMicrophone && (
-          <button onClick={onMicrophone}>Enable microphone</button>
-        )}
+        {microphone !== "system" &&
+          microphone !== "granted" &&
+          onMicrophone && (
+            <button onClick={onMicrophone}>Enable microphone</button>
+          )}
       </div>
       <div className="setup-step">
         <span className="step-number">3</span>
@@ -109,7 +115,7 @@ export function Setup({
       </div>
       {hotkey && (
         <div className="setup-howto">
-          <kbd>{shortcutLabel(hotkey)}</kbd>
+          <kbd>{shortcutLabel(hotkey, mac)}</kbd>
           <span>
             {toggle
               ? "Focus a text field in another app. Press the shortcut to start, then press again to finish."

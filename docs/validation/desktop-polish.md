@@ -48,6 +48,7 @@ The indicator receives status and level events and receives no transcript or sou
 ## Native acceptance limits
 
 The desktop automation host lists the installed application, but opening its Accessibility surface times out.
+A later attempt to inspect TextEdit returns the explicit error "Computer Use permissions are not granted".
 The native diagnostic process lacks Accessibility permission, so this run cannot validate inserting text into another application's input.
 The user must enable Conch through the setup action before automatic paste can work.
 Microphone permission and representative human recordings remain necessary for voice-quality acceptance.
@@ -67,6 +68,12 @@ Cross-platform CI remains configured and unexecuted because this repository has 
 - The selected-text setter fixture fails the original input-eligibility check.
 - The pending-unmount fixture fails to restore the registered shortcut after its control disappears.
 - The captured-key-release fixture restores the shortcut while the captured keys are still held.
+- Review fixtures expose no-op microphone actions on Windows/Linux and unsupported paste-permission controls on Linux.
+- The macOS setup shortcut label incorrectly shows Ctrl for Command-or-Control before its platform flag is supplied.
 
 Each corresponding regression passes after its implementation change.
 The native macOS overlay experiment and bundled inference/model-download integration checks also pass.
+
+Independent review also corrects the microphone setup instructions to match the explicit permission request in Setup.
+Windows/Linux now describe system-managed microphone access and omit the no-op permission action.
+Linux Settings describes clipboard delivery and omits the unsupported Accessibility action.

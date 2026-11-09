@@ -113,3 +113,29 @@ it("keeps the recording shortcut paused until the captured keys are released", a
   fireEvent.keyUp(button, { key: "Control", code: "ControlLeft" });
   await waitFor(() => expect(change).toHaveBeenCalledWith("Control+Space"));
 });
+
+it("shows Command for the default shortcut on macOS setup", () => {
+  render(
+    <Setup
+      installed
+      onDownload={vi.fn()}
+      hotkey="CommandOrControl+Shift+Space"
+      mac
+    />,
+  );
+  expect(screen.getByText("Command + Shift + Space")).toBeTruthy();
+});
+it("does not offer a no-op microphone permission button on system-managed platforms", () => {
+  render(
+    <Setup
+      installed
+      onDownload={vi.fn()}
+      microphone="system"
+      onMicrophone={vi.fn()}
+    />,
+  );
+  expect(
+    screen.queryByRole("button", { name: "Enable microphone" }),
+  ).toBeNull();
+  expect(screen.getByText(/system manages microphone/i)).toBeTruthy();
+});

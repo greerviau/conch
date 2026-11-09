@@ -54,7 +54,7 @@ The raw transcript remains available until another result replaces it or Conch c
 
 ## Permissions and platform status
 
-macOS requests microphone access on the first recording.
+Click Enable microphone in setup to request microphone access on macOS.
 Click Enable automatic paste in setup to open System Settings / Privacy & Security / Accessibility.
 Enable Conch there for focused-input detection and paste.
 Ad-hoc signed local updates can require removing and re-adding Conch in that list.

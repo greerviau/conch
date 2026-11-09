@@ -145,3 +145,17 @@ it("shows recording progress without interactive controls in the overlay", () =>
   expect(screen.getByRole("status").textContent).toContain("1:05");
   expect(screen.queryAllByRole("button")).toHaveLength(0);
 });
+
+it("shows clipboard fallback on Linux settings instead of an unsupported permission action", async () => {
+  view.platform = "linux";
+  view.microphone = "system";
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  expect(
+    screen.queryByRole("button", { name: "Open paste permissions" }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Check microphone access" }),
+  ).toBeNull();
+  expect(screen.getByText(/paste manually/i)).toBeTruthy();
+});

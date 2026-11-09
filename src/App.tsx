@@ -261,6 +261,7 @@ export default function App() {
           <>
             {needsSetup && (
               <Setup
+                mac={view.platform === "macos"}
                 installed={!!view.models[0]?.[1]}
                 onDownload={() => void downloadModel(0)}
                 downloading={modelBusy || view.downloading}
@@ -282,7 +283,11 @@ export default function App() {
                     ? "Listening"
                     : view.phase === "processing"
                       ? "Preparing your result"
-                      : "Ready when you are"}
+                      : !view.models[0]?.[1] ||
+                          (view.platform === "macos" &&
+                            view.microphone !== "granted")
+                        ? "Finish setup to start"
+                        : "Ready when you are"}
                 </h2>
                 <p>
                   Record, review, and keep writing. Conch never submits your
@@ -701,33 +706,50 @@ export default function App() {
                 <article>
                   <h3>Microphone</h3>
                   <p>
-                    {view.microphone === "granted"
-                      ? "Ready to record"
-                      : view.microphone === "denied"
-                        ? "Permission denied"
-                        : "Not checked yet"}
+                    {view.microphone === "system"
+                      ? "Your system manages microphone access. Check its privacy settings if recording fails."
+                      : view.microphone === "granted"
+                        ? "Ready to record"
+                        : view.microphone === "denied"
+                          ? "Permission denied"
+                          : "Not checked yet"}
                   </p>
-                  <button onClick={() => void command("request_microphone")}>
-                    Check microphone access
-                  </button>
+                  {view.platform === "macos" &&
+                    view.microphone !== "granted" && (
+                      <button
+                        onClick={() => void command("request_microphone")}
+                      >
+                        Check microphone access
+                      </button>
+                    )}
                 </article>
                 <article>
                   <h3>Automatic paste</h3>
                   <p>
-                    {view.accessibility
-                      ? "Accessibility access enabled"
-                      : "Enable Accessibility to paste into other apps"}
+                    {view.platform === "linux"
+                      ? "Conch copies the result; paste manually into the receiving app."
+                      : view.platform === "windows"
+                        ? "Windows UI Automation checks eligible editable controls."
+                        : view.accessibility
+                          ? "Accessibility access enabled"
+                          : "Enable Accessibility to paste into other apps"}
                   </p>
-                  <button onClick={() => void command("request_accessibility")}>
-                    Open paste permissions
-                  </button>
+                  {view.platform === "macos" && (
+                    <button
+                      onClick={() => void command("request_accessibility")}
+                    >
+                      Open paste permissions
+                    </button>
+                  )}
                 </article>
               </div>
-              <p className="muted">
-                After enabling Conch, return here to check the status. Local
-                unsigned updates can require removing and re-adding Conch in
-                Accessibility settings.
-              </p>
+              {view.platform === "macos" && (
+                <p className="muted">
+                  After enabling Conch, return here to check the status. Local
+                  app updates can require removing and re-adding Conch in
+                  Accessibility settings.
+                </p>
+              )}
               <p>
                 Windows uses UI Automation for eligible Edit controls. Linux
                 exposes clipboard fallback. Windows, X11, and Wayland behavior
