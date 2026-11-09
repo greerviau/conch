@@ -40,6 +40,8 @@ The in-app recording buttons work independently of shortcut availability.
 Recordings stop after 180 seconds.
 A floating indicator shows microphone startup, recording level, duration, processing, and the delivery outcome above other apps.
 The indicator ignores pointer input and does not activate Conch.
+It uses the monitor work area to stay above the Dock or taskbar, with 24 logical pixels of bottom clearance when space permits.
+It refreshes its bounds while visible to follow work-area changes.
 Settings can disable the indicator.
 Minimize Conch to leave it available while dictating in other apps.
 Closing its main window quits Conch and cancels active work.
@@ -138,3 +140,12 @@ It requires the models under `.runtime` and writes the synthetic results to `doc
 python3 scripts/evaluate.py
 cargo test --manifest-path src-tauri/Cargo.toml --test acceptance -- --ignored
 ```
+
+## Logo and app icons
+
+Conch uses a spiral shell mark with mint and coral colors.
+The transparent vector logo supplies the app header and the generated desktop icons.
+`npm run icons` regenerates the public SVG assets, desktop icon formats, and PNG exports from `assets/logo.svg`.
+`assets/logo.png` contains the transparent 512-pixel logo, and `assets/app-icon.png` contains the 1024-pixel app icon.
+The macOS bundle contains the ICNS icon, and Windows uses the ICO icon.
+Quit the installed app before replacing it so the Dock can load the updated icon.

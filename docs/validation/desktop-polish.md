@@ -38,7 +38,10 @@ Enhanced settings offer a download action when managed cleanup needs its optiona
 It creates a borderless window, records the foreground process, shows the overlay, runs the native event loop, and checks the foreground process again.
 The experiment passes on this Mac.
 The overlay is visible, ignores mouse events, does not become a key window, and preserves the foreground application.
-The app positions its indicator near the bottom center of the pointer's monitor and marks it for other Spaces and fullscreen auxiliary windows.
+The app initially chooses the pointer's monitor and centers the indicator near the bottom of its work area.
+It leaves 24 logical pixels above that area's bottom when space permits and clamps the window size to small work areas.
+While visible, it refreshes placement on the indicator's current monitor as the Dock or taskbar changes the usable bounds.
+The native window remains available to other Spaces and fullscreen auxiliary windows.
 Fullscreen and multiple-monitor behavior still need receiving-app validation.
 
 Presentation tests cover microphone startup, push-to-talk, toggle mode, processing, and idle visibility.
@@ -89,3 +92,17 @@ Linux Settings describes clipboard delivery and omits the unsupported Accessibil
 
 Full v1 acceptance remains blocked on permission-enabled native insertion, representative recordings, and the untested release desktops.
 The app's setup controls request the microphone permission and open macOS Accessibility settings; they cannot grant the user's system permissions.
+
+## Dock overlap reproduction and regression
+
+The supplied screenshot shows the Dock covering the lower part of the indicator.
+The native screen query reports an 85-point Dock reservation while the previous placement leaves only 50 points below the popup.
+That places 35 points of the popup inside the Dock's reserved area.
+The initial work-area tests reproduce overlap, incorrect placement with Retina/negative monitor origins, and failure to fit a narrow work area.
+The corrected tests pass for bottom and side reservations, mixed origins, and fractional display scaling.
+The native experiment positions a real borderless window using the Rust calculation, checks that its full frame fits inside `NSScreen.visibleFrame`, and verifies 24-point Dock clearance and unchanged foreground application.
+That experiment passes on the current display without changing Dock settings or requiring Accessibility access.
+
+The vector shell logo and rounded app icon replace the placeholder letter.
+The icon generator produces PNG, ICNS, and ICO outputs, and the exported logo PNG retains transparency.
+The UI uses the transparent mark beside the Conch name.

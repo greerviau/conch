@@ -69,6 +69,32 @@ pub fn state(app: &tauri::AppHandle) -> Indicator {
     value.visible &= inner.settings.show_overlay;
     value
 }
+pub fn placement(
+    screen: tauri::PhysicalRect<i32, u32>,
+    work_area: tauri::PhysicalRect<i32, u32>,
+    scale: f64,
+) -> tauri::PhysicalRect<i32, u32> {
+    let area = if work_area.size.width == 0 || work_area.size.height == 0 {
+        screen
+    } else {
+        work_area
+    };
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let width = ((320.0 * scale).round() as u32).min(area.size.width);
+    let height = ((68.0 * scale).round() as u32).min(area.size.height);
+    let margin = ((24.0 * scale).round() as u32).min(area.size.height.saturating_sub(height));
+    tauri::PhysicalRect {
+        position: tauri::PhysicalPosition::new(
+            area.position.x + ((area.size.width - width) / 2) as i32,
+            area.position.y + (area.size.height - height - margin) as i32,
+        ),
+        size: tauri::PhysicalSize::new(width, height),
+    }
+}
 pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     let window = WebviewWindowBuilder::new(
@@ -95,27 +121,46 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
     std::thread::spawn(move || {
         use tauri::Emitter;
         let mut was_visible = false;
+        let mut last_placement = None;
         loop {
             let value = state(&app);
+            if value.visible {
+                let monitor = if was_visible {
+                    window.current_monitor().ok().flatten()
+                } else {
+                    app.cursor_position()
+                        .ok()
+                        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+                }
+                .or_else(|| app.primary_monitor().ok().flatten());
+                if let Some(monitor) = monitor {
+                    let bounds = placement(
+                        tauri::PhysicalRect {
+                            position: *monitor.position(),
+                            size: *monitor.size(),
+                        },
+                        *monitor.work_area(),
+                        monitor.scale_factor(),
+                    );
+                    let key = (
+                        bounds.position.x,
+                        bounds.position.y,
+                        bounds.size.width,
+                        bounds.size.height,
+                    );
+                    if last_placement != Some(key) {
+                        let _ = window.set_position(bounds.position);
+                        let _ = window.set_size(tauri::LogicalSize::new(
+                            bounds.size.width as f64 / monitor.scale_factor(),
+                            bounds.size.height as f64 / monitor.scale_factor(),
+                        ));
+                        last_placement = Some(key);
+                    }
+                }
+            }
             if value.visible != was_visible {
                 let window = window.clone();
                 let visible = value.visible;
-                if visible {
-                    let monitor = app
-                        .cursor_position()
-                        .ok()
-                        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
-                        .or_else(|| app.primary_monitor().ok().flatten());
-                    if let Some(monitor) = monitor {
-                        let scale = monitor.scale_factor();
-                        let size = monitor.size();
-                        let origin = monitor.position();
-                        let _ = window.set_position(tauri::PhysicalPosition::new(
-                            origin.x + (size.width as i32 - (320.0 * scale) as i32) / 2,
-                            origin.y + size.height as i32 - (118.0 * scale) as i32,
-                        ));
-                    }
-                }
                 let _ = app.run_on_main_thread(move || {
                     #[cfg(target_os = "macos")]
                     if let Ok(native) = window.ns_window() {
@@ -133,6 +178,9 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
                     }
                 });
                 was_visible = visible;
+                if !visible {
+                    last_placement = None;
+                }
             }
             if value.visible {
                 let _ = app.emit_to("recording", "recording-state", value);
@@ -145,6 +193,38 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn area(x: i32, y: i32, width: u32, height: u32) -> tauri::PhysicalRect<i32, u32> {
+        tauri::PhysicalRect {
+            position: (x, y).into(),
+            size: (width, height).into(),
+        }
+    }
+    #[test]
+    fn popup_stays_above_bottom_dock_and_inside_work_area() {
+        let screen = area(0, 0, 1440, 900);
+        let work = area(0, 25, 1440, 789);
+        let popup = placement(screen, work, 1.0);
+        assert_eq!(popup.position.y + popup.size.height as i32, 790);
+        assert!(popup.position.y >= work.position.y);
+    }
+    #[test]
+    fn popup_handles_retina_negative_origins_and_side_docks() {
+        let screen = area(-2880, -1800, 2880, 1800);
+        let work = area(-2700, -1750, 2700, 1600);
+        let popup = placement(screen, work, 2.0);
+        assert_eq!(popup.position.y + popup.size.height as i32, -198);
+        assert_eq!(popup.position.x, -1670);
+        assert!(popup.position.x >= work.position.x);
+    }
+    #[test]
+    fn popup_clamps_to_small_fractionally_scaled_work_areas() {
+        let screen = area(0, 0, 640, 480);
+        let work = area(200, 20, 300, 90);
+        let popup = placement(screen, work, 1.25);
+        assert!(popup.position.x >= work.position.x);
+        assert!(popup.position.x as i64 + popup.size.width as i64 <= 500);
+        assert!(popup.position.y as i64 + popup.size.height as i64 <= 110);
+    }
     #[test]
     fn recording_and_processing_remain_visible_without_text_or_controls() {
         let p = presentation(&Phase::Recording, true, false, 0.5, 12, None);

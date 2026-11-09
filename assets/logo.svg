@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Conch</title>
+  <defs>
+    <linearGradient id="shell" x1="30" y1="22" x2="91" y2="103" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff8e8"/>
+      <stop offset="0.52" stop-color="#d5efdf"/>
+      <stop offset="1" stop-color="#83c9b7"/>
+    </linearGradient>
+    <linearGradient id="lip" x1="30" y1="86" x2="55" y2="113" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffc7a9"/>
+      <stop offset="1" stop-color="#e88e78"/>
+    </linearGradient>
+  </defs>
+  <path d="M30 96C15 83 12 61 20 43C29 23 49 14 69 17C94 20 111 37 111 59C111 83 92 101 68 103L37 116L39 99Z" fill="url(#shell)"/>
+  <path d="M30 91C39 91 51 96 60 104L37 116L39 99Z" fill="url(#lip)"/>
+  <path d="M31 85C20 67 27 44 44 34C65 21 90 30 99 48C107 65 94 83 79 83C65 83 55 73 57 62C59 50 74 44 84 51C92 56 91 68 84 72C79 75 73 72 72 67" fill="none" stroke="#244f48" stroke-width="5.5" stroke-linecap="round"/>
+  <g fill="none" stroke="#53897b" stroke-width="2.4" stroke-linecap="round" opacity="0.52">
+    <path d="M24 39L35 42"/>
+    <path d="M39 23L45 33"/>
+    <path d="M59 18L60 28"/>
+    <path d="M80 22L77 31"/>
+    <path d="M98 34L91 40"/>
+    <path d="M108 51L100 54"/>
+    <path d="M108 71L100 68"/>
+    <path d="M96 89L92 81"/>
+    <path d="M77 101L77 91"/>
+  </g>
+  <path d="M43 104L50 106" fill="none" stroke="#8a4f4a" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
+</svg>

@@ -441,7 +441,7 @@ kbd {
   user-select: none;
 }
 .recording-indicator {
-  height: 68px;
+  height: 100vh;
   display: flex;
   align-items: center;
   gap: 13px;

@@ -215,7 +215,7 @@ export default function App() {
     <div className="shell">
       <aside>
         <div className="brand">
-          <img src="/icon.svg" alt="" />
+          <img src="/logo.svg" alt="" />
           <span>Conch</span>
         </div>
         <p className="muted">Local dictation for technical work</p>

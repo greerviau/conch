@@ -44,3 +44,29 @@ int conch_overlay_focus_test(void) {
         return passed ? 0 : 1;
     }
 }
+
+int conch_screen_geometry(double *values) {
+    NSScreen *screen = NSScreen.screens.firstObject;
+    if (!screen) return 1;
+    NSRect frame = screen.frame, visible = screen.visibleFrame;
+    double geometry[] = {frame.origin.x, frame.origin.y, frame.size.width, frame.size.height, visible.origin.x, visible.origin.y, visible.size.width, visible.size.height, screen.backingScaleFactor};
+    memcpy(values, geometry, sizeof(geometry));
+    return 0;
+}
+int conch_overlay_bounds_test(double x, double y, double width, double height) {
+    @autoreleasepool {
+        NSScreen *screen = NSScreen.screens.firstObject;
+        if (!screen) return 1;
+        double scale = screen.backingScaleFactor;
+        NSRect frame = NSMakeRect(screen.frame.origin.x + x / scale, NSMaxY(screen.frame) - (y + height) / scale, width / scale, height / scale);
+        pid_t before = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+        NSWindow *panel = [[NSWindow alloc] initWithContentRect:frame styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+        panel.releasedWhenClosed = NO;
+        conch_overlay_visibility((__bridge void *)panel, true);
+        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.15]];
+        BOOL passed = NSContainsRect(screen.visibleFrame, panel.frame) && NSMinY(panel.frame) >= NSMinY(screen.visibleFrame) + 23.5 && !panel.isKeyWindow && before == NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+        conch_overlay_visibility((__bridge void *)panel, false);
+        [panel close];
+        return passed ? 0 : 1;
+    }
+}
