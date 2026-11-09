@@ -312,3 +312,40 @@ pub fn request_accessibility() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     Ok(())
 }
+
+pub fn installation_path() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe().ok()?;
+        let bundle = exe.parent()?.parent()?.parent()?;
+        if bundle
+            .extension()
+            .is_some_and(|extension| extension == "app")
+        {
+            return Some(bundle.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+pub fn repair_accessibility() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::accessibility::repair_with(
+            |program, args| {
+                let status = std::process::Command::new(program)
+                    .args(args)
+                    .output()
+                    .map_err(|_| "Cannot start the macOS permission repair")?;
+                if !status.status.success() {
+                    return Err("macOS could not remove Conch's Accessibility entry. Remove it in Settings, then add the current copy again".into());
+                }
+                Ok(())
+            },
+            request_accessibility,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Accessibility entry repair is available on macOS only".into())
+    }
+}

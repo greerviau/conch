@@ -17,6 +17,8 @@ pub fn run() {
             app::indicator_state,
             app::request_microphone,
             app::request_accessibility,
+            app::repair_accessibility,
+            app::restart_for_accessibility,
             app::choose_repository,
             app::shortcut_capture,
             app::save_settings,
@@ -53,3 +55,5 @@ pub fn run() {
 }
 
 pub mod indicator;
+
+pub mod accessibility;

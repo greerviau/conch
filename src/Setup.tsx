@@ -1,3 +1,4 @@
+import { PasteAccess } from "./PasteAccess";
 import { useEffect, useRef, useState } from "react";
 
 export function shortcutLabel(value: string, mac = false) {
@@ -23,6 +24,10 @@ export function Setup({
   toggle = false,
   clipboardOnly = false,
   mac = false,
+  onRepair,
+  onRestart,
+  installationPath,
+  busy = false,
 }: {
   installed: boolean;
   onDownload: () => void;
@@ -37,6 +42,10 @@ export function Setup({
   toggle?: boolean;
   clipboardOnly?: boolean;
   mac?: boolean;
+  onRepair?: () => Promise<boolean>;
+  onRestart?: () => void;
+  installationPath?: string | null;
+  busy?: boolean;
 }) {
   return (
     <section className="setup-card" aria-label="Dictation setup">
@@ -101,17 +110,30 @@ export function Setup({
           <h3>
             {clipboardOnly ? "Clipboard delivery" : "Paste into other apps"}
           </h3>
-          <p>
-            {clipboardOnly
-              ? "This desktop copies your text. Paste it manually into the receiving app."
-              : accessibility
-                ? "Automatic paste is enabled for supported text fields."
-                : "Enable Accessibility for Conch to paste after dictation. Clipboard copying works without it."}
-          </p>
+          {mac && onRepair && onRestart && onPermission ? (
+            <PasteAccess
+              granted={accessibility}
+              path={installationPath}
+              busy={busy}
+              onOpen={onPermission}
+              onRepair={onRepair}
+              onRestart={onRestart}
+            />
+          ) : (
+            <>
+              <p>
+                {clipboardOnly
+                  ? "This desktop copies your text. Paste it manually into the receiving app."
+                  : accessibility
+                    ? "Automatic paste is enabled for supported text fields."
+                    : "Enable Accessibility for Conch to paste after dictation. Clipboard copying works without it."}
+              </p>
+              {!clipboardOnly && !accessibility && onPermission && (
+                <button onClick={onPermission}>Enable automatic paste</button>
+              )}
+            </>
+          )}
         </div>
-        {!clipboardOnly && !accessibility && onPermission && (
-          <button onClick={onPermission}>Enable automatic paste</button>
-        )}
       </div>
       {hotkey && (
         <div className="setup-howto">

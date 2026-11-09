@@ -57,7 +57,12 @@ The raw transcript remains available until another result replaces it or Conch c
 Click Enable microphone in setup to request microphone access on macOS.
 Click Enable automatic paste in setup to open System Settings / Privacy & Security / Accessibility.
 Enable Conch there for focused-input detection and paste.
-Ad-hoc signed local updates can require removing and re-adding Conch in that list.
+Ad-hoc signed local updates can leave an enabled grant attached to an older executable.
+If Conch still reports missing access, expand Enabled in Settings but still not detected?
+The repair action removes only Conch's Accessibility entry and opens Settings so you can enable the running copy.
+The app displays that copy's installation path.
+Restart Conch after enabling the current copy if the process still reports missing access.
+Repair and restart are unavailable while recording, processing, downloading a model, or choosing a shortcut.
 Missing Accessibility permission keeps clipboard delivery available.
 Conch accepts enabled AXTextField, AXTextArea, and AXComboBox controls when Accessibility exposes a writable value or selected-text setter.
 It excludes secure fields and its own process.

@@ -47,6 +47,7 @@ pub struct View {
     indexes: Vec<(String, index::Index, i64)>,
     models: Vec<(String, bool)>,
     accessibility: bool,
+    installation_path: Option<String>,
     platform: String,
     downloading: bool,
     microphone: String,
@@ -71,6 +72,7 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
             .map(|m| (m.name.into(), state.data.join(m.name).is_file()))
             .collect(),
         accessibility: platform::permission(),
+        installation_path: platform::installation_path(),
         platform: std::env::consts::OS.into(),
         downloading: inner.downloading,
         microphone: platform::microphone_status().into(),
@@ -659,5 +661,25 @@ pub fn shortcut_capture(
                 .map_err(|_| "Cannot restore your shortcut; choose another combination")?;
         }
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn repair_accessibility(state: State<'_, AppState>) -> Result<(), String> {
+    let inner = state.inner.lock().unwrap();
+    if inner.session.phase != Phase::Idle || inner.downloading || inner.capturing_shortcut {
+        return Err("Finish active work before repairing Accessibility access".into());
+    }
+    platform::repair_accessibility()
+}
+#[tauri::command]
+pub fn restart_for_accessibility(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    {
+        let inner = state.inner.lock().unwrap();
+        if inner.session.phase != Phase::Idle || inner.downloading || inner.capturing_shortcut {
+            return Err("Finish active work before restarting Conch".into());
+        }
+    }
+    app.request_restart();
     Ok(())
 }

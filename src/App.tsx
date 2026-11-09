@@ -1,3 +1,4 @@
+import { PasteAccess } from "./PasteAccess";
 import React, { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -57,6 +58,7 @@ type View = {
   ][];
   models: [string, boolean][];
   accessibility: boolean;
+  installation_path?: string | null;
   platform: string;
   downloading: boolean;
   microphone: string;
@@ -116,6 +118,10 @@ export default function App() {
     try {
       await invoke(name, args);
       await reload();
+      if (name === "repair_accessibility")
+        setNotice(
+          "Conch's old Accessibility entry was removed. Enable the installed copy in System Settings, then return here.",
+        );
       return true;
     } catch (e) {
       setError(String(e));
@@ -269,6 +275,10 @@ export default function App() {
                 accessibility={view.accessibility || view.platform === "linux"}
                 microphone={view.microphone}
                 onPermission={() => void command("request_accessibility")}
+                onRepair={() => command("repair_accessibility")}
+                onRestart={() => void command("restart_for_accessibility")}
+                installationPath={view.installation_path}
+                busy={view.phase !== "idle" || view.downloading}
                 onMicrophone={() => void command("request_microphone")}
                 toggle={view.settings.activation === "toggle"}
                 clipboardOnly={view.platform === "linux"}
@@ -725,21 +735,23 @@ export default function App() {
                 </article>
                 <article>
                   <h3>Automatic paste</h3>
-                  <p>
-                    {view.platform === "linux"
-                      ? "Conch copies the result; paste manually into the receiving app."
-                      : view.platform === "windows"
-                        ? "Windows UI Automation checks eligible editable controls."
-                        : view.accessibility
-                          ? "Accessibility access enabled"
-                          : "Enable Accessibility to paste into other apps"}
-                  </p>
-                  {view.platform === "macos" && (
-                    <button
-                      onClick={() => void command("request_accessibility")}
-                    >
-                      Open paste permissions
-                    </button>
+                  {view.platform === "macos" ? (
+                    <PasteAccess
+                      granted={view.accessibility}
+                      path={view.installation_path}
+                      busy={view.phase !== "idle" || view.downloading}
+                      onOpen={() => void command("request_accessibility")}
+                      onRepair={() => command("repair_accessibility")}
+                      onRestart={() =>
+                        void command("restart_for_accessibility")
+                      }
+                    />
+                  ) : (
+                    <p>
+                      {view.platform === "linux"
+                        ? "Conch copies the result; paste manually into the receiving app."
+                        : "Windows UI Automation checks eligible editable controls."}
+                    </p>
                   )}
                 </article>
               </div>
