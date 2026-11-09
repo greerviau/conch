@@ -4,56 +4,72 @@
     "cpu": true,
     "input": "um do not change CONCHPROTECTED0X before 12 tests pass",
     "output": "Do not change CONCHPROTECTED0X before 12 tests pass.",
-    "seconds": 0.88
+    "seconds": 3.692,
+    "worker_startup_seconds": 2.636,
+    "worker_ru_maxrss": 1255014400
   },
   {
     "engine": "s1-mini",
     "cpu": true,
     "input": "use max groups no wait use min groups and never submit",
     "output": "Use min groups and never submit.",
-    "seconds": 0.213
+    "seconds": 1.978,
+    "worker_startup_seconds": 2.636,
+    "worker_ru_maxrss": 1255014400
   },
   {
     "engine": "s1-mini",
     "cpu": true,
     "input": "um uh",
     "output": "",
-    "seconds": 0.066
+    "seconds": 0.763,
+    "worker_startup_seconds": 2.636,
+    "worker_ru_maxrss": 1255014400
   },
   {
     "engine": "s1-mini",
     "cpu": true,
     "input": "update CONCHPROTECTED0X then CONCHPROTECTED1X without changing 42",
     "output": "Update CONCHPROTECTED0X, then CONCHPROTECTED1X, without changing 42.",
-    "seconds": 0.42
+    "seconds": 1.8,
+    "worker_startup_seconds": 2.636,
+    "worker_ru_maxrss": 1255014400
   },
   {
     "engine": "s1-mini",
     "cpu": false,
     "input": "um do not change CONCHPROTECTED0X before 12 tests pass",
     "output": "Do not change CONCHPROTECTED0X before 12 tests pass.",
-    "seconds": 0.248
+    "seconds": 0.268,
+    "worker_startup_seconds": 1.685,
+    "worker_ru_maxrss": 1028964352
   },
   {
     "engine": "s1-mini",
     "cpu": false,
     "input": "use max groups no wait use min groups and never submit",
     "output": "Use min groups and never submit.",
-    "seconds": 0.119
+    "seconds": 0.106,
+    "worker_startup_seconds": 1.685,
+    "worker_ru_maxrss": 1028964352
   },
   {
     "engine": "s1-mini",
     "cpu": false,
     "input": "um uh",
     "output": "",
-    "seconds": 0.044
+    "seconds": 0.038,
+    "worker_startup_seconds": 1.685,
+    "worker_ru_maxrss": 1028964352
   },
   {
     "engine": "s1-mini",
     "cpu": false,
     "input": "update CONCHPROTECTED0X then CONCHPROTECTED1X without changing 42",
     "output": "Update CONCHPROTECTED0X, then CONCHPROTECTED1X, without changing 42.",
-    "seconds": 0.29
+    "seconds": 0.268,
+    "worker_startup_seconds": 1.685,
+    "worker_ru_maxrss": 1028964352
   },
   {
     "engine": "whisper-tiny.en",
@@ -61,7 +77,9 @@
     "output": {
       "text": " Do not change PODGC before 12 tests pass.\n Set MAX Groups to 4.\n"
     },
-    "seconds": 0.244
+    "seconds": 0.65,
+    "worker_startup_seconds": 0.536,
+    "worker_ru_maxrss": 214974464
   },
   {
     "engine": "whisper-tiny.en",
@@ -69,6 +87,8 @@
     "output": {
       "text": " Do not change PODGC before 12 tests pass.\n Set MAX Groups to 4.\n"
     },
-    "seconds": 0.141
+    "seconds": 0.25,
+    "worker_startup_seconds": 0.359,
+    "worker_ru_maxrss": 231292928
   }
 ]

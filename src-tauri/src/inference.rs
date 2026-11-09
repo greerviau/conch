@@ -225,6 +225,9 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
     if cleanup.mode != "enhanced" {
         return Err("Enhanced cleanup is disabled".into());
     }
+    if worker.lock().unwrap().cancelled {
+        return Err("Cancelled".into());
+    }
     if raw.contains("CONCHPROTECTED") {
         return Err("Reserved placeholder in transcript; using Basic".into());
     }
@@ -270,30 +273,36 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         };
         (cleanup.endpoint.clone(), key, CLEANUP_SYSTEM, basic.clone())
     };
-    let mut builder = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30));
-    if cleanup.provider != "remote" {
-        builder = builder.no_proxy();
-    }
-    let client = builder
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
         .build()
-        .map_err(|_| "Cannot initialize cleanup client")?;
-    let mut request = client.post(endpoint).json(&json!({"model":cleanup.model,"messages":[{"role":"system","content":system},{"role":"user","content":user}],"temperature":0,"max_tokens":1024,"chat_template_kwargs":{"enable_thinking":false}}));
-    if !token.is_empty() {
-        request = request.bearer_auth(token);
-    }
-    let response = request
-        .send()
-        .and_then(|r| r.error_for_status())
-        .map_err(|_| "Enhanced cleanup failed or timed out; using Basic")?;
-    use std::io::Read;
-    let mut bytes = vec![];
-    response
-        .take(64 * 1024)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Invalid cleanup response")?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid cleanup response")?;
+        .map_err(|_| "Cannot initialize cleanup runtime")?;
+    let value: Value = runtime.block_on(async {
+        let operation = async {
+            if worker.lock().unwrap().cancelled {return Err("Cancelled".to_string());}
+            let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(30));
+            if cleanup.provider != "remote" {builder = builder.no_proxy();}
+            let client = builder.build().map_err(|_| "Cannot initialize cleanup client")?;
+            if cleanup.provider == "managed" {
+                let tokenizer = endpoint.trim_end_matches("/v1/chat/completions").to_owned()+"/tokenize";
+                let tokens: Value = client.post(tokenizer).bearer_auth(&token).json(&json!({"content":format!("{system}\n{user}")})).send().await.and_then(|r|r.error_for_status()).map_err(|_| "Local tokenization failed; using Basic")?.json().await.map_err(|_| "Invalid tokenizer response")?;
+                if tokens["tokens"].as_array().is_none_or(|tokens|tokens.len() > 1000) {return Err("Managed cleanup input exceeds 1,000 tokens; using Basic".into());}
+            }
+            let mut request = client.post(endpoint).json(&json!({"model":cleanup.model,"messages":[{"role":"system","content":system},{"role":"user","content":user}],"temperature":0,"max_tokens":1024,"chat_template_kwargs":{"enable_thinking":false}}));
+            if !token.is_empty() {request = request.bearer_auth(token);}
+            let mut response = request.send().await.and_then(|r|r.error_for_status()).map_err(|_| "Enhanced cleanup failed or timed out; using Basic")?;
+            let mut bytes = vec![];
+            while let Some(chunk) = response.chunk().await.map_err(|_| "Invalid cleanup response")? {
+                if bytes.len()+chunk.len() > 64*1024 {return Err("Cleanup response exceeds limit".into());}
+                bytes.extend_from_slice(&chunk);
+            }
+            serde_json::from_slice(&bytes).map_err(|_| "Invalid cleanup response".into())
+        };
+        let cancelled = async {
+            loop {if worker.lock().unwrap().cancelled {return;} tokio::time::sleep(Duration::from_millis(20)).await;}
+        };
+        tokio::select! {biased; _ = cancelled => Err("Cancelled".into()), result = operation => result}
+    })?;
     let after = value["choices"][0]["message"]["content"]
         .as_str()
         .ok_or("Invalid cleanup response")?;

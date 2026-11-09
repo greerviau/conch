@@ -143,7 +143,9 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
         .parent()
         .unwrap();
     let data = root.join(".runtime");
-    let workers = root.join("src-tauri/workers");
+    let workers = std::env::var_os("CONCH_TEST_WORKERS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| root.join("src-tauri/workers"));
     let wav = std::fs::read(data.join("synthetic.wav")).unwrap();
     let raw = inference::transcribe(
         &workers,
@@ -176,4 +178,76 @@ fn managed_download_installs_verified_model_without_persisting_audio_or_transcri
     let path = inference::download(dir.path(), inference::MODELS[0], |_, _| {}).unwrap();
     assert_eq!(path.metadata().unwrap().len(), inference::MODELS[0].size);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn pre_cancelled_external_cleanup_does_not_start_a_request() {
+    let data = tempfile::tempdir().unwrap();
+    let mut snapshot = Snapshot::default();
+    snapshot.cleanup.mode = "enhanced".into();
+    snapshot.cleanup.provider = "local".into();
+    snapshot.cleanup.endpoint = "http://127.0.0.1:1/v1/chat/completions".into();
+    let worker = inference::new_worker();
+    inference::stop(&worker);
+    let error = inference::enhanced(inference::CleanupRequest {
+        workers: data.path(),
+        data: data.path(),
+        snapshot: &snapshot,
+        raw: "hello",
+        worker: &worker,
+        cpu: true,
+    })
+    .unwrap_err();
+    assert_eq!(error, "Cancelled");
+}
+
+#[test]
+fn cancellation_drops_an_in_flight_endpoint_request() {
+    use std::io::Read;
+    use std::sync::mpsc;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let (seen, received) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        assert!(stream.read(&mut bytes).unwrap() > 0);
+        seen.send(()).unwrap();
+        let _ = wait.recv();
+    });
+    let worker = inference::new_worker();
+    let running = worker.clone();
+    let (send, result) = mpsc::channel();
+    let job = std::thread::spawn(move || {
+        let data = tempfile::tempdir().unwrap();
+        let mut snapshot = Snapshot::default();
+        snapshot.cleanup.mode = "enhanced".into();
+        snapshot.cleanup.provider = "local".into();
+        snapshot.cleanup.endpoint = endpoint;
+        let outcome = inference::enhanced(inference::CleanupRequest {
+            workers: data.path(),
+            data: data.path(),
+            snapshot: &snapshot,
+            raw: "hello",
+            worker: &running,
+            cpu: true,
+        });
+        send.send(outcome).unwrap();
+    });
+    received
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    inference::stop(&worker);
+    let outcome = result.recv_timeout(std::time::Duration::from_secs(5));
+    release.send(()).unwrap();
+    server.join().unwrap();
+    job.join().unwrap();
+    assert_eq!(outcome.unwrap().unwrap_err(), "Cancelled");
 }

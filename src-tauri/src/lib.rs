@@ -9,11 +9,6 @@ pub mod session;
 pub mod storage;
 pub fn run() {
     tauri::Builder::default()
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(app::shortcut)
-                .build(),
-        )
         .setup(app::setup)
         .invoke_handler(tauri::generate_handler![
             app::view,

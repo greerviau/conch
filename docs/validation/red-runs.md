@@ -14,3 +14,10 @@ The initial core tests run against the public `prepare` boundary with raw passth
 - `accepted_suggestion_can_be_undone_without_losing_manual_edits` returns `Not implemented` from `accept_suggestion`.
 
 The corresponding assertions pass after implementation.
+
+Independent review and subsequent regression tests also reproduce these failures before their fixes.
+
+- `mapped_words_inside_quotes_preserve_other_quoted_fillers` produces `say ' BAR'` instead of `say 'um BAR'`.
+- `quoted_occurrence_does_not_suppress_unquoted_suggestion` returns zero suggestions instead of one.
+- `pre_cancelled_external_cleanup_does_not_start_a_request` reports endpoint failure instead of `Cancelled`.
+- `repeated_accepted_replacements_keep_independent_undo` retains one undo entry instead of two.

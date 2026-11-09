@@ -90,6 +90,7 @@ fn boundary(text: &str, start: usize, end: usize) -> bool {
 pub struct Masked {
     pub text: String,
     pub literals: Vec<String>,
+    pub ranges: Vec<(usize, usize)>,
 }
 impl Masked {
     fn token(&mut self, literal: &str) -> String {
@@ -163,6 +164,28 @@ pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
         }
     }
     let quotes = regex::Regex::new(r#""[^"\n]*"|'[^'\n]*'|`[^`\n]*`"#).unwrap();
+    for quote in quotes.find_iter(raw) {
+        let crossing = chosen.iter().any(|(start, end, _)| {
+            *start < quote.end()
+                && quote.start() < *end
+                && !(*start >= quote.start() && *end <= quote.end())
+        });
+        if crossing {
+            continue;
+        }
+        let mut inside: Vec<_> = chosen
+            .iter()
+            .filter(|(start, end, _)| *start >= quote.start() && *end <= quote.end())
+            .cloned()
+            .collect();
+        inside.sort_by_key(|span| std::cmp::Reverse(span.0));
+        let mut literal = quote.as_str().to_owned();
+        for (start, end, replacement) in inside {
+            literal.replace_range(start - quote.start()..end - quote.start(), &replacement);
+        }
+        chosen.retain(|(start, end, _)| !(*start >= quote.start() && *end <= quote.end()));
+        chosen.push((quote.start(), quote.end(), literal));
+    }
     let mut protected: Vec<_> = quotes
         .find_iter(raw)
         .map(|m| (m.start(), m.end(), m.as_str().to_owned()))
@@ -197,6 +220,7 @@ pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
     let mut at = 0;
     for (start, end, literal) in chosen {
         out.text.push_str(&raw[at..start]);
+        out.ranges.push((start, end));
         let token = out.token(&literal);
         out.text.push_str(&token);
         at = end;
@@ -236,7 +260,8 @@ pub fn basic(masked: &str, cleanup: &Cleanup) -> String {
         .to_owned()
 }
 fn spoken(text: &str) -> String {
-    let camel = regex::Regex::new(r"([a-z0-9])([A-Z])").unwrap();
+    static CAMEL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let camel = CAMEL.get_or_init(|| regex::Regex::new(r"([a-z0-9])([A-Z])").unwrap());
     camel
         .replace_all(text, "$1 $2")
         .split(|c: char| !c.is_alphanumeric())
@@ -262,15 +287,22 @@ pub fn suggestions(text: &str, snapshot: &Snapshot) -> Vec<Suggestion> {
         );
     protection.mappings.clear();
     let protected = mask(text, &protection);
+    let normalized = spoken(text);
     for v in &snapshot.vocabulary {
         let phrase = spoken(&v.text);
+        if !normalized.contains(&phrase) {
+            continue;
+        }
         if phrase == v.text.to_lowercase() {
             continue;
         }
         if let Some(re) = phrase_regex(&phrase) {
             for m in re.find_iter(text).filter(|m| {
                 boundary(text, m.start(), m.end())
-                    && !protected.literals.iter().any(|s| s.contains(m.as_str()))
+                    && !protected
+                        .ranges
+                        .iter()
+                        .any(|(start, end)| m.start() < *end && *start < m.end())
             }) {
                 groups
                     .entry((m.start(), m.end(), false))
@@ -390,6 +422,30 @@ pub fn edit_result(result: &mut ResultText, text: String) {
     });
     result.text = text;
 }
+fn replace_known(result: &mut ResultText, start: usize, end: usize, replacement: &str) {
+    let shift = replacement.len() as isize - (end - start) as isize;
+    result.text.replace_range(start..end, replacement);
+    result.edits.retain_mut(|edit| {
+        if edit.start < end && start < edit.end {
+            return false;
+        }
+        if edit.start >= end {
+            edit.start = (edit.start as isize + shift) as usize;
+            edit.end = (edit.end as isize + shift) as usize;
+        }
+        true
+    });
+    result.suggestions.retain_mut(|suggestion| {
+        if suggestion.start < end && start < suggestion.end {
+            return false;
+        }
+        if suggestion.start >= end {
+            suggestion.start = (suggestion.start as isize + shift) as usize;
+            suggestion.end = (suggestion.end as isize + shift) as usize;
+        }
+        true
+    });
+}
 pub fn accept_suggestion(
     result: &mut ResultText,
     index: usize,
@@ -409,10 +465,8 @@ pub fn accept_suggestion(
     if result.text.get(suggestion.start..suggestion.end) != Some(&suggestion.original) {
         return Err("Suggestion is stale".into());
     }
-    let mut text = result.text.clone();
-    text.replace_range(suggestion.start..suggestion.end, &replacement);
     result.suggestions.remove(index);
-    edit_result(result, text);
+    replace_known(result, suggestion.start, suggestion.end, &replacement);
     result.edits.push(AppliedEdit {
         start: suggestion.start,
         end: suggestion.start + replacement.len(),
@@ -430,10 +484,8 @@ pub fn undo_edit(result: &mut ResultText, index: usize) -> Result<(), String> {
     if result.text.get(edit.start..edit.end) != Some(&edit.replacement) {
         return Err("Edited span changed; undo manually".into());
     }
-    let mut text = result.text.clone();
-    text.replace_range(edit.start..edit.end, &edit.original);
     result.edits.remove(index);
-    edit_result(result, text);
+    replace_known(result, edit.start, edit.end, &edit.original);
     Ok(())
 }
 
@@ -447,6 +499,43 @@ mod tests {
             repository: repository.map(str::to_owned),
             enabled: true,
         }
+    }
+    #[test]
+    fn repeated_accepted_replacements_keep_independent_undo() {
+        let snapshot = Snapshot {
+            vocabulary: vec![Vocabulary {
+                text: "maxGroups".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut result = prepare("max groups and max groups", &snapshot);
+        accept_suggestion(&mut result, 0, 0).unwrap();
+        accept_suggestion(&mut result, 0, 0).unwrap();
+        assert_eq!(result.edits.len(), 2);
+        undo_edit(&mut result, 0).unwrap();
+        assert_eq!(result.text, "max groups and maxGroups");
+    }
+    #[test]
+    fn quoted_occurrence_does_not_suppress_unquoted_suggestion() {
+        let snapshot = Snapshot {
+            vocabulary: vec![Vocabulary {
+                text: "maxGroups".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let result = prepare("'max groups' and max groups", &snapshot);
+        assert_eq!(result.suggestions.len(), 1);
+        assert_eq!(result.suggestions[0].start, 17);
+    }
+    #[test]
+    fn mapped_words_inside_quotes_preserve_other_quoted_fillers() {
+        let snapshot = Snapshot {
+            mappings: vec![mapping("foo", "BAR", None)],
+            ..Default::default()
+        };
+        assert_eq!(prepare("say 'um foo' uh", &snapshot).text, "say 'um BAR'");
     }
     #[test]
     fn accepted_suggestion_can_be_undone_without_losing_manual_edits() {

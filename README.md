@@ -31,7 +31,7 @@ The default shortcut is Command-or-Control + Shift + Space in push-to-talk mode.
 The in-app recording buttons work independently of shortcut availability.
 Recordings stop after 180 seconds.
 
-The initial nonempty result is copied once.
+Conch copies each initial nonempty result once.
 Conch requests one paste when the same eligible text input remains focused across the delivery check.
 It never sends Enter.
 Uncertain or secure fields receive clipboard fallback.
@@ -47,7 +47,8 @@ Missing Accessibility permission keeps clipboard delivery available.
 Conch accepts settable AXTextField, AXTextArea, and AXComboBox values outside secure fields and its own process.
 Windows uses UI Automation Edit controls with a writable Value pattern and excludes password fields.
 Linux uses clipboard fallback for automatic delivery.
-Global shortcuts depend on the desktop session; unsupported sessions retain the in-app controls.
+Global shortcuts depend on the desktop session.
+Conch disables them in detected Wayland sessions and retains the in-app controls.
 
 The current validation environment is an Apple M1 Mac with 8 GiB RAM on macOS 26.6.2.
 Windows builds, Linux builds, X11, Wayland, target-app paste behavior, and microphone voice quality require platform validation.
@@ -75,7 +76,8 @@ Conch never falls back from a local provider to a remote provider.
 
 Settings and vocabulary indexes use a local SQLite database.
 Repository files supply paths and declared symbols without executing repository code.
-Audio and the latest result remain in memory, and audio is discarded after success or cancellation.
+Conch keeps audio and the latest result in memory.
+Conch discards audio after success or cancellation.
 Failed recognition retains bounded audio in memory for Retry until another recording, cancellation, or exit.
 Conch writes no transcript history or audio files.
 Inference workers use authenticated loopback HTTP and are terminated after each stage or on cancellation.
@@ -101,7 +103,8 @@ No Windows or Linux acceleration path is validated.
 
 macOS produces an application bundle and DMG under `src-tauri/target/release/bundle`.
 Windows targets NSIS/MSI, and Linux targets AppImage/deb/rpm through Tauri.
-Local packages require developer signing and platform validation before public distribution.
+macOS packages use local ad-hoc signing and are not notarized.
+Public distribution requires a Developer ID identity, notarization credentials, and platform validation.
 Model attribution and the S1-mini LICENSE and NOTICE ship in the app resources.
 The S1-mini license adds a naming condition to Apache 2.0.
 

@@ -6,8 +6,16 @@ impl Desktop for NativeDesktop {
         focused()
     }
     fn copy(&mut self, text: &str) -> Result<(), String> {
-        arboard::Clipboard::new()
-            .and_then(|mut c| c.set_text(text))
+        static CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> =
+            std::sync::Mutex::new(None);
+        let mut clipboard = CLIPBOARD.lock().map_err(|_| "Clipboard unavailable")?;
+        if clipboard.is_none() {
+            *clipboard = Some(arboard::Clipboard::new().map_err(|_| "Clipboard unavailable")?);
+        }
+        clipboard
+            .as_mut()
+            .unwrap()
+            .set_text(text)
             .map_err(|_| "Clipboard unavailable".into())
     }
     fn paste(&mut self) -> Result<(), String> {

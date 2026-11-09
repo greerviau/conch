@@ -111,10 +111,19 @@ pub fn save_settings(
             .as_ref()
             .is_none_or(|id| settings.repositories.iter().any(|r| &r.id == id))
     });
-    if settings.hotkey != inner.settings.hotkey
-        || !app
-            .global_shortcut()
-            .is_registered(settings.hotkey.as_str())
+    let shortcuts = app
+        .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
+        .is_some();
+    if !shortcuts && settings.hotkey != inner.settings.hotkey {
+        return Err(
+            "Global shortcuts are unavailable on this desktop; use the recording controls".into(),
+        );
+    }
+    if shortcuts
+        && (settings.hotkey != inner.settings.hotkey
+            || !app
+                .global_shortcut()
+                .is_registered(settings.hotkey.as_str()))
     {
         let shortcut: Shortcut = settings
             .hotkey
@@ -427,10 +436,23 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             downloading: false,
         }),
     });
-    if app
-        .global_shortcut()
-        .register(settings.hotkey.as_str())
-        .is_err()
+    let supported_session = !cfg!(target_os = "linux")
+        || (std::env::var_os("WAYLAND_DISPLAY").is_none()
+            && std::env::var("XDG_SESSION_TYPE").as_deref() != Ok("wayland"));
+    let shortcuts = supported_session
+        && app
+            .handle()
+            .plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(shortcut)
+                    .build(),
+            )
+            .is_ok();
+    if !shortcuts
+        || app
+            .global_shortcut()
+            .register(settings.hotkey.as_str())
+            .is_err()
     {
         app.state::<AppState>().inner.lock().unwrap().error =
             "Global hotkey unavailable; use the recording controls".into();
