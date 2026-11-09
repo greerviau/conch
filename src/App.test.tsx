@@ -159,3 +159,28 @@ it("shows clipboard fallback on Linux settings instead of an unsupported permiss
   ).toBeNull();
   expect(screen.getByText(/paste manually/i)).toBeTruthy();
 });
+
+it("activates a captured shortcut immediately without saving unrelated settings", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  fireEvent.change(screen.getByLabelText("Activation"), {
+    target: { value: "toggle" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Change shortcut" }));
+  const capture = await screen.findByRole("button", {
+    name: "Press your shortcut",
+  });
+  fireEvent.keyDown(capture, {
+    key: "j",
+    code: "KeyJ",
+    ctrlKey: true,
+    shiftKey: true,
+  });
+  fireEvent.keyUp(capture, { key: "Shift", code: "ShiftLeft" });
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("set_hotkey", {
+      hotkey: "Control+Shift+KeyJ",
+    }),
+  );
+  expect(ipc.mock.calls.some(([name]) => name === "save_settings")).toBe(false);
+});

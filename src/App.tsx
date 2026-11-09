@@ -682,7 +682,10 @@ export default function App() {
                 value={draft.hotkey}
                 mac={view.platform === "macos"}
                 onCapture={captureShortcut}
-                onChange={(hotkey) => setDraft({ ...draft, hotkey })}
+                onChange={async (hotkey) => {
+                  if (await command("set_hotkey", { hotkey }))
+                    setDraft((d) => d && { ...d, hotkey });
+                }}
               />
               {!view.shortcuts_available && (
                 <p className="error">

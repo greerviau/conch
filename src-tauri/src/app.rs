@@ -32,6 +32,7 @@ pub struct Inner {
     pub retry: Option<(Vec<u8>, Snapshot)>,
     pub downloading: bool,
     pub capturing_shortcut: bool,
+    pub paused_shortcut: Option<Shortcut>,
     pub audio_ready: bool,
     pub level: Arc<AtomicU32>,
     pub recording_since: Option<Instant>,
@@ -138,28 +139,13 @@ pub fn save_settings(
             "Global shortcuts are unavailable on this desktop; use the recording controls".into(),
         );
     }
-    if shortcuts
-        && (settings.hotkey != inner.settings.hotkey
-            || !app
-                .global_shortcut()
-                .is_registered(settings.hotkey.as_str()))
-    {
-        let shortcut: Shortcut = settings
-            .hotkey
-            .parse()
-            .map_err(|_| "Invalid global hotkey")?;
-        app.global_shortcut()
-            .register(shortcut)
-            .map_err(|_| "Hotkey is unavailable or conflicts with another application")?;
-        if let Err(error) = storage::save(&state.data, &settings) {
-            let _ = app.global_shortcut().unregister(shortcut);
-            return Err(error);
-        }
-        if settings.hotkey != inner.settings.hotkey {
-            let _ = app
-                .global_shortcut()
-                .unregister(inner.settings.hotkey.as_str());
-        }
+    if shortcuts {
+        crate::shortcuts::replace(
+            &mut crate::shortcuts::NativeRegistry(&app),
+            &inner.settings.hotkey,
+            &settings.hotkey,
+            || storage::save(&state.data, &settings),
+        )?;
     } else {
         storage::save(&state.data, &settings)?;
     }
@@ -495,6 +481,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             retry: None,
             downloading: false,
             capturing_shortcut: false,
+            paused_shortcut: None,
             audio_ready: false,
             level: Arc::new(AtomicU32::new(0)),
             recording_since: None,
@@ -646,19 +633,24 @@ pub fn shortcut_capture(
         .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
         .is_some();
     if active {
-        if available {
-            app.global_shortcut()
-                .unregister(inner.settings.hotkey.as_str())
-                .map_err(|_| "Cannot pause the current shortcut")?;
+        if inner.capturing_shortcut {
+            return Ok(());
         }
+        inner.paused_shortcut = if available {
+            crate::shortcuts::pause(
+                &mut crate::shortcuts::NativeRegistry(&app),
+                &inner.settings.hotkey,
+            )?
+        } else {
+            None
+        };
         inner.capturing_shortcut = true;
     } else if inner.capturing_shortcut {
         inner.capturing_shortcut = false;
         inner.session.pressed = false;
+        let paused = inner.paused_shortcut.take();
         if available {
-            app.global_shortcut()
-                .register(inner.settings.hotkey.as_str())
-                .map_err(|_| "Cannot restore your shortcut; choose another combination")?;
+            crate::shortcuts::resume(&mut crate::shortcuts::NativeRegistry(&app), paused)?;
         }
     }
     Ok(())
@@ -682,4 +674,35 @@ pub fn restart_for_accessibility(app: AppHandle, state: State<'_, AppState>) -> 
     }
     app.request_restart();
     Ok(())
+}
+
+#[tauri::command]
+pub fn set_hotkey(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    hotkey: String,
+) -> Result<String, String> {
+    let mut inner = state.inner.lock().unwrap();
+    if inner.session.phase != Phase::Idle {
+        return Err("Finish or cancel your recording before changing the shortcut".into());
+    }
+    if app
+        .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
+        .is_none()
+    {
+        return Err("Global shortcuts are unavailable on this desktop".into());
+    }
+    let mut settings = inner.settings.clone();
+    settings.hotkey = hotkey;
+    crate::shortcuts::replace(
+        &mut crate::shortcuts::NativeRegistry(&app),
+        &inner.settings.hotkey,
+        &settings.hotkey,
+        || storage::save(&state.data, &settings),
+    )?;
+    inner.settings = settings;
+    inner.capturing_shortcut = false;
+    inner.paused_shortcut = None;
+    inner.session.pressed = false;
+    Ok(inner.settings.hotkey.clone())
 }

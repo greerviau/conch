@@ -160,7 +160,7 @@ export function ShortcutRecorder({
   mac = false,
 }: {
   value: string;
-  onChange: (value: string) => void;
+  onChange: (value: string) => void | Promise<void>;
   onCapture?: (active: boolean) => Promise<void>;
   mac?: boolean;
 }) {
@@ -194,7 +194,7 @@ export function ShortcutRecorder({
     setCapturing(false);
     try {
       await onCapture?.(false);
-      if (next) onChange(next);
+      if (next) await onChange(next);
     } catch (e) {
       setError(String(e));
     }

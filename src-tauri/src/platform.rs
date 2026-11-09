@@ -162,6 +162,9 @@ mod macos {
             own_process: pid == std::process::id() as i32,
             value_settable: settable("AXValue"),
             selected_text_settable: settable("AXSelectedText"),
+            selected_range_settable: settable("AXSelectedTextRange"),
+            web_editable: attr(element.0, "AXEditableAncestor").is_some()
+                || attr(element.0, "AXHighestEditableAncestor").is_some(),
         };
         if !super::eligible_input(&input) {
             return Err(
@@ -218,17 +221,40 @@ pub struct InputEvidence<'a> {
     pub own_process: bool,
     pub value_settable: bool,
     pub selected_text_settable: bool,
+    pub selected_range_settable: bool,
+    pub web_editable: bool,
 }
 pub fn eligible_input(input: &InputEvidence<'_>) -> bool {
     matches!(input.role, "AXTextField" | "AXTextArea" | "AXComboBox")
         && input.subrole != "AXSecureTextField"
         && input.enabled != Some(false)
         && !input.own_process
-        && (input.value_settable || input.selected_text_settable)
+        && (input.value_settable
+            || input.selected_text_settable
+            || (input.web_editable && input.selected_range_settable))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn web_contenteditable_accepts_editable_range_without_value_setter() {
+        assert!(eligible_input(&InputEvidence {
+            role: "AXTextArea",
+            enabled: Some(true),
+            web_editable: true,
+            selected_range_settable: true,
+            ..Default::default()
+        }));
+    }
+    #[test]
+    fn selectable_readonly_native_text_is_not_enough_to_allow_paste() {
+        assert!(!eligible_input(&InputEvidence {
+            role: "AXTextArea",
+            enabled: Some(true),
+            selected_range_settable: true,
+            ..Default::default()
+        }));
+    }
     #[test]
     fn accepts_text_replacement_when_whole_value_setter_is_unavailable() {
         assert!(eligible_input(&InputEvidence {

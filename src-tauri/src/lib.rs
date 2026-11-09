@@ -21,6 +21,7 @@ pub fn run() {
             app::restart_for_accessibility,
             app::choose_repository,
             app::shortcut_capture,
+            app::set_hotkey,
             app::save_settings,
             app::refresh,
             app::start,
@@ -57,3 +58,5 @@ pub fn run() {
 pub mod indicator;
 
 pub mod accessibility;
+
+pub mod shortcuts;
