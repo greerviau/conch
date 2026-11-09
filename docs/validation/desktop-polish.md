@@ -106,3 +106,8 @@ That experiment passes on the current display without changing Dock settings or 
 The vector shell logo and rounded app icon replace the placeholder letter.
 The icon generator produces PNG, ICNS, and ICO outputs, and the exported logo PNG retains transparency.
 The UI uses the transparent mark beside the Conch name.
+
+The native bounds experiment validates the calculation and a real borderless window, but bypasses Tauri's monitor/window routing.
+Interactive transitions between monitors with different scale factors and live Dock resizing remain unvalidated.
+The repeated icon-generation check finds identical image payloads in different ICNS chunk orders.
+The export script sorts those chunks so repeated generation preserves the committed icon bytes.
