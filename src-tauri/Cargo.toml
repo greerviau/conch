@@ -21,14 +21,16 @@ tree-sitter-javascript = "0.25"
 tree-sitter-typescript = "0.23"
 cpal = "0.17"
 hound = "3.5"
-reqwest = { version = "0.13", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json", "multipart"] }
 sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+notify = "8"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 arboard = "3"
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-application-services = { version = "0.3", features = ["AXUIElement", "AXValue"] }
 core-foundation = "0.10"
 core-graphics = "0.25"
 [dev-dependencies]
 tempfile = "3"
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = ["Win32_System_Com", "Win32_System_Ole", "Win32_UI_Accessibility", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

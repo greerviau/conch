@@ -1,0 +1,179 @@
+use conch_lib::{
+    core::{self, Mapping, Snapshot},
+    inference,
+    storage::{self, Repository, Settings},
+};
+#[test]
+fn snapshot_isolates_selection_and_survives_settings_changes_and_removal() {
+    let data = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let repository = Repository {
+        id: "r".into(),
+        root: root.path().into(),
+        selected: true,
+        exclusions: vec![],
+    };
+    let mut settings = Settings {
+        repositories: vec![repository],
+        mappings: vec![Mapping {
+            phrase: "foo".into(),
+            replacement: "EXACT".into(),
+            repository: Some("r".into()),
+            enabled: true,
+        }],
+        ..Default::default()
+    };
+    storage::save(data.path(), &settings).unwrap();
+    let snapshot = storage::snapshot(data.path(), &settings).unwrap();
+    settings.repositories[0].selected = false;
+    assert!(
+        storage::snapshot(data.path(), &settings)
+            .unwrap()
+            .mappings
+            .is_empty()
+    );
+    assert_eq!(core::prepare("foo", &snapshot).text, "EXACT");
+    settings.repositories.clear();
+    storage::save(data.path(), &settings).unwrap();
+    assert!(storage::indexes(data.path()).unwrap().is_empty());
+    assert!(
+        storage::snapshot(data.path(), &settings)
+            .unwrap()
+            .mappings
+            .is_empty()
+    );
+    let files: Vec<_> = std::fs::read_dir(data.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(files, vec!["conch.sqlite3"]);
+}
+#[test]
+fn local_endpoint_receives_only_masked_transcript_and_fixed_instruction() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let thread = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut bytes = vec![];
+        let mut chunk = [0; 4096];
+        loop {
+            let n = stream.read(&mut chunk).unwrap();
+            bytes.extend_from_slice(&chunk[..n]);
+            if let Some(header_end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                let length: usize = headers
+                    .lines()
+                    .find_map(|l| {
+                        l.to_lowercase()
+                            .strip_prefix("content-length: ")
+                            .map(str::to_owned)
+                    })
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                if bytes.len() >= header_end + 4 + length {
+                    break;
+                }
+            }
+        }
+        let request = String::from_utf8(bytes).unwrap();
+        assert!(request.contains("CONCHPROTECTED0X"));
+        assert!(!request.contains("SecretClass"));
+        assert!(!request.contains("private/repo"));
+        let body =
+            r#"{"choices":[{"message":{"content":"Do not change CONCHPROTECTED0X before 12."}}]}"#;
+        write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+    });
+    let mut snapshot = Snapshot::default();
+    snapshot.cleanup.mode = "enhanced".into();
+    snapshot.cleanup.provider = "local".into();
+    snapshot.cleanup.endpoint = endpoint;
+    snapshot.mappings.push(Mapping {
+        phrase: "secret class".into(),
+        replacement: "SecretClass".into(),
+        repository: Some("private/repo".into()),
+        enabled: true,
+    });
+    let data = tempfile::tempdir().unwrap();
+    let output = inference::enhanced(inference::CleanupRequest {
+        workers: data.path(),
+        data: data.path(),
+        snapshot: &snapshot,
+        raw: "do not change secret class before 12",
+        worker: &inference::new_worker(),
+        cpu: true,
+    })
+    .unwrap();
+    assert_eq!(output, "Do not change SecretClass before 12.");
+    thread.join().unwrap();
+}
+#[test]
+fn disabled_remote_cleanup_makes_no_request_and_cancellation_prevents_launch() {
+    let data = tempfile::tempdir().unwrap();
+    let mut snapshot = Snapshot::default();
+    snapshot.cleanup.mode = "enhanced".into();
+    snapshot.cleanup.provider = "remote".into();
+    snapshot.cleanup.endpoint = "https://127.0.0.1:1".into();
+    let worker = inference::new_worker();
+    assert_eq!(
+        inference::enhanced(inference::CleanupRequest {
+            workers: data.path(),
+            data: data.path(),
+            snapshot: &snapshot,
+            raw: "hello",
+            worker: &worker,
+            cpu: true
+        })
+        .unwrap_err(),
+        "Remote cleanup is disabled"
+    );
+    inference::stop(&worker);
+}
+#[test]
+#[ignore = "Requires locally built workers and explicitly downloaded models"]
+fn offline_workers_recognize_and_clean_without_a_model_server_install() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let data = root.join(".runtime");
+    let workers = root.join("src-tauri/workers");
+    let wav = std::fs::read(data.join("synthetic.wav")).unwrap();
+    let raw = inference::transcribe(
+        &workers,
+        &data.join("ggml-tiny.en.bin"),
+        wav,
+        &inference::new_worker(),
+        true,
+    )
+    .unwrap();
+    assert!(raw.to_lowercase().contains("do not change"));
+    assert!(raw.contains("12"));
+    let mut snapshot = Snapshot::default();
+    snapshot.cleanup.mode = "enhanced".into();
+    let result = inference::enhanced(inference::CleanupRequest {
+        workers: &workers,
+        data: &data,
+        snapshot: &snapshot,
+        raw: "do not change 12 tests",
+        worker: &inference::new_worker(),
+        cpu: true,
+    })
+    .unwrap();
+    assert!(result.to_lowercase().contains("do not change 12"));
+}
+
+#[test]
+#[ignore = "Explicitly downloads the 77.7 MB recognition model"]
+fn managed_download_installs_verified_model_without_persisting_audio_or_transcripts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = inference::download(dir.path(), inference::MODELS[0], |_, _| {}).unwrap();
+    assert_eq!(path.metadata().unwrap().len(), inference::MODELS[0].size);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}

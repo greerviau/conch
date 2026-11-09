@@ -1,1 +1,3 @@
-fn main() {}
+fn main() {
+    conch_lib::run();
+}

@@ -3,3 +3,7 @@ dist/
 src-tauri/target/
 .runtime/
 .DS_Store
+
+src-tauri/workers/
+
+src-tauri/gen/

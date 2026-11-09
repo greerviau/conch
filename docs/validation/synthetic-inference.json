@@ -1,0 +1,74 @@
+[
+  {
+    "engine": "s1-mini",
+    "cpu": true,
+    "input": "um do not change CONCHPROTECTED0X before 12 tests pass",
+    "output": "Do not change CONCHPROTECTED0X before 12 tests pass.",
+    "seconds": 0.88
+  },
+  {
+    "engine": "s1-mini",
+    "cpu": true,
+    "input": "use max groups no wait use min groups and never submit",
+    "output": "Use min groups and never submit.",
+    "seconds": 0.213
+  },
+  {
+    "engine": "s1-mini",
+    "cpu": true,
+    "input": "um uh",
+    "output": "",
+    "seconds": 0.066
+  },
+  {
+    "engine": "s1-mini",
+    "cpu": true,
+    "input": "update CONCHPROTECTED0X then CONCHPROTECTED1X without changing 42",
+    "output": "Update CONCHPROTECTED0X, then CONCHPROTECTED1X, without changing 42.",
+    "seconds": 0.42
+  },
+  {
+    "engine": "s1-mini",
+    "cpu": false,
+    "input": "um do not change CONCHPROTECTED0X before 12 tests pass",
+    "output": "Do not change CONCHPROTECTED0X before 12 tests pass.",
+    "seconds": 0.248
+  },
+  {
+    "engine": "s1-mini",
+    "cpu": false,
+    "input": "use max groups no wait use min groups and never submit",
+    "output": "Use min groups and never submit.",
+    "seconds": 0.119
+  },
+  {
+    "engine": "s1-mini",
+    "cpu": false,
+    "input": "um uh",
+    "output": "",
+    "seconds": 0.044
+  },
+  {
+    "engine": "s1-mini",
+    "cpu": false,
+    "input": "update CONCHPROTECTED0X then CONCHPROTECTED1X without changing 42",
+    "output": "Update CONCHPROTECTED0X, then CONCHPROTECTED1X, without changing 42.",
+    "seconds": 0.29
+  },
+  {
+    "engine": "whisper-tiny.en",
+    "cpu": true,
+    "output": {
+      "text": " Do not change PODGC before 12 tests pass.\n Set MAX Groups to 4.\n"
+    },
+    "seconds": 0.244
+  },
+  {
+    "engine": "whisper-tiny.en",
+    "cpu": false,
+    "output": {
+      "text": " Do not change PODGC before 12 tests pass.\n Set MAX Groups to 4.\n"
+    },
+    "seconds": 0.141
+  }
+]
