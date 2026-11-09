@@ -15,3 +15,5 @@
 - Basic cleanup: local deterministic removal of configured hesitation tokens with limited whitespace/punctuation repair.
 - Enhanced cleanup: optional model-assisted transcript cleanup using managed local S1-mini or a configured local/remote endpoint, with Basic fallback on failure.
 - Protected span: transcript text that mappings or exact repository matches identify for preservation through cleanup.
+- Recording indicator: the small, nonactivating overlay that shows microphone startup, recording level and duration, processing, and delivery status above other applications.
+- Shortcut capture: the Settings control that records a pressed key combination while Conch pauses its registered recording shortcut.

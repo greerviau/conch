@@ -76,7 +76,10 @@ Independent review found and prompted fixes for X11 clipboard ownership, quoted 
 The Windows focused-field adapter passes an isolated `x86_64-pc-windows-msvc` Rust typecheck on this Mac.
 That check does not build the Windows application or exercise UI Automation.
 Native desktop automation timed out twice while opening the macOS bundle.
-The GUI, microphone permission flow, and target-app insertion remain unvalidated.
+Rendered component tests cover setup and shortcut capture.
+A native macOS experiment confirms recording-indicator focus preservation.
+The packaged UI, microphone permission flow, and target-app insertion still require native acceptance.
+See [desktop setup and control validation](desktop-polish.md) for the current evidence and limits.
 
 ## Context benchmark
 

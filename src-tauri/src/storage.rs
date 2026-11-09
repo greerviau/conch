@@ -19,6 +19,7 @@ pub struct Settings {
     pub cleanup: Cleanup,
     pub hotkey: String,
     pub activation: String,
+    pub show_overlay: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -28,6 +29,7 @@ impl Default for Settings {
             cleanup: Cleanup::default(),
             hotkey: "CommandOrControl+Shift+Space".into(),
             activation: "push".into(),
+            show_overlay: true,
         }
     }
 }

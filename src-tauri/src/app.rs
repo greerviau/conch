@@ -11,8 +11,8 @@ use crate::{
 use serde::Serialize;
 use std::{
     path::PathBuf,
-    sync::{Mutex, mpsc},
-    time::Duration,
+    sync::{Arc, Mutex, atomic::AtomicU32, mpsc},
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -31,6 +31,12 @@ pub struct Inner {
     pub worker: Worker,
     pub retry: Option<(Vec<u8>, Snapshot)>,
     pub downloading: bool,
+    pub capturing_shortcut: bool,
+    pub audio_ready: bool,
+    pub level: Arc<AtomicU32>,
+    pub recording_since: Option<Instant>,
+    pub recorded_seconds: u64,
+    pub indicator_notice: Option<(Instant, String)>,
 }
 #[derive(Serialize)]
 pub struct View {
@@ -43,9 +49,12 @@ pub struct View {
     accessibility: bool,
     platform: String,
     downloading: bool,
+    microphone: String,
+    can_retry: bool,
+    shortcuts_available: bool,
 }
 #[tauri::command]
-pub fn view(state: State<'_, AppState>) -> Result<View, String> {
+pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> {
     let inner = state.inner.lock().unwrap();
     let mut indexes = storage::indexes(&state.data)?;
     for (_, index, _) in &mut indexes {
@@ -64,6 +73,11 @@ pub fn view(state: State<'_, AppState>) -> Result<View, String> {
         accessibility: platform::permission(),
         platform: std::env::consts::OS.into(),
         downloading: inner.downloading,
+        microphone: platform::microphone_status().into(),
+        can_retry: inner.retry.is_some(),
+        shortcuts_available: app
+            .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
+            .is_some(),
     })
 }
 #[tauri::command]
@@ -75,6 +89,9 @@ pub fn save_settings(
     let mut inner = state.inner.lock().unwrap();
     if inner.session.phase != Phase::Idle {
         return Err("Finish or cancel before saving settings".into());
+    }
+    if inner.capturing_shortcut {
+        return Err("Finish choosing a shortcut before saving".into());
     }
     if !matches!(settings.activation.as_str(), "push" | "toggle")
         || !matches!(settings.cleanup.mode.as_str(), "off" | "basic" | "enhanced")
@@ -173,8 +190,13 @@ fn refresh_now(app: &AppHandle) -> Result<(), String> {
 pub fn start(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let (send, receive) = mpsc::channel();
-    let (ack, _ready) = mpsc::sync_channel(1);
     let mut inner = state.inner.lock().unwrap();
+    if inner.capturing_shortcut {
+        return Err("Finish choosing your shortcut before recording".into());
+    }
+    if cfg!(target_os = "macos") && platform::microphone_status() != "granted" {
+        return Err("Enable Conch microphone access in Setup before recording".into());
+    }
     let snapshot = storage::snapshot(&state.data, &inner.settings)?;
     if !state.data.join(inference::MODELS[0].name).is_file() {
         return Err("Download the recognition model before recording".into());
@@ -184,13 +206,26 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     inner.error.clear();
     inner.retry = None;
     inner.worker = inference::new_worker();
+    inner.audio_ready = false;
+    inner.recording_since = None;
+    inner.indicator_notice = None;
+    let level = inner.level.clone();
+    level.store(0, std::sync::atomic::Ordering::Relaxed);
     drop(inner);
     let handle = app.clone();
     std::thread::spawn(move || {
-        let captured = audio::capture(receive, ack.clone());
-        if let Err(error) = &captured {
-            let _ = ack.try_send(Err(error.clone()));
-        }
+        let captured = audio::capture(
+            receive,
+            || {
+                let state = handle.state::<AppState>();
+                let mut inner = state.inner.lock().unwrap();
+                if inner.session.generation == generation {
+                    inner.audio_ready = true;
+                    inner.recording_since = Some(Instant::now());
+                }
+            },
+            level,
+        );
         let state = handle.state::<AppState>();
         match captured {
             Ok(Some(wav)) => {
@@ -199,6 +234,10 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                     if inner.session.generation != generation {
                         return;
                     }
+                    inner.recorded_seconds = inner
+                        .recording_since
+                        .map(|at| at.elapsed().as_secs())
+                        .unwrap_or(0);
                     if inner.session.phase == Phase::Recording {
                         inner.session.finish();
                     }
@@ -212,6 +251,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                 let mut inner = state.inner.lock().unwrap();
                 if inner.session.generation == generation {
                     inner.session.cancel();
+                    inner.indicator_notice = Some((Instant::now(), error.clone()));
                     inner.error = error;
                     inner.stop = None;
                 }
@@ -223,6 +263,10 @@ pub fn start(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn finish(state: State<'_, AppState>) -> Result<(), String> {
     let mut inner = state.inner.lock().unwrap();
+    inner.recorded_seconds = inner
+        .recording_since
+        .map(|at| at.elapsed().as_secs())
+        .unwrap_or(0);
     if inner.session.finish()
         && let Some(stop) = inner.stop.take()
     {
@@ -236,6 +280,7 @@ pub fn cancel(app: AppHandle) -> Result<(), String> {
     let worker = {
         let mut inner = state.inner.lock().unwrap();
         inner.session.cancel();
+        inner.indicator_notice = None;
         inner.retry = None;
         if let Some(stop) = inner.stop.take() {
             let _ = stop.send(false);
@@ -302,8 +347,20 @@ fn process(app: &AppHandle, generation: u64, wav: Vec<u8>, snapshot: Snapshot) {
     if !inner.session.complete(generation) {
         return;
     }
-    match delivery::deliver(&mut platform::NativeDesktop, &result.text) {
-        Ok(status) => result.status.push_str(&format!(". {status}")),
+    match delivery::deliver(&mut platform::NativeDesktop::default(), &result.text) {
+        Ok(status) => {
+            inner.indicator_notice = Some((
+                Instant::now(),
+                if status.starts_with("Copied; paste requested") {
+                    "Paste sent".into()
+                } else if result.text.is_empty() {
+                    "No text to copy".into()
+                } else {
+                    "Copied - paste manually".into()
+                },
+            ));
+            result.status.push_str(&format!(". {status}"));
+        }
         Err(error) => inner.error = error,
     }
     inner.result = Some(result);
@@ -314,6 +371,7 @@ fn failed(app: &AppHandle, generation: u64, error: String) {
     let mut inner = state.inner.lock().unwrap();
     if inner.session.generation == generation {
         inner.session.phase = Phase::Idle;
+        inner.indicator_notice = Some((Instant::now(), error.clone()));
         inner.error = error;
     }
 }
@@ -368,7 +426,7 @@ pub fn reject(state: State<'_, AppState>, index: usize) -> Result<(), String> {
 pub fn copy(state: State<'_, AppState>, raw: bool) -> Result<(), String> {
     let inner = state.inner.lock().unwrap();
     let result = inner.result.as_ref().ok_or("No result")?;
-    platform::NativeDesktop.copy(if raw { &result.raw } else { &result.text })
+    platform::NativeDesktop::default().copy(if raw { &result.raw } else { &result.text })
 }
 #[tauri::command]
 pub async fn download(app: AppHandle, model: usize) -> Result<(), String> {
@@ -434,8 +492,17 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             worker: inference::new_worker(),
             retry: None,
             downloading: false,
+            capturing_shortcut: false,
+            audio_ready: false,
+            level: Arc::new(AtomicU32::new(0)),
+            recording_since: None,
+            recorded_seconds: 0,
+            indicator_notice: None,
         }),
     });
+    if let Err(error) = crate::indicator::setup(app.handle()) {
+        app.state::<AppState>().inner.lock().unwrap().error = error;
+    }
     let supported_session = !cfg!(target_os = "linux")
         || (std::env::var_os("WAYLAND_DISPLAY").is_none()
             && std::env::var("XDG_SESSION_TYPE").as_deref() != Ok("wayland"));
@@ -507,6 +574,9 @@ pub fn shortcut(
     let state = app.state::<AppState>();
     let action = {
         let mut inner = state.inner.lock().unwrap();
+        if inner.capturing_shortcut {
+            return;
+        }
         let toggle = inner.settings.activation == "toggle";
         inner
             .session
@@ -515,7 +585,10 @@ pub fn shortcut(
     match action {
         Some("start") => {
             if let Err(error) = start(app.clone()) {
-                app.state::<AppState>().inner.lock().unwrap().error = error;
+                let state = app.state::<AppState>();
+                let mut inner = state.inner.lock().unwrap();
+                inner.indicator_notice = Some((Instant::now(), error.clone()));
+                inner.error = error;
             }
         }
         Some("finish") => {
@@ -523,4 +596,68 @@ pub fn shortcut(
         }
         _ => (),
     }
+}
+
+#[tauri::command]
+pub fn indicator_state(app: AppHandle) -> crate::indicator::Indicator {
+    crate::indicator::state(&app)
+}
+#[tauri::command]
+pub async fn request_microphone() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(platform::request_microphone)
+        .await
+        .map_err(|_| "Microphone permission request failed")?
+}
+#[tauri::command]
+pub fn request_accessibility() -> Result<(), String> {
+    platform::request_accessibility()
+}
+#[tauri::command]
+pub async fn choose_repository(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Choose a repository")
+            .blocking_pick_folder()
+            .map(|path| {
+                path.into_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .map_err(|_| "Unsupported repository path".to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|_| "Folder picker failed")?
+}
+#[tauri::command]
+pub fn shortcut_capture(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    active: bool,
+) -> Result<(), String> {
+    let mut inner = state.inner.lock().unwrap();
+    if inner.session.phase != Phase::Idle {
+        return Err("Finish or cancel your recording before choosing a shortcut".into());
+    }
+    let available = app
+        .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
+        .is_some();
+    if active {
+        if available {
+            app.global_shortcut()
+                .unregister(inner.settings.hotkey.as_str())
+                .map_err(|_| "Cannot pause the current shortcut")?;
+        }
+        inner.capturing_shortcut = true;
+    } else if inner.capturing_shortcut {
+        inner.capturing_shortcut = false;
+        inner.session.pressed = false;
+        if available {
+            app.global_shortcut()
+                .register(inner.settings.hotkey.as_str())
+                .map_err(|_| "Cannot restore your shortcut; choose another combination")?;
+        }
+    }
+    Ok(())
 }

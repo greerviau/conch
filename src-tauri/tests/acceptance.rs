@@ -251,3 +251,51 @@ fn cancellation_drops_an_in_flight_endpoint_request() {
     job.join().unwrap();
     assert_eq!(outcome.unwrap().unwrap_err(), "Cancelled");
 }
+
+#[test]
+fn vocabulary_snapshots_exclude_unselected_and_missing_repositories_and_keep_prior_versions() {
+    use conch_lib::index;
+    let data = tempfile::tempdir().unwrap();
+    let alpha = tempfile::tempdir().unwrap();
+    let beta = tempfile::tempdir().unwrap();
+    std::fs::write(alpha.path().join("alpha.py"), "class AlphaOnly: pass").unwrap();
+    std::fs::write(beta.path().join("beta.ts"), "class BetaOnly {}").unwrap();
+    let mut settings = Settings {
+        repositories: vec![
+            Repository {
+                id: "a".into(),
+                root: alpha.path().into(),
+                selected: true,
+                exclusions: vec![],
+            },
+            Repository {
+                id: "b".into(),
+                root: beta.path().into(),
+                selected: false,
+                exclusions: vec![],
+            },
+        ],
+        ..Default::default()
+    };
+    storage::put_index(
+        data.path(),
+        "a",
+        &index::scan(alpha.path(), "a", &[]).unwrap(),
+    )
+    .unwrap();
+    storage::put_index(
+        data.path(),
+        "b",
+        &index::scan(beta.path(), "b", &[]).unwrap(),
+    )
+    .unwrap();
+    let captured = storage::snapshot(data.path(), &settings).unwrap();
+    assert!(captured.vocabulary.iter().any(|v| v.text == "AlphaOnly"));
+    assert!(!captured.vocabulary.iter().any(|v| v.repository == "b"));
+    settings.repositories[0].root = alpha.path().join("missing");
+    settings.repositories[1].selected = true;
+    let next = storage::snapshot(data.path(), &settings).unwrap();
+    assert!(!next.vocabulary.iter().any(|v| v.repository == "a"));
+    assert!(next.vocabulary.iter().any(|v| v.text == "BetaOnly"));
+    assert!(captured.vocabulary.iter().any(|v| v.text == "AlphaOnly"));
+}

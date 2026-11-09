@@ -7,7 +7,8 @@ pub const MAX_SECONDS: usize = 180;
 pub const RATE: u32 = 16_000;
 pub fn capture(
     stop: mpsc::Receiver<bool>,
-    ready: mpsc::SyncSender<Result<(), String>>,
+    ready: impl FnOnce(),
+    level: Arc<std::sync::atomic::AtomicU32>,
 ) -> Result<Option<Vec<u8>>, String> {
     let device = cpal::default_host()
         .default_input_device()
@@ -34,6 +35,7 @@ pub fn capture(
                 channels,
                 rate,
                 on_error,
+                level.clone(),
             ),
             cpal::SampleFormat::I16 => build::<i16>(
                 &device,
@@ -42,6 +44,7 @@ pub fn capture(
                 channels,
                 rate,
                 on_error,
+                level.clone(),
             ),
             cpal::SampleFormat::U16 => build::<u16>(
                 &device,
@@ -50,6 +53,7 @@ pub fn capture(
                 channels,
                 rate,
                 on_error,
+                level.clone(),
             ),
             _ => Err("Microphone sample format is unsupported".into()),
         }
@@ -58,7 +62,7 @@ pub fn capture(
     stream
         .play()
         .map_err(|_| "Cannot start microphone; check system permission")?;
-    let _ = ready.send(Ok(()));
+    ready();
     let start = Instant::now();
     let keep = loop {
         if *error.lock().unwrap() {
@@ -90,6 +94,7 @@ fn build<T>(
     channels: usize,
     rate: f64,
     on_error: impl FnMut(cpal::StreamError) + Send + 'static,
+    level: Arc<std::sync::atomic::AtomicU32>,
 ) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample,
@@ -104,6 +109,7 @@ where
             config,
             move |samples: &[T], _| {
                 let mut out = buffer.lock().unwrap();
+                let mut peak = 0.0f32;
                 for frame in samples.chunks_exact(channels) {
                     sum +=
                         frame.iter().map(|s| f32::from_sample(*s)).sum::<f32>() / channels as f32;
@@ -112,12 +118,18 @@ where
                     if phase >= rate {
                         phase -= rate;
                         if out.len() < RATE as usize * MAX_SECONDS {
-                            out.push(sum / count as f32);
+                            let sample = sum / count as f32;
+                            peak = peak.max(sample.abs());
+                            out.push(sample);
                         }
                         sum = 0.0;
                         count = 0;
                     }
                 }
+                level.store(
+                    (peak * 6.0).min(1.0).to_bits(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             },
             on_error,
             None,

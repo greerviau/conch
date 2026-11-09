@@ -342,3 +342,168 @@ details {
     flex-direction: column;
   }
 }
+.setup-card {
+  border-color: #597c6e;
+  background: linear-gradient(140deg, #23352e, #1a232a);
+}
+.setup-step {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 15px 0;
+  border-top: 1px solid #384e45;
+}
+.setup-step > div {
+  flex: 1;
+}
+.setup-step h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  color: #eff7f3;
+}
+.setup-step p {
+  margin: 0;
+  color: #b7c9c0;
+  font-size: 12px;
+}
+.step-number {
+  display: grid;
+  place-items: center;
+  border: 1px solid #5d8170;
+  border-radius: 50%;
+  height: 26px;
+  width: 26px;
+  color: #b7e5d1;
+  font-size: 12px;
+}
+.setup-howto {
+  display: flex;
+  gap: 15px;
+  align-items: center;
+  flex-wrap: wrap;
+  border-top: 1px solid #384e45;
+  padding-top: 16px;
+  font-size: 12px;
+  color: #c6d9cf;
+}
+kbd {
+  font:
+    500 12px ui-monospace,
+    SFMono-Regular,
+    monospace;
+  border: 1px solid #50605b;
+  border-bottom-width: 3px;
+  background: #151e1c;
+  color: #e1f5ea;
+  border-radius: 6px;
+  padding: 9px 12px;
+  white-space: nowrap;
+}
+.shortcut-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 0 25px;
+}
+.shortcut-control small {
+  width: 100%;
+}
+.capture-active {
+  border-color: #b5e4d3;
+  box-shadow: 0 0 0 3px #5e927544;
+}
+.permission-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+.save-bar {
+  position: sticky;
+  bottom: 14px;
+  background: #24372f;
+  border: 1px solid #688e7c;
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  box-shadow: 0 8px 26px #0008;
+  z-index: 5;
+}
+.save-bar span {
+  flex: 1;
+  font-size: 12px;
+}
+.overlay-surface {
+  background: #151d1b;
+  overflow: hidden;
+  user-select: none;
+}
+.recording-indicator {
+  height: 68px;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 12px 18px;
+  color: #ecf6f0;
+  box-sizing: border-box;
+  border: 1px solid #455e52;
+  border-radius: 12px;
+  background: linear-gradient(120deg, #263c30, #171d22);
+  font-size: 12px;
+}
+.recording-indicator strong {
+  font-weight: 600;
+  display: block;
+  white-space: nowrap;
+}
+.recording-indicator small {
+  display: block;
+  font-size: 10px;
+  margin-top: 4px;
+  color: #b2c9bc;
+}
+.recording-indicator time {
+  font:
+    11px ui-monospace,
+    monospace;
+  color: #b2c9bc;
+  margin-left: auto;
+}
+.audio-bars {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: 32px;
+  height: 32px;
+}
+.audio-bars span {
+  display: block;
+  width: 3px;
+  min-height: 5px;
+  background: #addcc0;
+  border-radius: 3px;
+  transition: height 80ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .audio-bars span {
+    transition: none;
+  }
+}
+.result:disabled {
+  opacity: 0.65;
+}
+
+.recording-indicator > div:not(.audio-bars) {
+  min-width: 0;
+  overflow: hidden;
+}
+.recording-indicator strong,
+.recording-indicator small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recording-indicator time {
+  flex-shrink: 0;
+}

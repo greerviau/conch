@@ -19,17 +19,30 @@ npm run tauri -- dev
 ```
 
 On Windows, use `python` in place of `python3` in these commands.
-Open Settings and download Whisper tiny.en for English recognition.
+The Dictation page shows the setup checklist and a Download recognition model button.
+Download Whisper tiny.en there for English recognition.
+Enable microphone access and automatic paste from the same checklist.
+Conch reports permission status when you return from System Settings.
 The optional S1-mini by Superwhisper download enables managed Enhanced cleanup.
 Conch verifies model size and SHA-256 before installation.
 Model files remain in Conch's local application data directory.
 
-Add absolute repository paths, save, and refresh their indexes.
+Choose a repository folder, save, and refresh its index.
+Manual path entry remains available under Enter a path manually.
 Select the repositories that supply context before recording.
 Define global or repository mappings for recurring transcription errors.
 The default shortcut is Command-or-Control + Shift + Space in push-to-talk mode.
+In Settings, click Change shortcut and press the desired combination.
+Conch pauses its registered shortcut during capture and ignores repeat events.
+Escape or leaving the control cancels capture.
+Click Save changes to register the new shortcut.
 The in-app recording buttons work independently of shortcut availability.
 Recordings stop after 180 seconds.
+A floating indicator shows microphone startup, recording level, duration, processing, and the delivery outcome above other apps.
+The indicator ignores pointer input and does not activate Conch.
+Settings can disable the indicator.
+Minimize Conch to leave it available while dictating in other apps.
+Closing its main window quits Conch and cancels active work.
 
 Conch copies each initial nonempty result once.
 Conch requests one paste when the same eligible text input remains focused across the delivery check.
@@ -42,9 +55,13 @@ The raw transcript remains available until another result replaces it or Conch c
 ## Permissions and platform status
 
 macOS requests microphone access on the first recording.
-Enable Conch under System Settings / Privacy & Security / Accessibility for focused-input detection and paste.
+Click Enable automatic paste in setup to open System Settings / Privacy & Security / Accessibility.
+Enable Conch there for focused-input detection and paste.
+Ad-hoc signed local updates can require removing and re-adding Conch in that list.
 Missing Accessibility permission keeps clipboard delivery available.
-Conch accepts settable AXTextField, AXTextArea, and AXComboBox values outside secure fields and its own process.
+Conch accepts enabled AXTextField, AXTextArea, and AXComboBox controls when Accessibility exposes a writable value or selected-text setter.
+It excludes secure fields and its own process.
+Clipboard fallback reports the reason when permission, editability, or stable focus is missing.
 Windows uses UI Automation Edit controls with a writable Value pattern and excludes password fields.
 Linux uses clipboard fallback for automatic delivery.
 Global shortcuts depend on the desktop session.
@@ -52,6 +69,7 @@ Conch disables them in detected Wayland sessions and retains the in-app controls
 
 The current validation environment is an Apple M1 Mac with 8 GiB RAM on macOS 26.6.2.
 Windows builds, Linux builds, X11, Wayland, target-app paste behavior, and microphone voice quality require platform validation.
+A native macOS experiment confirms that showing the recording indicator preserves the foreground application and ignores pointer events.
 The CI configuration defines builds for all three operating systems; this repository has no remote and CI has not run.
 See [validation](docs/validation/README.md) for evidence and remaining acceptance work.
 

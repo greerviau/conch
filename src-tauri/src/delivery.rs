@@ -2,6 +2,9 @@ pub trait Desktop {
     type Focus: PartialEq;
     fn focus(&mut self) -> Option<Self::Focus>;
     fn copy(&mut self, text: &str) -> Result<(), String>;
+    fn fallback_reason(&self) -> &str {
+        "Focused input is unsupported or permission is missing"
+    }
     fn paste(&mut self) -> Result<(), String>;
 }
 pub fn deliver<D: Desktop>(desktop: &mut D, text: &str) -> Result<String, String> {
@@ -19,7 +22,7 @@ pub fn deliver<D: Desktop>(desktop: &mut D, text: &str) -> Result<String, String
         }
         return Ok("Clipboard fallback: focus changed".into());
     }
-    Ok("Clipboard fallback: focused input is unsupported, secure, or permission is missing".into())
+    Ok(format!("Clipboard fallback: {}", desktop.fallback_reason()))
 }
 #[cfg(test)]
 mod tests {

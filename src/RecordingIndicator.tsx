@@ -1,0 +1,55 @@
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+export type IndicatorState = {
+  visible: boolean;
+  label: string;
+  hint: string;
+  level: number;
+  seconds: number;
+};
+export function IndicatorView({ state }: { state: IndicatorState }) {
+  return (
+    <div className="recording-indicator" role="status" aria-live="polite">
+      <div className="audio-bars" aria-hidden="true">
+        {[0.5, 0.85, 1, 0.7, 0.45].map((v, i) => (
+          <span
+            key={i}
+            style={{ height: `${5 + Math.min(1, state.level) * 24 * v}px` }}
+          />
+        ))}
+      </div>
+      <div>
+        <strong>{state.label}</strong>
+        <small>{state.hint}</small>
+      </div>
+      <time>
+        {Math.floor(state.seconds / 60)}:
+        {String(state.seconds % 60).padStart(2, "0")}
+      </time>
+    </div>
+  );
+}
+export function RecordingIndicator() {
+  const [state, setState] = useState<IndicatorState>({
+    visible: false,
+    label: "",
+    hint: "",
+    level: 0,
+    seconds: 0,
+  });
+  useEffect(() => {
+    let disposed = false;
+    const subscription = listen<IndicatorState>("recording-state", (e) => {
+      if (!disposed) setState(e.payload);
+    });
+    void invoke<IndicatorState>("indicator_state").then((s) => {
+      if (!disposed) setState(s);
+    });
+    return () => {
+      disposed = true;
+      void subscription.then((f) => f());
+    };
+  }, []);
+  return <IndicatorView state={state} />;
+}
