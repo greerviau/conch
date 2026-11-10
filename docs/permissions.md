@@ -27,6 +27,6 @@ Conch disables them in detected Wayland sessions and retains the in-app controls
 The current validation environment is an Apple M1 Mac with 8 GiB RAM on macOS 26.6.2.
 Windows builds, Linux builds, X11, Wayland, target-app paste behavior, and microphone voice quality require platform validation.
 A native macOS experiment confirms that showing the recording indicator preserves the foreground application and ignores pointer events.
-The CI workflow builds, lints, and tests on macOS, Windows, and Ubuntu for every push.
+The CI workflow builds, lints, and tests on macOS, Windows, and Ubuntu. It runs only when started by hand from the Actions tab.
 A passing run on all three is not recorded here; see the Actions tab for current results.
 See [validation](validation/README.md) for evidence and remaining acceptance work.
