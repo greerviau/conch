@@ -29,3 +29,8 @@ On macOS, install local builds with `npm run bundle:local -- --install` so the A
 - [Validation evidence](docs/validation/README.md) and [latency measurements](docs/validation/latency.md)
 - [Spec](docs/plans/2026-11-09-conch.md) and [glossary](docs/UBIQUITOUS-LANGUAGE.md)
 - [AGENTS.md](AGENTS.md): module layout, conventions, and pitfalls for coding agents
+
+## License
+
+Conch is released under the [MIT license](LICENSE).
+The bundled inference workers and the S1-mini model keep their own licenses, which ship with the app.

@@ -45,3 +45,7 @@ Tests written before the update logic reproduce these failures.
 - `automatic_update_checks_are_on_by_default_and_for_settings_saved_before_they_existed` fails to compile because `Settings` has no `check_updates` field.
 - The harness tests for `createUpdaterArtifacts`, the updater public key, `scripts/check-version.mjs`, and `scripts/verify-signing.sh` fail because the configuration keys and scripts do not exist.
 - The five interface tests in `src/App.test.tsx` for the update switch, version line, check button, install button, and failure message cannot find their controls.
+
+# License
+
+- The harness test for the MIT license fails because `LICENSE` does not exist and neither manifest has a `license` field.

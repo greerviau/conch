@@ -2,6 +2,7 @@
   "name": "conch",
   "version": "0.2.2",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
