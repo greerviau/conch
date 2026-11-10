@@ -7,6 +7,7 @@ Models come from the pinned revision in the Rust manifest.
 Audio is synthetic: 8 technical dictation sentences read by four macOS `say` voices (Samantha, Daniel, Karen, Alex), 32 clips of 4.8-6.3 s (mean 5.4 s) and 572 words.
 Word error rate is the word-level edit distance to the reference sentence after lowercasing and removing punctuation.
 Each figure is one run against a warm worker.
+Throwaway scripts that call `whisper-server` directly produced them. Those scripts are not in the repository, so these numbers cannot be rerun from it.
 Real human speech, real microphones, and real rooms are not measured here, so these figures rank models and show failure modes but do not predict a user's error rate.
 
 ## Accuracy and time by model
@@ -23,6 +24,10 @@ Time is the mean request time for a whole clip, excluding worker startup.
 A 120 s recording of repeated synthetic speech took about 28 ms per second of audio on tiny.en (see `latency.md`), and these figures suggest small.en takes about three times as long.
 The time after you stop is the time for the last chunk, which is at most 25 s of audio.
 That estimate for small.en is unmeasured in the app.
+
+The fallback that recognizes a whole recording in one request has a 90 s timeout.
+A 180 s recording of the same clips, with voice detection and a hint, took 6.1 s on tiny.en with Metal and 4.0 s with `--no-gpu`, and 10.1 s on small.en with Metal and 13.7 s with `--no-gpu`.
+On that input tiny.en returned 597 words and small.en 535 words; the clips contain about 545 words in 180 s, and the extra tiny.en words were not examined.
 
 ## Silence and noise after speech
 
@@ -51,7 +56,7 @@ FFmpeg `afftdn` and `arnndn` (RNNoise `sh.rnnn`) were applied to the clips mixed
 Neither helped consistently. On small.en at pink noise 0 dB, word error rate was 15.2% unprocessed, 15.6% with `afftdn`, and 21.5% with `arnndn`.
 On tiny.en at pink noise 0 dB, `afftdn` reduced it from 50.3% to 33.4% while `arnndn` raised it to 60.3%.
 Both raised it at babble 0 dB for small.en.
-Small.en without denoising scored below tiny.en with the best denoiser in every noisy condition.
+Small.en without denoising scored below tiny.en with its best denoiser in all four noisy conditions: 4.2%, 3.3%, 15.2%, and 57.2% for small.en against 11.0%, 10.3%, 33.4%, and 82.5% for tiny.en (pink 10 dB, babble 10 dB, pink 0 dB, babble 0 dB).
 The clean small.en rate with the hint and voice detection was 1.7%, against 3.1% without them in the table above; the two effects were not separated.
 
 ## Limits

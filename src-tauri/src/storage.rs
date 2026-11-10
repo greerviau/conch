@@ -51,8 +51,14 @@ pub fn load(dir: &Path) -> Result<Settings, String> {
         .query_row("SELECT value FROM settings WHERE id=1", [], |r| r.get(0))
         .optional()
         .map_err(|_| "Cannot read settings")?;
-    json.map(|j| serde_json::from_str(&j).map_err(|_| "Settings are invalid".into()))
-        .unwrap_or_else(|| Ok(Settings::default()))
+    let mut settings: Settings = json
+        .map(|j| serde_json::from_str(&j).map_err(|_| "Settings are invalid".to_string()))
+        .unwrap_or_else(|| Ok(Settings::default()))?;
+    // A model id this build does not offer would make every settings save fail.
+    if crate::inference::recognizer(&settings.recognizer).is_none() {
+        settings.recognizer = Settings::default().recognizer;
+    }
+    Ok(settings)
 }
 pub fn save(dir: &Path, settings: &Settings) -> Result<(), String> {
     let mut db = open(dir)?;
@@ -300,6 +306,20 @@ mod tests {
         assert_eq!(older.recognizer, "tiny.en");
         let chosen: Settings = serde_json::from_str(r#"{"recognizer":"small.en"}"#).unwrap();
         assert_eq!(chosen.recognizer, "small.en");
+    }
+
+    #[test]
+    fn an_unknown_stored_recognizer_loads_as_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings {
+            recognizer: "huge".into(),
+            ..Default::default()
+        };
+        save(dir.path(), &settings).unwrap();
+        assert_eq!(load(dir.path()).unwrap().recognizer, "tiny.en");
+        settings.recognizer = "small.en".into();
+        save(dir.path(), &settings).unwrap();
+        assert_eq!(load(dir.path()).unwrap().recognizer, "small.en");
     }
 
     fn term(text: &str, file: &str) -> Vocabulary {

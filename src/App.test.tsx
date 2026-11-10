@@ -64,7 +64,7 @@ beforeEach(() => {
     async (name: string, args?: Record<string, unknown>) => {
       if (name === "view") return structuredClone(view);
       if (name === "download") {
-        // Downloading a recognizer also installs the voice activity model.
+        // Downloading a recognizer also installs the voice detection model.
         const id = args?.id as string;
         install(id, ...(id === "s1-mini" ? [] : ["silero-vad"]));
         return;
@@ -109,7 +109,7 @@ it("starts model setup directly from the dictation page and enables recording on
     ),
   ).toBe(false);
 });
-it("keeps recording off until the voice activity model is installed with the recognizer", async () => {
+it("keeps recording off until the voice detection model is installed with the recognizer", async () => {
   view.microphone = "granted";
   install("tiny.en");
   render(<App />);
@@ -123,6 +123,18 @@ it("keeps recording off until the voice activity model is installed with the rec
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(true);
+});
+it("tells a copy that has the recognizer but not voice detection that one small file is missing", async () => {
+  install("tiny.en");
+  render(<App />);
+  expect(await screen.findByText(/0\.9 MB voice detection model/)).toBeTruthy();
+  expect(screen.queryByText(/Download the 78 MB speech model/)).toBeNull();
+  fireEvent.click(
+    screen.getByRole("button", { name: /download recognition model/i }),
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("download", { id: "tiny.en" }),
+  );
 });
 it("sizes the setup download for the selected recognition model", async () => {
   view.settings.recognizer = "small.en";

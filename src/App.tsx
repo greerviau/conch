@@ -147,7 +147,7 @@ export default function App() {
     );
   const installed = (id: string) =>
     view.models.some(([model, ready]) => model === id && ready);
-  // A recognizer runs with the voice activity model, so both must be on disk.
+  // A recognizer runs with the voice detection model, so both must be on disk.
   const recognizerReady = (id: string) => installed(id) && installed(VAD.id);
   const modelInstalled = recognizerReady(view.settings.recognizer);
   const recognizerInfo = (id: string) =>
@@ -252,6 +252,7 @@ export default function App() {
                 mac={view.platform === "macos"}
                 installed={modelInstalled}
                 modelSize={`${Math.round(selectedRecognizer.mb)} MB`}
+                voiceOnly={installed(view.settings.recognizer)}
                 onDownload={() => void downloadModel(view.settings.recognizer)}
                 downloading={modelBusy || view.downloading}
                 progress={progress}

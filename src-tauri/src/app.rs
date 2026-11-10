@@ -342,7 +342,7 @@ pub fn cancel(app: AppHandle) -> Result<(), String> {
     inference::stop(&worker);
     Ok(())
 }
-/// Path of the selected recognizer once it and the voice activity model are
+/// Path of the selected recognizer once it and the voice detection model are
 /// on disk.
 fn recognition_model(data: &std::path::Path, settings: &Settings) -> Result<PathBuf, String> {
     let model = inference::recognizer(&settings.recognizer)
@@ -541,10 +541,14 @@ pub async fn download(app: AppHandle, id: String) -> Result<(), String> {
         let app = app.clone();
         move || {
             let state = app.state::<AppState>();
+            // One progress bar across every file this download needs.
+            let total: u64 = wanted.iter().map(|m| m.size).sum();
+            let mut finished = 0;
             for model in wanted {
-                inference::download(&state.data, model, |current, total| {
-                    let _ = app.emit("model-progress", (current, total));
+                inference::download(&state.data, model, |current, _| {
+                    let _ = app.emit("model-progress", (finished + current, total));
                 })?;
+                finished += model.size;
             }
             Ok(())
         }
@@ -847,7 +851,7 @@ mod tests {
         assert!(!choices_valid(&settings));
     }
     #[test]
-    fn recording_needs_the_selected_recognizer_and_the_voice_activity_model() {
+    fn recording_needs_the_selected_recognizer_and_the_voice_detection_model() {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings {
             recognizer: "base.en".into(),

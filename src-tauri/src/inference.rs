@@ -490,7 +490,7 @@ pub const RECOGNIZERS: [Model; 3] = [
         size: 487614201,
     },
 ];
-/// Silero voice activity detection model. The recognizer runs only on the
+/// Silero voice detection model. The recognizer runs only on the
 /// parts of a chunk that contain speech, so silence and room noise after the
 /// user stops talking cannot turn into words such as "Thank you."
 pub const VAD: Model = Model {
@@ -522,7 +522,7 @@ pub fn missing(data: &Path, id: &str) -> Result<Vec<Model>, String> {
     wanted.retain(|m| !data.join(m.name).is_file());
     Ok(wanted)
 }
-/// The voice activity model sits next to the recognizer in the data directory.
+/// The voice detection model sits next to the recognizer in the data directory.
 fn vad_path(model: &Path) -> PathBuf {
     model.with_file_name(VAD.name)
 }
@@ -661,7 +661,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     }
     #[cfg(unix)]
     #[test]
-    fn recognizer_starts_with_voice_activity_detection_so_silence_yields_no_text() {
+    fn recognizer_starts_with_voice_detection_so_silence_yields_no_text() {
         let dir = tempfile::tempdir().unwrap();
         fake::install(dir.path());
         run(dir.path(), &new_worker());
@@ -673,7 +673,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     }
     #[cfg(unix)]
     #[test]
-    fn recognition_without_the_voice_activity_model_asks_for_the_download() {
+    fn recognition_without_the_voice_detection_model_asks_for_the_download() {
         let dir = tempfile::tempdir().unwrap();
         fake::install(dir.path());
         std::fs::remove_file(dir.path().join(VAD.name)).unwrap();
@@ -712,7 +712,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         assert_eq!(VAD.size, 885098);
     }
     #[test]
-    fn downloading_a_recognizer_also_fetches_the_missing_voice_activity_model() {
+    fn downloading_a_recognizer_also_fetches_the_missing_voice_detection_model() {
         let dir = tempfile::tempdir().unwrap();
         let plan = |id: &str| -> Vec<&str> {
             missing(dir.path(), id)

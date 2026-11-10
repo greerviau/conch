@@ -56,7 +56,15 @@ Notarization and Windows signing are not set up, so first installs from a browse
 
 Synthetic inference evaluation uses macOS `say` and FFmpeg to create disposable test audio.
 It requires the models under `.runtime` and writes the synthetic results to `docs/validation/synthetic-inference.json`.
-The acceptance test also needs `ggml-silero-v5.1.2.bin` in `.runtime`, next to the recognizer, because `whisper-server` starts with `--vad`.
+
+The recognizer runs with voice detection, so `ggml-silero-v5.1.2.bin` must sit next to the recognizer model.
+`scripts/evaluate.py` does not use it. The acceptance test and `src-tauri/examples/latency.rs` need it, and recognition fails with "Download the required model in Settings first" without it.
+Download it from the pinned revision and check the hash:
+
+```sh
+curl -L -o .runtime/ggml-silero-v5.1.2.bin https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v5.1.2.bin
+shasum -a 256 .runtime/ggml-silero-v5.1.2.bin   # 29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf
+```
 
 ```sh
 python3 scripts/evaluate.py
