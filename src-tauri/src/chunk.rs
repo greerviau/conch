@@ -7,7 +7,10 @@ const FRAME: usize = RATE / 50;
 pub const MIN_CHUNK: usize = 8 * RATE;
 /// Continuous speech is cut at its quietest point once this much is pending.
 pub const MAX_CHUNK: usize = 25 * RATE;
-const SILENCE_FRAMES: usize = 20;
+/// A pause closes a chunk only after one second of silence. The recognizer ends
+/// every chunk with terminal punctuation, so a cut inside a sentence adds a
+/// false sentence end ("do? today?"). Shorter pauses occur inside sentences.
+const SILENCE_FRAMES: usize = 50;
 const FALLBACK_WINDOW: usize = 6 * RATE;
 const DIP_FRAMES: usize = 5;
 
@@ -128,6 +131,11 @@ mod tests {
     #[test]
     fn waits_for_a_long_enough_pause() {
         let samples = join(&[speech(9.0), quiet(0.2, 0.0), speech(2.0)]);
+        assert_eq!(Chunker::default().poll(&samples), None);
+    }
+    #[test]
+    fn a_pause_inside_a_sentence_does_not_close_a_chunk() {
+        let samples = join(&[speech(9.0), quiet(0.6, 0.0), speech(2.0)]);
         assert_eq!(Chunker::default().poll(&samples), None);
     }
     #[test]

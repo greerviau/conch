@@ -18,7 +18,7 @@
 - Recording indicator: the small, nonactivating overlay above other applications. It shows level bars and the duration while recording, a drawing spiral while processing, and text only when the result was copied without a paste or something failed.
 - Indexed term: one entry of the vocabulary index. A file term is a relative path or file name; every other term is a declared symbol. The Repositories page lists a repository's indexed terms in pages of 100.
 - Shortcut capture: the Settings control that records a pressed key combination while Conch pauses its registered recording shortcut.
-- Chunk: a span of a recording that ends at a pause and is recognized while recording continues. The audio after the last chunk is the tail.
+- Chunk: a span of a recording that ends at a pause and is recognized while recording continues. The recognizer ends every chunk with terminal punctuation, so a cut inside a sentence adds a false sentence end. The audio after the last chunk is the tail.
 - Worker: a bundled inference process (recognizer or managed cleanup) that Conch starts when recording starts, reuses across recordings, and stops after an idle period or on exit.
 - Menu bar icon: the system tray icon that shows recording and processing state and offers Show Conch and Quit Conch. Closing the main window hides it and leaves Conch running behind this icon.
 - Stable local signing: signing a macOS build with the persistent self-signed "Conch Local Signing" identity so its Accessibility grant survives rebuilds.

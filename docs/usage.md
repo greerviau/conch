@@ -34,7 +34,7 @@ The in-app recording buttons work independently of shortcut availability.
 
 Recordings stop after 180 seconds.
 Conch starts the recognizer when recording starts and recognizes each finished chunk while you keep speaking.
-A chunk ends at the first pause of 400 ms after 8 seconds of audio, or at the quietest point once 25 seconds are pending.
+A chunk ends at the first pause of one second after 8 seconds of audio, or at the quietest point once 25 seconds are pending.
 Only the audio after the last chunk remains to be recognized when you stop.
 If a chunk fails, Conch recognizes the whole recording once.
 Workers stay running between recordings and stop after 10 minutes (recognizer) or 5 minutes (managed cleanup) without use.
