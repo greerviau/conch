@@ -75,7 +75,7 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
         indexes,
         models: inference::MODELS
             .iter()
-            .map(|m| (m.name.into(), state.data.join(m.name).is_file()))
+            .map(|m| (m.id.into(), state.data.join(m.name).is_file()))
             .collect(),
         accessibility,
         installation_path: platform::installation_path(),
@@ -90,6 +90,16 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
         update: app.state::<crate::update::Tracker>().status(),
     })
 }
+/// Whether every enumerated setting holds a value Conch offers.
+fn choices_valid(settings: &Settings) -> bool {
+    matches!(settings.activation.as_str(), "push" | "toggle")
+        && matches!(settings.cleanup.mode.as_str(), "off" | "basic" | "enhanced")
+        && matches!(
+            settings.cleanup.provider.as_str(),
+            "managed" | "local" | "remote"
+        )
+        && inference::recognizer(&settings.recognizer).is_some()
+}
 #[tauri::command]
 pub fn save_settings(
     app: AppHandle,
@@ -103,13 +113,7 @@ pub fn save_settings(
     if inner.capturing_shortcut {
         return Err("Finish choosing a shortcut before saving".into());
     }
-    if !matches!(settings.activation.as_str(), "push" | "toggle")
-        || !matches!(settings.cleanup.mode.as_str(), "off" | "basic" | "enhanced")
-        || !matches!(
-            settings.cleanup.provider.as_str(),
-            "managed" | "local" | "remote"
-        )
-    {
+    if !choices_valid(&settings) {
         return Err("Invalid settings".into());
     }
     if settings.cleanup.provider != "managed"
@@ -156,7 +160,13 @@ pub fn save_settings(
     } else {
         storage::save(&state.data, &settings)?;
     }
+    let changed = inner.settings.recognizer != settings.recognizer;
     inner.settings = settings;
+    drop(inner);
+    if changed {
+        // The old recognizer would idle for ten minutes holding its model in memory.
+        inference::reap_idle_within(&state.workers, Duration::ZERO, inference::LLAMA_IDLE);
+    }
     Ok(())
 }
 /// One page of a repository's indexed terms for the Repositories page.
@@ -210,9 +220,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         return Err("Enable Conch microphone access in Setup before recording".into());
     }
     let snapshot = storage::snapshot(&state.data, &inner.settings)?;
-    if !state.data.join(inference::MODELS[0].name).is_file() {
-        return Err("Download the recognition model before recording".into());
-    }
+    let model = recognition_model(&state.data, &inner.settings)?;
     let generation = inner.session.start()?;
     inner.stop = Some(send);
     inner.error.clear();
@@ -226,7 +234,6 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     let worker = inner.worker.clone();
     drop(inner);
     std::thread::spawn(platform::prepare);
-    let model = state.data.join(inference::MODELS[0].name);
     let cleanup_worker = worker.clone();
     let transcriber = Transcriber::start(
         {
@@ -243,7 +250,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     );
     if snapshot.cleanup.mode == "enhanced" && snapshot.cleanup.provider == "managed" {
         let workers = state.workers.clone();
-        let model = state.data.join(inference::MODELS[1].name);
+        let model = state.data.join(inference::CLEANUP.name);
         std::thread::spawn(move || {
             let _ = inference::preload(&workers, &model, Kind::Llama, &cleanup_worker, false);
         });
@@ -335,6 +342,16 @@ pub fn cancel(app: AppHandle) -> Result<(), String> {
     inference::stop(&worker);
     Ok(())
 }
+/// Path of the selected recognizer once it and the voice activity model are
+/// on disk.
+fn recognition_model(data: &std::path::Path, settings: &Settings) -> Result<PathBuf, String> {
+    let model = inference::recognizer(&settings.recognizer)
+        .ok_or("Choose a recognition model in Settings")?;
+    if !inference::missing(data, model.id)?.is_empty() {
+        return Err("Download the recognition model before recording".into());
+    }
+    Ok(data.join(model.name))
+}
 fn process(
     app: &AppHandle,
     generation: u64,
@@ -343,25 +360,30 @@ fn process(
     chunked: Option<Transcriber>,
 ) {
     let state = app.state::<AppState>();
-    let worker = {
+    let (worker, model) = {
         let inner = state.inner.lock().unwrap();
         if inner.session.generation != generation {
             return;
         }
-        inner.worker.clone()
+        (
+            inner.worker.clone(),
+            recognition_model(&state.data, &inner.settings),
+        )
     };
     // Chunks were recognized during the recording. If that failed, recognize
     // the whole recording once, as Retry does.
     let recognition = match chunked.map(Transcriber::finish) {
         Some(Ok(text)) => Ok(text),
-        _ => inference::transcribe(
-            &state.workers,
-            &state.data.join(inference::MODELS[0].name),
-            wav,
-            &core::recognition_hint(&snapshot),
-            &worker,
-            false,
-        ),
+        _ => model.and_then(|model| {
+            inference::transcribe(
+                &state.workers,
+                &model,
+                wav,
+                &core::recognition_hint(&snapshot),
+                &worker,
+                false,
+            )
+        }),
     };
     let raw = match recognition {
         Ok(raw) if !raw.trim().is_empty() => raw,
@@ -505,8 +527,8 @@ pub fn copy(state: State<'_, AppState>, raw: bool) -> Result<(), String> {
     platform::NativeDesktop::default().copy(if raw { &result.raw } else { &result.text })
 }
 #[tauri::command]
-pub async fn download(app: AppHandle, model: usize) -> Result<(), String> {
-    let descriptor = *inference::MODELS.get(model).ok_or("Unknown model")?;
+pub async fn download(app: AppHandle, id: String) -> Result<(), String> {
+    let wanted = inference::missing(&app.state::<AppState>().data, &id)?;
     {
         let state = app.state::<AppState>();
         let mut inner = state.inner.lock().unwrap();
@@ -519,10 +541,12 @@ pub async fn download(app: AppHandle, model: usize) -> Result<(), String> {
         let app = app.clone();
         move || {
             let state = app.state::<AppState>();
-            inference::download(&state.data, descriptor, |current, total| {
-                let _ = app.emit("model-progress", (current, total));
-            })
-            .map(|_| ())
+            for model in wanted {
+                inference::download(&state.data, model, |current, total| {
+                    let _ = app.emit("model-progress", (current, total));
+                })?;
+            }
+            Ok(())
         }
     })
     .await
@@ -806,4 +830,39 @@ pub fn set_hotkey(
     inner.paused_shortcut = None;
     inner.session.pressed = false;
     Ok(inner.settings.hotkey.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn settings_must_name_an_offered_recognition_model() {
+        let mut settings = Settings::default();
+        assert!(choices_valid(&settings));
+        for id in ["base.en", "small.en"] {
+            settings.recognizer = id.into();
+            assert!(choices_valid(&settings));
+        }
+        settings.recognizer = "large-v3".into();
+        assert!(!choices_valid(&settings));
+    }
+    #[test]
+    fn recording_needs_the_selected_recognizer_and_the_voice_activity_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings {
+            recognizer: "base.en".into(),
+            ..Default::default()
+        };
+        let error = recognition_model(dir.path(), &settings).unwrap_err();
+        assert!(error.starts_with("Download the recognition model"));
+        std::fs::write(dir.path().join(inference::RECOGNIZERS[1].name), b"x").unwrap();
+        assert!(recognition_model(dir.path(), &settings).is_err());
+        std::fs::write(dir.path().join(inference::VAD.name), b"x").unwrap();
+        assert_eq!(
+            recognition_model(dir.path(), &settings).unwrap(),
+            dir.path().join("ggml-base.en.bin")
+        );
+        settings.recognizer = "small.en".into();
+        assert!(recognition_model(dir.path(), &settings).is_err());
+    }
 }

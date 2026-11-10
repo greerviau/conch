@@ -19,6 +19,8 @@ pub struct Settings {
     pub cleanup: Cleanup,
     pub hotkey: String,
     pub activation: String,
+    /// Id of the recognition model, from `inference::RECOGNIZERS`.
+    pub recognizer: String,
     pub show_overlay: bool,
     pub check_updates: bool,
 }
@@ -30,6 +32,7 @@ impl Default for Settings {
             cleanup: Cleanup::default(),
             hotkey: "CommandOrControl+Shift+Space".into(),
             activation: "push".into(),
+            recognizer: "tiny.en".into(),
             show_overlay: true,
             check_updates: true,
         }
@@ -288,6 +291,15 @@ mod tests {
         assert!(loaded.check_updates);
         let off: Settings = serde_json::from_str(r#"{"check_updates":false}"#).unwrap();
         assert!(!off.check_updates);
+    }
+
+    #[test]
+    fn the_recognizer_defaults_to_tiny_en_and_survives_settings_saved_before_the_choice() {
+        assert_eq!(Settings::default().recognizer, "tiny.en");
+        let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
+        assert_eq!(older.recognizer, "tiny.en");
+        let chosen: Settings = serde_json::from_str(r#"{"recognizer":"small.en"}"#).unwrap();
+        assert_eq!(chosen.recognizer, "small.en");
     }
 
     fn term(text: &str, file: &str) -> Vocabulary {

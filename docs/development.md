@@ -56,6 +56,7 @@ Notarization and Windows signing are not set up, so first installs from a browse
 
 Synthetic inference evaluation uses macOS `say` and FFmpeg to create disposable test audio.
 It requires the models under `.runtime` and writes the synthetic results to `docs/validation/synthetic-inference.json`.
+The acceptance test also needs `ggml-silero-v5.1.2.bin` in `.runtime`, next to the recognizer, because `whisper-server` starts with `--vad`.
 
 ```sh
 python3 scripts/evaluate.py

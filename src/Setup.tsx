@@ -13,6 +13,7 @@ export function shortcutLabel(value: string, mac = false) {
 }
 export function Setup({
   installed,
+  modelSize = "78 MB",
   onDownload,
   downloading = false,
   progress = "",
@@ -31,6 +32,7 @@ export function Setup({
   busy = false,
 }: {
   installed: boolean;
+  modelSize?: string;
   onDownload: () => void;
   downloading?: boolean;
   progress?: string;
@@ -64,7 +66,7 @@ export function Setup({
           <p>
             {installed
               ? "Installed. Speech stays on this device."
-              : "Download the 78 MB speech model. No account or payment required."}
+              : `Download the ${modelSize} speech model. No account or payment required.`}
           </p>
         </div>
         {!installed && (
