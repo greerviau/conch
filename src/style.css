@@ -684,6 +684,12 @@ pre {
 .step.model .step-mark {
   margin-top: 1px;
 }
+.step.model.settled {
+  align-items: center;
+}
+.step.model.settled .step-mark {
+  margin-top: 0;
+}
 .picker {
   display: flex;
   flex-wrap: wrap;

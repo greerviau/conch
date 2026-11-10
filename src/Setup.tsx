@@ -90,7 +90,7 @@ export function Setup({
           ? "Your dictation setup"
           : "One download, then you can dictate"}
       </h2>
-      <div className="step model">
+      <div className={`step model${installed && !changing ? " settled" : ""}`}>
         <Step done={installed} number={1} />
         <div>
           <h3>English recognition</h3>
