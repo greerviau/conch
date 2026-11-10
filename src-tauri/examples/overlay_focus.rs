@@ -34,7 +34,12 @@ fn main() {
         )
             .into(),
     };
-    let bounds = conch_lib::indicator::placement(screen, work, scale);
+    let bounds = conch_lib::indicator::placement(
+        screen,
+        work,
+        scale,
+        conch_lib::indicator::width_for("recording"),
+    );
     assert_eq!(
         unsafe {
             conch_overlay_bounds_test(

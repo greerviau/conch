@@ -34,6 +34,14 @@ void conch_overlay_visibility(void *window, bool visible) {
     panel.ignoresMouseEvents = YES;
     panel.level = NSFloatingWindowLevel;
     panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary;
+    // The indicator is a pill: clear the window and round its content view.
+    panel.opaque = NO;
+    panel.backgroundColor = NSColor.clearColor;
+    panel.hasShadow = NO;
+    NSView *content = panel.contentView;
+    content.wantsLayer = YES;
+    content.layer.cornerRadius = NSHeight(content.bounds) / 2.0;
+    content.layer.masksToBounds = YES;
     if (visible) [panel orderFrontRegardless]; else [panel orderOut:nil];
 }
 

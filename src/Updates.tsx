@@ -1,4 +1,5 @@
-export type UpdateStatus = { state: string; detail?: string };
+import type { UpdateStatus } from "./types";
+import { Row } from "./ui";
 
 type Props = {
   version: string;
@@ -21,17 +22,14 @@ function message(update: UpdateStatus) {
     case "failed":
       return update.detail ?? "The update failed.";
     default:
-      return "";
+      return undefined;
   }
 }
 
 export function Updates({ version, update, busy, onCheck, onInstall }: Props) {
   const working = update.state === "checking" || update.state === "installing";
   return (
-    <article>
-      <h3>Updates</h3>
-      <p>Conch {version}</p>
-      {message(update) && <p>{message(update)}</p>}
+    <Row title={`Conch ${version}`} note={message(update)}>
       {update.state === "available" ? (
         <button disabled={busy} onClick={onInstall}>
           Install {update.detail}
@@ -41,6 +39,6 @@ export function Updates({ version, update, busy, onCheck, onInstall }: Props) {
           Check for updates
         </button>
       )}
-    </article>
+    </Row>
   );
 }
