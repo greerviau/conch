@@ -5,11 +5,18 @@ use std::{
 };
 pub const MAX_SECONDS: usize = 180;
 pub const RATE: u32 = 16_000;
+pub struct Captured {
+    pub wav: Vec<u8>,
+    pub samples: Vec<f32>,
+}
+/// Records until `stop` fires. `observe` sees the whole recording so far about
+/// every 100 ms while the audio callback waits, so it must return quickly.
 pub fn capture(
     stop: mpsc::Receiver<bool>,
     ready: impl FnOnce(),
     level: Arc<std::sync::atomic::AtomicU32>,
-) -> Result<Option<Vec<u8>>, String> {
+    mut observe: impl FnMut(&[f32]),
+) -> Result<Option<Captured>, String> {
     let device = cpal::default_host()
         .default_input_device()
         .ok_or("No microphone is available")?;
@@ -71,6 +78,7 @@ pub fn capture(
         if start.elapsed().as_secs() >= MAX_SECONDS as u64 {
             break true;
         }
+        observe(&buffer.lock().unwrap());
         match stop.recv_timeout(Duration::from_millis(100)) {
             Ok(keep) => break keep,
             Err(mpsc::RecvTimeoutError::Disconnected) => break false,
@@ -81,11 +89,14 @@ pub fn capture(
     if !keep {
         return Ok(None);
     }
-    let buffer = buffer.lock().unwrap();
+    let mut buffer = buffer.lock().unwrap();
     if buffer.len() < RATE as usize / 5 {
         return Err("Recording is too short; record again".into());
     }
-    wav(&buffer).map(Some)
+    Ok(Some(Captured {
+        wav: wav(&buffer)?,
+        samples: std::mem::take(&mut *buffer),
+    }))
 }
 fn build<T>(
     device: &cpal::Device,

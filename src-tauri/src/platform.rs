@@ -93,17 +93,20 @@ mod macos {
             unsafe { CFEqual(self.0, other.0) != 0 }
         }
     }
-    fn attr(element: CFTypeRef, key: &str) -> Option<Focus> {
+    fn attr_result(element: CFTypeRef, key: &str) -> Result<Focus, i32> {
         let mut value = std::ptr::null();
         let key = CFString::new(key);
         let code = unsafe {
             AXUIElementCopyAttributeValue(element, key.as_concrete_TypeRef().cast(), &mut value)
         };
         if code == 0 && !value.is_null() {
-            Some(Focus(value))
+            Ok(Focus(value))
         } else {
-            None
+            Err(if code == 0 { -25212 } else { code })
         }
+    }
+    fn attr(element: CFTypeRef, key: &str) -> Option<Focus> {
+        attr_result(element, key).ok()
     }
     fn string_attr(element: CFTypeRef, key: &str) -> Option<String> {
         let value = attr(element, key)?;
@@ -116,42 +119,68 @@ mod macos {
     pub fn permission() -> bool {
         unsafe { AXIsProcessTrusted() }
     }
+    const ATTRIBUTE_UNSUPPORTED: i32 = -25205;
+    /// How long a freshly woken Electron app gets to build its tree.
+    const WAKE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+    static WOKEN: std::sync::Mutex<Vec<(i32, std::time::Instant)>> =
+        std::sync::Mutex::new(Vec::new());
+    unsafe extern "C" {
+        fn conch_frontmost_pid() -> i32;
+        fn conch_frontmost_name(buffer: *mut u8, size: i32);
+    }
+    /// The frontmost application, from the window server rather than the
+    /// accessibility tree. The system-wide accessibility element cannot name the
+    /// focused application of an Electron app that has not built its tree.
+    fn frontmost() -> Option<i32> {
+        let pid = unsafe { conch_frontmost_pid() };
+        (pid > 0 && pid != std::process::id() as i32).then_some(pid)
+    }
     /// Electron and Chromium build no accessibility tree for a process until an
     /// assistive client sets AXManualAccessibility on its application element.
-    /// Returns true when the attribute was set for the first time in this run.
-    fn wake_application(system: CFTypeRef) -> bool {
+    /// Returns when this process woke the application, if it has not already.
+    /// A failed request is retried on the next call.
+    fn wake_application(pid: i32) -> Option<std::time::Instant> {
         use core_foundation::boolean::CFBoolean;
-        static WOKEN: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
-        let Some(app) = attr(system, "AXFocusedApplication") else {
-            return false;
-        };
-        let mut pid = 0;
-        if unsafe { AXUIElementGetPid(app.0, &mut pid) } != 0 || pid == std::process::id() as i32 {
-            return false;
-        }
         let mut woken = WOKEN.lock().unwrap();
-        if woken.contains(&pid) {
-            return false;
+        if let Some((_, at)) = woken.iter().find(|(woken_pid, _)| *woken_pid == pid) {
+            return Some(*at);
         }
-        woken.push(pid);
         let element = Focus(unsafe { AXUIElementCreateApplication(pid) });
         let key = CFString::new("AXManualAccessibility");
-        unsafe {
+        let code = unsafe {
             AXUIElementSetAttributeValue(
                 element.0,
                 key.as_concrete_TypeRef().cast(),
                 CFBoolean::true_value().as_concrete_TypeRef().cast(),
-            ) == 0
+            )
+        };
+        if code != 0 && code != ATTRIBUTE_UNSUPPORTED {
+            return None;
         }
+        let now = std::time::Instant::now();
+        woken.push((pid, now));
+        Some(now)
+    }
+    /// "Code, pid 123" for the frontmost application, for failure messages.
+    fn focused_application() -> String {
+        let mut name = [0u8; 128];
+        unsafe { conch_frontmost_name(name.as_mut_ptr(), name.len() as i32) };
+        let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
+        let name = String::from_utf8_lossy(&name[..end]);
+        let pid = unsafe { conch_frontmost_pid() };
+        format!(
+            "{}, pid {pid}",
+            if name.is_empty() { "unnamed" } else { &name }
+        )
     }
     /// Called when recording starts so the target app has built its tree by the
     /// time the transcript is ready.
     pub fn prepare() {
-        if !permission() {
-            return;
+        if permission()
+            && let Some(pid) = frontmost()
+        {
+            wake_application(pid);
         }
-        let system = Focus(unsafe { AXUIElementCreateSystemWide() });
-        wake_application(system.0);
     }
     pub fn focused() -> Result<Focus, String> {
         if !permission() {
@@ -159,15 +188,32 @@ mod macos {
                 "Enable Conch in Privacy & Security / Accessibility to paste automatically".into(),
             );
         }
+        let pid = frontmost().ok_or("The focused app is Conch or cannot be identified")?;
+        let woke = wake_application(pid);
+        let application = Focus(unsafe { AXUIElementCreateApplication(pid) });
         let system = Focus(unsafe { AXUIElementCreateSystemWide() });
-        unsafe {
-            AXUIElementSetMessagingTimeout(system.0, 0.25);
+        for element in [&application, &system] {
+            unsafe {
+                AXUIElementSetMessagingTimeout(element.0, 0.5);
+            }
         }
-        if wake_application(system.0) {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        let element = attr(system.0, "AXFocusedUIElement")
-            .ok_or("The focused app does not expose its text input")?;
+        let deadline = std::time::Instant::now()
+            .max(woke.map_or(std::time::Instant::now(), |at| at + WAKE_GRACE))
+            + std::time::Duration::from_millis(250);
+        let element = loop {
+            match attr_result(application.0, "AXFocusedUIElement")
+                .or_else(|_| attr_result(system.0, "AXFocusedUIElement"))
+            {
+                Ok(element) => break element,
+                Err(code) if std::time::Instant::now() >= deadline => {
+                    return Err(format!(
+                        "The focused app ({}) does not expose its text input (accessibility error {code})",
+                        focused_application()
+                    ));
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            }
+        };
         unsafe {
             AXUIElementSetMessagingTimeout(element.0, 0.25);
         }
@@ -213,7 +259,8 @@ mod macos {
         };
         if !super::eligible_input(&input) {
             return Err(format!(
-                "The focused control is not an editable input (role {role}, subrole {}, value settable {}, selection settable {}, range settable {}, web editable {}); paste the copied text manually",
+                "The focused control in {} is not an editable input (role {role}, subrole {}, value settable {}, selection settable {}, range settable {}, web editable {}); paste the copied text manually",
+                focused_application(),
                 if subrole.is_empty() { "none" } else { &subrole },
                 input.value_settable,
                 input.selected_text_settable,

@@ -61,7 +61,7 @@ The local Docker CLI cannot connect because its daemon socket is missing.
 Both linked machines identify as Linux cloud hosts.
 They do not establish access to an interactive X11, Wayland, or Windows receiving application.
 The Windows native adapter has an isolated cross-target typecheck from the previous validation run.
-Cross-platform CI remains configured and unexecuted because this repository has no remote.
+Cross-platform CI was configured and unexecuted at the time of this record because the repository had no remote.
 
 ## Regression record
 

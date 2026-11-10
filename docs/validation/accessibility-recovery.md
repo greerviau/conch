@@ -11,7 +11,12 @@ The native trust check remains the authority for whether Conch can use Accessibi
 The app does not treat the enabled Settings switch as permission for a different executable.
 
 Apple documents that an ad-hoc designated requirement identifies a specific version of the code in [TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements/).
-These local builds use ad-hoc signing, so each changed executable can need a new grant.
+Builds made with plain `tauri build` use ad-hoc signing, so each changed executable can need a new grant.
+`npm run bundle:local` signs with a persistent self-signed identity instead.
+Its designated requirement is `identifier "app.conch.desktop" and certificate leaf = H"<identity hash>"`, which does not change between builds.
+The script compares the bundle's requirement with that value and fails on a mismatch.
+Signing two different binaries with the identity produced identical requirements.
+Whether the system Accessibility database accepts the grant across rebuilds was not tested here, because the grant needs the user's action in System Settings.
 A stable signing identity remains necessary to preserve code identity across release updates.
 Conch does not install a certificate or change system trust settings as part of recovery.
 

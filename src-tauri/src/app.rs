@@ -1,9 +1,11 @@
 use crate::{
     audio,
+    chunk::Chunker,
     core::{self, ResultText, Snapshot},
     delivery::{self, Desktop},
     index,
-    inference::{self, Worker},
+    inference::{self, Kind, Worker},
+    pipeline::Transcriber,
     platform,
     session::{Phase, Session},
     storage::{self, Settings},
@@ -45,7 +47,7 @@ pub struct View {
     phase: Phase,
     result: Option<ResultText>,
     error: String,
-    indexes: Vec<(String, index::Index, i64)>,
+    indexes: Vec<(String, storage::IndexStatus, i64)>,
     models: Vec<(String, bool)>,
     accessibility: bool,
     installation_path: Option<String>,
@@ -57,11 +59,12 @@ pub struct View {
 }
 #[tauri::command]
 pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> {
+    // The interface polls this command. Read the database and ask the system
+    // for permissions before taking the lock that recording and delivery need.
+    let indexes = storage::index_status(&state.data)?;
+    let accessibility = platform::permission();
+    let microphone = platform::microphone_status().into();
     let inner = state.inner.lock().unwrap();
-    let mut indexes = storage::indexes(&state.data)?;
-    for (_, index, _) in &mut indexes {
-        index.entries.clear();
-    }
     Ok(View {
         settings: inner.settings.clone(),
         phase: inner.session.phase.clone(),
@@ -72,11 +75,11 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
             .iter()
             .map(|m| (m.name.into(), state.data.join(m.name).is_file()))
             .collect(),
-        accessibility: platform::permission(),
+        accessibility,
         installation_path: platform::installation_path(),
         platform: std::env::consts::OS.into(),
         downloading: inner.downloading,
-        microphone: platform::microphone_status().into(),
+        microphone,
         can_retry: inner.retry.is_some(),
         shortcuts_available: app
             .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
@@ -199,10 +202,33 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     inner.indicator_notice = None;
     let level = inner.level.clone();
     level.store(0, std::sync::atomic::Ordering::Relaxed);
+    let worker = inner.worker.clone();
     drop(inner);
     std::thread::spawn(platform::prepare);
+    let model = state.data.join(inference::MODELS[0].name);
+    let cleanup_worker = worker.clone();
+    let transcriber = Transcriber::start(
+        {
+            let (workers, model, worker) = (state.workers.clone(), model.clone(), worker.clone());
+            move || {
+                let _ = inference::preload(&workers, &model, Kind::Whisper, &worker, false);
+            }
+        },
+        {
+            let workers = state.workers.clone();
+            move |wav| inference::transcribe(&workers, &model, wav, &worker, false)
+        },
+    );
+    if snapshot.cleanup.mode == "enhanced" && snapshot.cleanup.provider == "managed" {
+        let workers = state.workers.clone();
+        let model = state.data.join(inference::MODELS[1].name);
+        std::thread::spawn(move || {
+            let _ = inference::preload(&workers, &model, Kind::Llama, &cleanup_worker, false);
+        });
+    }
     let handle = app.clone();
     std::thread::spawn(move || {
+        let mut chunker = Chunker::default();
         let captured = audio::capture(
             receive,
             || {
@@ -214,10 +240,18 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                 }
             },
             level,
+            |samples| {
+                if let Some(range) = chunker.poll(samples) {
+                    transcriber.push(samples[range].to_vec());
+                }
+            },
         );
         let state = handle.state::<AppState>();
         match captured {
-            Ok(Some(wav)) => {
+            Ok(Some(audio::Captured { wav, samples })) => {
+                if let Some(range) = chunker.tail(&samples) {
+                    transcriber.push(samples[range].to_vec());
+                }
                 {
                     let mut inner = state.inner.lock().unwrap();
                     if inner.session.generation != generation {
@@ -233,7 +267,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                     inner.stop = None;
                     inner.retry = Some((wav.clone(), snapshot.clone()));
                 }
-                process(&handle, generation, wav, snapshot);
+                process(&handle, generation, wav, snapshot, Some(transcriber));
             }
             Ok(None) => (),
             Err(error) => {
@@ -279,7 +313,13 @@ pub fn cancel(app: AppHandle) -> Result<(), String> {
     inference::stop(&worker);
     Ok(())
 }
-fn process(app: &AppHandle, generation: u64, wav: Vec<u8>, snapshot: Snapshot) {
+fn process(
+    app: &AppHandle,
+    generation: u64,
+    wav: Vec<u8>,
+    snapshot: Snapshot,
+    chunked: Option<Transcriber>,
+) {
     let state = app.state::<AppState>();
     let worker = {
         let inner = state.inner.lock().unwrap();
@@ -288,13 +328,18 @@ fn process(app: &AppHandle, generation: u64, wav: Vec<u8>, snapshot: Snapshot) {
         }
         inner.worker.clone()
     };
-    let recognition = inference::transcribe(
-        &state.workers,
-        &state.data.join(inference::MODELS[0].name),
-        wav,
-        &worker,
-        false,
-    );
+    // Chunks were recognized during the recording. If that failed, recognize
+    // the whole recording once, as Retry does.
+    let recognition = match chunked.map(Transcriber::finish) {
+        Some(Ok(text)) => Ok(text),
+        _ => inference::transcribe(
+            &state.workers,
+            &state.data.join(inference::MODELS[0].name),
+            wav,
+            &worker,
+            false,
+        ),
+    };
     let raw = match recognition {
         Ok(raw) if !raw.trim().is_empty() => raw,
         Ok(_) => {
@@ -325,13 +370,13 @@ fn process(app: &AppHandle, generation: u64, wav: Vec<u8>, snapshot: Snapshot) {
         }) {
             Ok(text) => {
                 result.text = text;
+                result.suggestions = core::suggestions(&result.text, &snapshot);
                 result.status =
                     "Enhanced cleanup completed; semantic equivalence is unverified".into();
             }
             Err(error) => result.status = error,
         }
     }
-    result.suggestions = core::suggestions(&result.text, &snapshot);
     let mut inner = state.inner.lock().unwrap();
     if !inner.session.complete(generation) {
         return;
@@ -374,7 +419,7 @@ pub fn retry(app: AppHandle) -> Result<(), String> {
     inner.error.clear();
     inner.worker = inference::new_worker();
     drop(inner);
-    std::thread::spawn(move || process(&app, generation, wav, snapshot));
+    std::thread::spawn(move || process(&app, generation, wav, snapshot, None));
     Ok(())
 }
 #[tauri::command]
@@ -469,6 +514,14 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         app.path().resource_dir()?.join("workers")
     };
+    inference::reap_orphans(&workers);
+    let reaped = workers.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(30));
+            inference::reap_idle(&reaped);
+        }
+    });
     app.manage(AppState {
         data,
         workers,
@@ -513,6 +566,9 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     {
         app.state::<AppState>().inner.lock().unwrap().error =
             "Global hotkey unavailable; use the recording controls".into();
+    }
+    if let Err(error) = crate::tray::setup(app.handle()) {
+        app.state::<AppState>().inner.lock().unwrap().error = error;
     }
     let handle = app.handle().clone();
     std::thread::spawn(move || {

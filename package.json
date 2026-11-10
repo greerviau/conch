@@ -9,11 +9,12 @@
     "check": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs && vitest run",
     "tauri": "tauri",
-    "bundle:local": "APPLE_SIGNING_IDENTITY=$(scripts/setup-local-signing.sh) tauri build --bundles app",
+    "bundle:local": "scripts/bundle-local.sh",
     "lint": "eslint src",
     "format:check": "prettier --check src",
     "test:ui": "vitest run",
-    "icons": "node scripts/prepare-brand.mjs && tauri icon assets/icon.svg --output src-tauri/icons && tauri icon assets/icon.svg --output .runtime/brand-icon --png 1024 && tauri icon assets/logo.svg --output .runtime/brand-logo --png 512 && node scripts/export-brand.mjs"
+    "icons": "node scripts/prepare-brand.mjs && tauri icon assets/icon.svg --output src-tauri/icons && tauri icon assets/icon.svg --output .runtime/brand-icon --png 1024 && tauri icon assets/logo.svg --output .runtime/brand-logo --png 512 && node scripts/export-brand.mjs",
+    "icons:tray": "tauri icon assets/tray.svg --output .runtime/tray-icon --png 44 && cp .runtime/tray-icon/44x44.png src-tauri/icons/tray.png"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

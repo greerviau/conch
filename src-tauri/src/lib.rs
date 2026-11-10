@@ -4,6 +4,7 @@ pub mod core;
 pub mod delivery;
 pub mod index;
 pub mod inference;
+pub mod pipeline;
 pub mod platform;
 pub mod session;
 pub mod storage;
@@ -38,19 +39,34 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if window.label() == "main"
-                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+                && let tauri::WindowEvent::CloseRequested { api, .. } = event
             {
-                window.app_handle().exit(0);
+                let app = window.app_handle();
+                if app.try_state::<tray::Active>().is_some() {
+                    api.prevent_close();
+                    tray::hide_main(app);
+                } else {
+                    app.exit(0);
+                }
             }
         })
         .build(tauri::generate_context!())
         .expect("Conch could not start")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = event
+            {
+                tray::show_main(app);
+            }
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 let _ = app::cancel(app.clone());
+                inference::shutdown(&app.state::<app::AppState>().workers);
             }
         });
 }
@@ -60,3 +76,7 @@ pub mod indicator;
 pub mod accessibility;
 
 pub mod shortcuts;
+
+pub mod chunk;
+
+pub mod tray;

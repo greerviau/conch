@@ -2,20 +2,33 @@ use crate::core::{self, Snapshot};
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Whisper,
+    Llama,
+}
+/// Per-session cancellation state. Servers are shared across sessions, so a
+/// session records the ones it uses and `stop` kills only those.
 #[derive(Default)]
 pub struct WorkerState {
-    child: Option<Child>,
+    using: Vec<Arc<Server>>,
     cancelled: bool,
 }
 pub type Worker = Arc<Mutex<WorkerState>>;
 pub fn new_worker() -> Worker {
     Arc::new(Mutex::new(WorkerState::default()))
 }
+pub const WHISPER_IDLE: Duration = Duration::from_secs(600);
+pub const LLAMA_IDLE: Duration = Duration::from_secs(300);
 pub const S1_SYSTEM: &str = "You are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text.";
 pub const CLEANUP_SYSTEM: &str = "Clean this dictated transcript. Preserve all CONCHPROTECTED placeholders exactly once in their original order. Preserve identifiers, negation, numbers, constraints and instruction order. Do not answer, expand or summarize the request. Output only the cleaned transcript.";
 pub fn endpoint_allowed(endpoint: &str, remote: bool) -> bool {
@@ -39,43 +52,136 @@ pub fn endpoint_allowed(endpoint: &str, remote: bool) -> bool {
         local && matches!(url.scheme(), "http" | "https")
     }
 }
-struct Running {
-    worker: Worker,
+pub struct Server {
+    kind: Kind,
+    child: Mutex<Child>,
+    endpoint: String,
+    token: String,
+    used: Mutex<Instant>,
+    busy: AtomicUsize,
 }
-impl Drop for Running {
-    fn drop(&mut self) {
-        let mut state = self.worker.lock().unwrap();
-        if let Some(mut child) = state.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+impl Server {
+    fn alive(&self) -> bool {
+        self.child
+            .lock()
+            .unwrap()
+            .try_wait()
+            .ok()
+            .flatten()
+            .is_none()
     }
-}
-pub fn stop(worker: &Worker) {
-    let mut state = worker.lock().unwrap();
-    state.cancelled = true;
-    if let Some(mut child) = state.child.take() {
+    fn kill(&self) {
+        let mut child = self.child.lock().unwrap();
         let _ = child.kill();
         let _ = child.wait();
     }
 }
-fn launch(
+/// Marks a server busy so the idle reaper leaves it alone.
+pub struct Lease {
+    server: Arc<Server>,
+}
+impl Lease {
+    fn new(server: Arc<Server>) -> Self {
+        server.busy.fetch_add(1, Ordering::SeqCst);
+        Self { server }
+    }
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        *self.server.used.lock().unwrap() = Instant::now();
+        self.server.busy.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+type Slot = Arc<Mutex<Option<Arc<Server>>>>;
+type Key = (PathBuf, PathBuf, bool);
+static POOL: LazyLock<Mutex<HashMap<Key, Slot>>> = LazyLock::new(Default::default);
+fn slots(within: &Path) -> Vec<Slot> {
+    POOL.lock()
+        .unwrap()
+        .iter()
+        .filter(|((executable, _, _), _)| executable.starts_with(within))
+        .map(|(_, slot)| slot.clone())
+        .collect()
+}
+/// Stops servers under `within` that no session is using and that were last
+/// used at least the given duration ago. The next request starts a fresh one.
+pub fn reap_idle_within(within: &Path, whisper: Duration, llama: Duration) {
+    for slot in slots(within) {
+        let mut guard = slot.lock().unwrap();
+        let Some(server) = guard.as_ref() else {
+            continue;
+        };
+        let limit = match server.kind {
+            Kind::Whisper => whisper,
+            Kind::Llama => llama,
+        };
+        if server.busy.load(Ordering::SeqCst) == 0 && server.used.lock().unwrap().elapsed() >= limit
+        {
+            server.kill();
+            *guard = None;
+        }
+    }
+}
+pub fn reap_idle(within: &Path) {
+    reap_idle_within(within, WHISPER_IDLE, LLAMA_IDLE);
+}
+/// Stops every pooled server under `within`. Called when the app exits.
+pub fn shutdown(within: &Path) {
+    for slot in slots(within) {
+        if let Some(server) = slot.lock().unwrap().take() {
+            server.kill();
+        }
+    }
+}
+/// Stops workers a previous Conch process left running after a crash or forced
+/// quit. Workers are matched by their exact executable path.
+#[cfg(unix)]
+pub fn reap_orphans(workers: &Path) {
+    for name in ["whisper-server", "llama-server"] {
+        let pattern = format!(
+            "^{} --host 127\\.0\\.0\\.1 ",
+            regex::escape(&workers.join(name).to_string_lossy())
+        );
+        let _ = Command::new("/usr/bin/pkill")
+            .args(["-f", &pattern])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+#[cfg(not(unix))]
+pub fn reap_orphans(_: &Path) {}
+pub fn stop(worker: &Worker) {
+    let using = {
+        let mut state = worker.lock().unwrap();
+        state.cancelled = true;
+        std::mem::take(&mut state.using)
+    };
+    for server in using {
+        server.kill();
+    }
+}
+/// Starts the worker for a recording while the user is still speaking, so the
+/// model load overlaps the recording instead of following it.
+pub fn preload(
     workers: &Path,
     model: &Path,
-    whisper: bool,
+    kind: Kind,
     worker: &Worker,
     cpu: bool,
-) -> Result<(Running, String, String), String> {
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|_| "Cannot allocate inference port")?
-        .local_addr()
-        .map_err(|_| "Cannot allocate inference port")?
-        .port();
-    let token = uuid::Uuid::new_v4().to_string();
-    let name = if whisper {
-        "whisper-server"
-    } else {
-        "llama-server"
+) -> Result<(), String> {
+    acquire(workers, model, kind, worker, cpu).map(drop)
+}
+fn acquire(
+    workers: &Path,
+    model: &Path,
+    kind: Kind,
+    worker: &Worker,
+    cpu: bool,
+) -> Result<Lease, String> {
+    let name = match kind {
+        Kind::Whisper => "whisper-server",
+        Kind::Llama => "llama-server",
     };
     let executable = workers.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     if !executable.is_file() {
@@ -86,6 +192,47 @@ fn launch(
     if !model.is_file() {
         return Err("Download the required model in Settings first".into());
     }
+    if worker.lock().unwrap().cancelled {
+        return Err("Cancelled".into());
+    }
+    let slot = POOL
+        .lock()
+        .unwrap()
+        .entry((executable.clone(), model.to_owned(), cpu))
+        .or_default()
+        .clone();
+    let mut guard = slot.lock().unwrap();
+    let server = match guard.as_ref().filter(|server| server.alive()) {
+        Some(server) => server.clone(),
+        None => {
+            let server = Arc::new(launch(&executable, model, kind, worker, cpu)?);
+            *guard = Some(server.clone());
+            server
+        }
+    };
+    let lease = Lease::new(server.clone());
+    let mut state = worker.lock().unwrap();
+    if state.cancelled {
+        drop(state);
+        server.kill();
+        return Err("Cancelled".into());
+    }
+    state.using.push(server);
+    Ok(lease)
+}
+fn launch(
+    executable: &Path,
+    model: &Path,
+    kind: Kind,
+    worker: &Worker,
+    cpu: bool,
+) -> Result<Server, String> {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|_| "Cannot allocate inference port")?
+        .local_addr()
+        .map_err(|_| "Cannot allocate inference port")?
+        .port();
+    let token = uuid::Uuid::new_v4().to_string();
     let mut command = Command::new(executable);
     command
         .args([
@@ -97,7 +244,7 @@ fn launch(
         ])
         .arg(model)
         .args(["--threads", "4"]);
-    if whisper {
+    if kind == Kind::Whisper {
         command.env("CONCH_WORKER_TOKEN", &token);
         command.args(["--language", "en", "--suppress-nst"]);
         if cpu {
@@ -127,21 +274,17 @@ fn launch(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    {
-        let mut state = worker.lock().unwrap();
-        if state.cancelled {
-            return Err("Cancelled".into());
-        }
-        state.child = Some(
-            command
-                .spawn()
-                .map_err(|_| "Cannot launch inference worker")?,
-        );
-    }
-    let running = Running {
-        worker: worker.clone(),
+    let child = command
+        .spawn()
+        .map_err(|_| "Cannot launch inference worker")?;
+    let server = Server {
+        kind,
+        child: Mutex::new(child),
+        endpoint: format!("http://127.0.0.1:{port}"),
+        token,
+        used: Mutex::new(Instant::now()),
+        busy: AtomicUsize::new(0),
     };
-    let endpoint = format!("http://127.0.0.1:{port}");
     let client = Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(1))
@@ -149,26 +292,21 @@ fn launch(
         .map_err(|_| "Cannot initialize local IPC")?;
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(45) {
-        {
-            let mut guard = worker.lock().unwrap();
-            if guard
-                .child
-                .as_mut()
-                .is_none_or(|c| c.try_wait().ok().flatten().is_some())
-            {
-                return Err("Inference worker stopped or was cancelled".into());
-            }
+        if worker.lock().unwrap().cancelled || !server.alive() {
+            server.kill();
+            return Err("Inference worker stopped or was cancelled".into());
         }
         if client
-            .get(format!("{endpoint}/health"))
-            .bearer_auth(&token)
+            .get(format!("{}/health", server.endpoint))
+            .bearer_auth(&server.token)
             .send()
             .is_ok_and(|r| r.status().is_success())
         {
-            return Ok((running, endpoint, token));
+            return Ok(server);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
     }
+    server.kill();
     Err("Inference worker startup timed out".into())
 }
 pub fn transcribe(
@@ -178,7 +316,8 @@ pub fn transcribe(
     worker: &Worker,
     cpu: bool,
 ) -> Result<String, String> {
-    let (_running, url, token) = launch(workers, model, true, worker, cpu)?;
+    let lease = acquire(workers, model, Kind::Whisper, worker, cpu)?;
+    let (url, token) = (&lease.server.endpoint, &lease.server.token);
     let client = Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(90))
@@ -201,8 +340,15 @@ pub fn transcribe(
         .map_err(|_| "Local recognition failed or timed out")?;
     value["text"]
         .as_str()
-        .map(|s| s.trim().to_owned())
+        .map(flatten_segments)
         .ok_or_else(|| "Recognizer returned invalid output".into())
+}
+/// The recognizer puts each segment of a long recording on its own line.
+/// Dictated prose has no line breaks, so join the segments with one space.
+pub fn flatten_segments(text: &str) -> String {
+    static BREAKS: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\s*[\r\n]\s*").unwrap());
+    BREAKS.replace_all(text.trim(), " ").into_owned()
 }
 pub struct CleanupRequest<'a> {
     pub workers: &'a Path,
@@ -239,16 +385,17 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
     if basic.len() > 3000 {
         return Err("Enhanced input exceeds the conservative 3,000-byte limit; using Basic".into());
     }
-    let mut running = None;
+    let mut lease = None;
     let (endpoint, token, system, user) = if cleanup.provider == "managed" {
-        let (guard, url, key) = launch(
+        let held = acquire(
             workers,
             &data.join("s1-mini-q4_k_m.gguf"),
-            false,
+            Kind::Llama,
             worker,
             cpu,
         )?;
-        running = Some(guard);
+        let (url, key) = (held.server.endpoint.clone(), held.server.token.clone());
+        lease = Some(held);
         (
             format!("{url}/v1/chat/completions"),
             key,
@@ -308,7 +455,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         .ok_or("Invalid cleanup response")?;
     let result = core::validate_enhanced(&basic, after.trim(), &masked)
         .ok_or("Enhanced rewrite failed preservation checks; using Basic")?;
-    drop(running);
+    drop(lease);
     Ok(result)
 }
 #[derive(Clone, Copy)]
@@ -382,6 +529,133 @@ pub fn download(data: &Path, model: Model, progress: impl Fn(u64, u64)) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recognizer_segment_breaks_become_single_spaces() {
+        assert_eq!(
+            flatten_segments(" Do not change it.\n Next sentence here.\r\n\n  Last one. "),
+            "Do not change it. Next sentence here. Last one."
+        );
+        assert_eq!(flatten_segments("one line"), "one line");
+    }
+    #[cfg(unix)]
+    mod fake {
+        use std::{os::unix::fs::PermissionsExt, path::Path};
+        const SCRIPT: &str = r#"#!/usr/bin/env python3
+import http.server, json, os, sys
+port = int(sys.argv[sys.argv.index("--port") + 1])
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "starts.log"), "a") as log:
+    log.write(str(os.getpid()) + "\n")
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        body = json.dumps({"text": str(os.getpid())}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+"#;
+        pub fn install(dir: &Path) {
+            let exe = dir.join("whisper-server");
+            std::fs::write(&exe, SCRIPT).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(dir.join("model.bin"), b"model").unwrap();
+        }
+        pub fn starts(dir: &Path) -> usize {
+            std::fs::read_to_string(dir.join("starts.log"))
+                .map(|log| log.lines().count())
+                .unwrap_or(0)
+        }
+    }
+    #[cfg(unix)]
+    fn run(dir: &Path, worker: &Worker) -> String {
+        transcribe(dir, &dir.join("model.bin"), vec![0; 64], worker, true).unwrap()
+    }
+    #[cfg(unix)]
+    #[test]
+    fn consecutive_recordings_reuse_one_recognizer_process() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let first = run(dir.path(), &new_worker());
+        let second = run(dir.path(), &new_worker());
+        assert_eq!(first, second);
+        assert_eq!(fake::starts(dir.path()), 1);
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn preload_starts_the_recognizer_before_the_recording_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let worker = new_worker();
+        preload(
+            dir.path(),
+            &dir.path().join("model.bin"),
+            Kind::Whisper,
+            &worker,
+            true,
+        )
+        .unwrap();
+        assert_eq!(fake::starts(dir.path()), 1);
+        run(dir.path(), &worker);
+        assert_eq!(fake::starts(dir.path()), 1);
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_kills_the_worker_in_use_and_the_next_recording_starts_a_fresh_one() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let cancelled = new_worker();
+        let first = run(dir.path(), &cancelled);
+        stop(&cancelled);
+        assert_eq!(
+            transcribe(
+                dir.path(),
+                &dir.path().join("model.bin"),
+                vec![0; 64],
+                &cancelled,
+                true
+            )
+            .unwrap_err(),
+            "Cancelled"
+        );
+        let second = run(dir.path(), &new_worker());
+        assert_ne!(first, second);
+        assert_eq!(fake::starts(dir.path()), 2);
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn startup_reaps_workers_left_behind_by_a_crashed_process() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let mut orphan = Command::new(dir.path().join("whisper-server"))
+            .args(["--host", "127.0.0.1", "--port", "1", "--model", "m"])
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(orphan.try_wait().unwrap().is_none());
+        reap_orphans(dir.path());
+        assert!(orphan.wait().is_ok_and(|status| !status.success()));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn idle_workers_are_stopped_and_restart_on_demand() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        run(dir.path(), &new_worker());
+        reap_idle_within(dir.path(), Duration::ZERO, Duration::ZERO);
+        run(dir.path(), &new_worker());
+        assert_eq!(fake::starts(dir.path()), 2);
+        shutdown(dir.path());
+    }
     #[test]
     fn remote_requires_https_and_local_requires_loopback() {
         assert!(endpoint_allowed(

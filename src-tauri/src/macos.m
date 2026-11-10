@@ -20,6 +20,15 @@ void conch_request_accessibility(void) {
 void conch_open_microphone_settings(void) {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"]];
 }
+int conch_frontmost_pid(void) {
+    NSRunningApplication *application = NSWorkspace.sharedWorkspace.frontmostApplication;
+    return application ? application.processIdentifier : -1;
+}
+void conch_frontmost_name(char *buffer, int size) {
+    NSString *name = NSWorkspace.sharedWorkspace.frontmostApplication.localizedName;
+    if (size > 0) buffer[0] = 0;
+    if (name) [name getCString:buffer maxLength:size encoding:NSUTF8StringEncoding];
+}
 void conch_overlay_visibility(void *window, bool visible) {
     NSWindow *panel = (__bridge NSWindow *)window;
     panel.ignoresMouseEvents = YES;

@@ -38,13 +38,24 @@ Escape or leaving the control cancels capture.
 Click Save changes to register the new shortcut.
 The in-app recording buttons work independently of shortcut availability.
 Recordings stop after 180 seconds.
+Conch starts the recognizer when recording starts and recognizes each finished chunk while you keep speaking.
+A chunk ends at the first pause of 400 ms after 8 seconds of audio, or at the quietest point once 25 seconds are pending.
+Only the audio after the last chunk remains to be recognized when you stop.
+If a chunk fails, Conch recognizes the whole recording once.
+Workers stay running between recordings and stop after 10 minutes (recognizer) or 5 minutes (managed cleanup) without use.
+Conch stops workers left by a crashed earlier run when it starts.
 A floating indicator shows microphone startup, recording level, duration, processing, and the delivery outcome above other apps.
 The indicator ignores pointer input and does not activate Conch.
 It uses the monitor work area to stay above the Dock or taskbar, with 24 logical pixels of bottom clearance when space permits.
 It refreshes its bounds while visible to follow work-area changes.
 Settings can disable the indicator.
 Minimize Conch to leave it available while dictating in other apps.
-Closing its main window quits Conch and cancels active work.
+Closing its main window hides it and removes the Dock icon on macOS.
+Conch keeps running with its menu bar icon, global shortcut, and recording indicator.
+The icon shows a dot while recording and an ellipsis while preparing text, and its menu has Show Conch and Quit Conch.
+Clicking the Dock icon or choosing Show Conch brings the window back.
+If the menu bar icon cannot be created, closing the window quits Conch instead.
+Quit Conch cancels active work and stops the inference workers.
 
 Conch copies each initial nonempty result once.
 Conch requests one paste when the same eligible text input remains focused across the delivery check.
@@ -59,7 +70,13 @@ The raw transcript remains available until another result replaces it or Conch c
 Click Enable microphone in setup to request microphone access on macOS.
 Click Enable automatic paste in setup to open System Settings / Privacy & Security / Accessibility.
 Enable Conch there for focused-input detection and paste.
-Ad-hoc signed local updates can leave an enabled grant attached to an older executable.
+macOS ties the Accessibility grant to the app's code signature.
+An ad-hoc signature changes with every build, so each rebuilt copy loses the grant.
+Build local copies with `npm run bundle:local` to keep one grant across rebuilds.
+The script creates a self-signed "Conch Local Signing" identity in the login keychain once, signs with it, and fails if the bundle is still ad-hoc signed.
+Pass `--install` to replace `/Applications/Conch.app` after the build.
+The first copy signed this way needs one new grant; later builds reuse it.
+An enabled grant left from an ad-hoc build stays attached to that older executable.
 If Conch still reports missing access, expand Enabled in Settings but still not detected?
 The repair action removes only Conch's Accessibility entry and opens Settings so you can enable the running copy.
 The app displays that copy's installation path.
@@ -77,7 +94,8 @@ Conch disables them in detected Wayland sessions and retains the in-app controls
 The current validation environment is an Apple M1 Mac with 8 GiB RAM on macOS 26.6.2.
 Windows builds, Linux builds, X11, Wayland, target-app paste behavior, and microphone voice quality require platform validation.
 A native macOS experiment confirms that showing the recording indicator preserves the foreground application and ignores pointer events.
-The CI configuration defines builds for all three operating systems; this repository has no remote and CI has not run.
+The CI workflow builds, lints, and tests on macOS, Windows, and Ubuntu for every push.
+A passing run on all three is not recorded here; see the Actions tab for current results.
 See [validation](docs/validation/README.md) for evidence and remaining acceptance work.
 
 ## Cleanup and privacy
@@ -105,7 +123,8 @@ Conch keeps audio and the latest result in memory.
 Conch discards audio after success or cancellation.
 Failed recognition retains bounded audio in memory for Retry until another recording, cancellation, or exit.
 Conch writes no transcript history or audio files.
-Inference workers use authenticated loopback HTTP and are terminated after each stage or on cancellation.
+Inference workers use authenticated loopback HTTP.
+They stay running between recordings, stop after an idle period or on exit, and cancellation stops the ones the cancelled recording used.
 
 ## Check and package
 
@@ -119,6 +138,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri -- build
 ```
 
+On macOS, install local builds with `npm run bundle:local -- --install` so the Accessibility grant survives rebuilds.
+See [AGENTS.md](AGENTS.md) for the module layout, conventions, and known pitfalls.
+
 The runtime build script pins whisper.cpp and llama.cpp source revisions and disables external OpenSSL linkage for the local llama worker.
 It adds bearer authentication and an 8 MiB request limit to the whisper worker.
 Inference binaries and licenses ship as application resources.
@@ -128,7 +150,7 @@ No Windows or Linux acceleration path is validated.
 
 macOS produces an application bundle and DMG under `src-tauri/target/release/bundle`.
 Windows targets NSIS/MSI, and Linux targets AppImage/deb/rpm through Tauri.
-macOS packages use local ad-hoc signing and are not notarized.
+`tauri build` produces ad-hoc signed macOS packages, and `npm run bundle:local` produces locally signed ones; neither is notarized.
 Public distribution requires a Developer ID identity, notarization credentials, and platform validation.
 Model attribution and the S1-mini LICENSE and NOTICE ship in the app resources.
 The S1-mini license adds a naming condition to Apache 2.0.

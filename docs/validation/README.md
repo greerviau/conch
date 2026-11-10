@@ -89,11 +89,19 @@ This sample excludes the desktop UI, capture, and inference workers and does not
 `context-benchmark.txt` records the operating-system measurements.
 The experiment prompted caching identifier-tokenization regexes and filtering nonmatching vocabulary before compiling phrase matchers.
 
+## Latency and background operation
+
+[latency.md](latency.md) records the warm-worker and chunked-recognition changes with measurements.
+The user confirmed automatic paste into VS Code in the installed macOS build after the frontmost-application focus lookup replaced the system-wide lookup, and confirmed that a rebuild and reinstall with `bundle:local` did not ask for Accessibility again.
+Line-break flattening has a unit test and was checked against the real recognizer on a 120 second synthetic recording.
+No automated test covers the menu bar icon or the hidden-window mode, and the user has not yet reported checking them.
+
 ## Local package checks
 
 The macOS application bundle and DMG contain both inference workers and the model LICENSE and NOTICE files.
 The packaged workers pass the offline synthetic recognition and managed-cleanup integration test using the application resource paths.
-The final package uses local ad-hoc signing and includes the microphone audio-input entitlement.
+The package from `tauri build` uses local ad-hoc signing, and `npm run bundle:local` signs with a persistent local identity; both include the microphone audio-input entitlement.
 The bundle passes `codesign --verify --deep --strict`.
 It is not notarized and has not passed a fresh-install GUI test.
-The repository has local commits and no remote, published repository, PR, or executed CI run.
+The repository is on GitHub with a CI workflow for macOS, Windows, and Ubuntu.
+No validation record here depends on a passing CI run.

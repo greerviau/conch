@@ -169,6 +169,7 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
     })
     .unwrap();
     assert!(result.to_lowercase().contains("do not change 12"));
+    inference::shutdown(&workers);
 }
 
 #[test]

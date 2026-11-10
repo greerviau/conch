@@ -139,3 +139,60 @@ pub fn snapshot(dir: &Path, settings: &Settings) -> Result<Snapshot, String> {
         cleanup: settings.cleanup.clone(),
     })
 }
+/// What the interface shows for a repository index. Deserializing this skips
+/// the vocabulary entries, which are the bulk of the stored JSON.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct IndexStatus {
+    pub available: bool,
+    pub incomplete: bool,
+    pub skipped: usize,
+}
+pub fn index_status(dir: &Path) -> Result<Vec<(String, IndexStatus, i64)>, String> {
+    let db = open(dir)?;
+    let mut statement = db
+        .prepare("SELECT repository,value,refreshed FROM indexes")
+        .map_err(|_| "Cannot read indexes")?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|_| "Cannot read indexes")?;
+    rows.map(|r| {
+        let (id, json, time) = r.map_err(|_| "Cannot read index")?;
+        Ok((
+            id,
+            serde_json::from_str(&json).map_err(|_| "Invalid index")?,
+            time,
+        ))
+    })
+    .collect()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Vocabulary;
+    #[test]
+    fn status_reports_index_flags_without_needing_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = Index {
+            entries: vec![Vocabulary {
+                text: "maxGroups".into(),
+                repository: "r".into(),
+                file: "a.ts".into(),
+            }],
+            skipped: 3,
+            incomplete: true,
+            available: true,
+        };
+        put_index(dir.path(), "r", &index).unwrap();
+        let status = index_status(dir.path()).unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].0, "r");
+        assert!(status[0].1.available && status[0].1.incomplete);
+        assert_eq!(status[0].1.skipped, 3);
+    }
+}
