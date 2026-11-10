@@ -1,4 +1,6 @@
 export type ModelInfo = { id: string; label: string; mb: number };
+/** The recognizer a new install starts with. The saved setting comes from Rust, which owns the default. */
+export const DEFAULT_RECOGNIZER = "small.en";
 /** English recognizers from smallest to most accurate. Ids match the Rust manifest. */
 export const RECOGNIZERS: (ModelInfo & { note: string })[] = [
   { id: "tiny.en", label: "Tiny (English)", mb: 77.7, note: "Fastest" },

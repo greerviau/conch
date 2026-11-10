@@ -24,9 +24,15 @@ pub struct Settings {
     /// Name of the input device. Empty follows the system input.
     pub microphone: String,
     /// Id of the recognition model, from `inference::RECOGNIZERS`.
+    #[serde(default = "legacy_recognizer")]
     pub recognizer: String,
     pub show_overlay: bool,
     pub check_updates: bool,
+}
+/// Only Tiny existed before the choice, so settings saved without the field belong to a copy
+/// that has Tiny installed and nothing else. A new install uses `Settings::default` instead.
+fn legacy_recognizer() -> String {
+    "tiny.en".into()
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -38,7 +44,7 @@ impl Default for Settings {
             activation: "push".into(),
             auto_paste: true,
             microphone: String::new(),
-            recognizer: "tiny.en".into(),
+            recognizer: "small.en".into(),
             show_overlay: true,
             check_updates: true,
         }
@@ -306,12 +312,19 @@ mod tests {
     }
 
     #[test]
-    fn the_recognizer_defaults_to_tiny_en_and_survives_settings_saved_before_the_choice() {
-        assert_eq!(Settings::default().recognizer, "tiny.en");
+    fn a_new_install_defaults_to_small_en_and_settings_saved_before_the_choice_keep_tiny_en() {
+        assert_eq!(Settings::default().recognizer, "small.en");
+        // Only Tiny existed before the choice, so a copy that saved settings then has it installed.
         let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
         assert_eq!(older.recognizer, "tiny.en");
-        let chosen: Settings = serde_json::from_str(r#"{"recognizer":"small.en"}"#).unwrap();
-        assert_eq!(chosen.recognizer, "small.en");
+        let chosen: Settings = serde_json::from_str(r#"{"recognizer":"base.en"}"#).unwrap();
+        assert_eq!(chosen.recognizer, "base.en");
+    }
+
+    #[test]
+    fn a_first_launch_with_no_saved_settings_loads_small_en() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load(dir.path()).unwrap().recognizer, "small.en");
     }
 
     #[test]
@@ -336,10 +349,10 @@ mod tests {
             ..Default::default()
         };
         save(dir.path(), &settings).unwrap();
-        assert_eq!(load(dir.path()).unwrap().recognizer, "tiny.en");
-        settings.recognizer = "small.en".into();
-        save(dir.path(), &settings).unwrap();
         assert_eq!(load(dir.path()).unwrap().recognizer, "small.en");
+        settings.recognizer = "tiny.en".into();
+        save(dir.path(), &settings).unwrap();
+        assert_eq!(load(dir.path()).unwrap().recognizer, "tiny.en");
     }
 
     fn term(text: &str, file: &str) -> Vocabulary {

@@ -29,7 +29,7 @@ Gatekeeper blocks a `.dmg` downloaded in a browser, because Conch is not notariz
 To open it, go to System Settings, then Privacy & Security, and choose Open Anyway.
 The macOS build is for Apple Silicon only, so on an Intel Mac [build from source](#build-from-source).
 
-After installing, open Conch, download the recognition model, and enable microphone and paste access.
+After installing, open Conch, choose and download a recognition model, and enable microphone and paste access.
 Conch checks GitHub for newer releases and installs one when you click Install; Settings turns the check off.
 
 Only the macOS install has been tested.
@@ -45,7 +45,7 @@ python3 scripts/build-runtimes.py   # use python on Windows
 npm run tauri -- dev
 ```
 
-In the app, download the recognition model, enable microphone and paste access, choose a repository, then dictate with Command-or-Control + Shift + Space.
+In the app, choose and download a recognition model, enable microphone and paste access, choose a repository, then dictate with Command-or-Control + Shift + Space.
 On macOS, install local builds with `npm run bundle:local -- --install` so the Accessibility grant survives rebuilds.
 
 ## Docs

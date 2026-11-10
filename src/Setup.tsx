@@ -1,5 +1,13 @@
 import { PasteAccess } from "./PasteAccess";
 import { Check } from "./icons";
+import {
+  DownloadProgress,
+  RECOGNIZER_TRADEOFF,
+  RecognizerMenu,
+  VOICE_DETECTION_NOTE,
+  recognizerInfo,
+} from "./ModelChoice";
+import { DEFAULT_RECOGNIZER, VAD, size } from "./models";
 import { useEffect, useRef, useState } from "react";
 
 export function shortcutLabel(value: string, mac = false) {
@@ -13,11 +21,14 @@ export function shortcutLabel(value: string, mac = false) {
 }
 export function Setup({
   installed,
-  modelSize = "78 MB",
+  recognizer = DEFAULT_RECOGNIZER,
+  onRecognizer,
+  ready,
   voiceOnly = false,
   onDownload,
   downloading = false,
-  progress = "",
+  otherDownload = false,
+  percent = null,
   accessibility = true,
   onPermission,
   onMicrophone,
@@ -34,12 +45,22 @@ export function Setup({
   busy = false,
 }: {
   installed: boolean;
-  modelSize?: string;
+  /** The saved recognition model. */
+  recognizer?: string;
+  /** Saves a different recognition model. */
+  onRecognizer?: (id: string) => void;
+  /** Whether a model can record now. Defaults to the saved model alone. */
+  ready?: (id: string) => boolean;
   /** The recognizer is installed and only the voice detection model is missing. */
   voiceOnly?: boolean;
+  /** Downloads the saved recognition model. */
   onDownload: () => void;
+  /** The saved recognition model is downloading. */
   downloading?: boolean;
-  progress?: string;
+  /** A different download is running. */
+  otherDownload?: boolean;
+  /** Download progress, or null before the first report. */
+  percent?: number | null;
   accessibility?: boolean;
   onPermission?: () => void;
   onMicrophone?: () => void;
@@ -56,6 +77,9 @@ export function Setup({
   installationPath?: string | null;
   busy?: boolean;
 }) {
+  const [changing, setChanging] = useState(false);
+  const model = recognizerInfo(recognizer);
+  const isReady = ready ?? ((id: string) => installed && id === recognizer);
   const microphoneReady = microphone === "system" || microphone === "granted";
   const copyOnly = clipboardOnly || !autoPaste;
   const pasteReady = copyOnly || accessibility;
@@ -66,27 +90,57 @@ export function Setup({
           ? "Your dictation setup"
           : "One download, then you can dictate"}
       </h2>
-      <div className="step">
+      <div className={`step model${installed && !changing ? " settled" : ""}`}>
         <Step done={installed} number={1} />
         <div>
           <h3>English recognition</h3>
-          <p>
-            {installed
-              ? "Installed. Speech stays on this device."
-              : voiceOnly
-                ? "Conch now also needs a 0.9 MB voice detection model so silence is not turned into words. No account or payment required."
-                : `Download the ${modelSize} speech model. No account or payment required.`}
-          </p>
+          {installed && !changing ? (
+            <p>{model.label} is installed. Speech stays on this device.</p>
+          ) : (
+            <>
+              <p>
+                {voiceOnly
+                  ? `Conch now also needs a ${size(VAD)} voice detection model so silence is not turned into words. No account or payment required.`
+                  : "Choose a speech model to download once. No account or payment required."}
+              </p>
+              <div className="picker">
+                <RecognizerMenu
+                  value={recognizer}
+                  disabled={downloading}
+                  ready={isReady}
+                  onChange={(id) => {
+                    onRecognizer?.(id);
+                    setChanging(false);
+                  }}
+                />
+                {!installed && !downloading && (
+                  <button
+                    className="primary"
+                    disabled={otherDownload}
+                    onClick={onDownload}
+                  >
+                    {voiceOnly
+                      ? `Download ${VAD.label}, ${size(VAD)}`
+                      : `Download ${model.label}, ${size(model)}`}
+                  </button>
+                )}
+              </div>
+              {downloading ? (
+                <DownloadProgress label={model.label} percent={percent} />
+              ) : (
+                !installed && (
+                  <p className="tradeoff">
+                    {RECOGNIZER_TRADEOFF}
+                    {voiceOnly ? "" : ` ${VOICE_DETECTION_NOTE}`}
+                  </p>
+                )
+              )}
+            </>
+          )}
         </div>
-        {!installed && (
-          <button
-            className="primary"
-            disabled={downloading}
-            onClick={onDownload}
-          >
-            {downloading
-              ? `Downloading ${progress}`
-              : "Download recognition model"}
+        {installed && !changing && (
+          <button className="link" onClick={() => setChanging(true)}>
+            Change model
           </button>
         )}
       </div>

@@ -2,8 +2,9 @@
 
 ## Setup
 
-The Dictation page shows the setup checklist and a Download recognition model button for the recognition model chosen in Settings.
-Tiny (Whisper tiny.en, 77.7 MB) is the default.
+The Dictation page shows the setup checklist. Its first step has a menu of the three recognition models and a button that names the selected one, for example Download Small (English), 487.6 MB.
+Small (Whisper small.en, 487.6 MB) is the default for a new install. Picking another model there saves it at once.
+Once a model is installed the step names it and offers Change model.
 Enable microphone access and automatic paste from the same checklist.
 The paste step disappears while Automatic paste is off in Settings.
 Conch reports permission status when you return from System Settings.
@@ -16,13 +17,16 @@ Model files remain in Conch's local application data directory.
 Settings has a Recognition model menu with three English models: Tiny (77.7 MB), Base (148.0 MB), and Small (487.6 MB).
 Larger models make fewer errors and take longer to finish after you stop speaking.
 `docs/validation/recognition-models.md` has the measurements.
-A model you have not downloaded shows a Download button under the menu, and Dictation asks for the download until the saved model is installed.
+The menu shows Installed in place of the size for a model on disk.
+Under the menu, the selected model shows Installed, a Download button, or a progress bar. Settings has no separate list of models.
+Enhanced cleanup shows the same status for S1-mini once Managed S1-mini is chosen.
+Dictation asks for the download until the saved model is installed.
 Saving a different model stops the idle recognizer, and the next recording starts the new one.
 Retry recognizes the kept recording with the model selected when you retry.
 
 Every recognition model download also installs the 0.9 MB Silero voice detection model.
 The recognizer skips audio that voice detection classifies as silence or noise, so a pause or room noise after you stop speaking does not turn into words such as "Thank you."
-Copies that installed Tiny before this model existed show Download recognition model once more to fetch it.
+Copies that installed Tiny before this model existed keep Tiny and show Download Voice detection (Silero), 0.9 MB once to fetch it.
 
 ## Cleanup
 
