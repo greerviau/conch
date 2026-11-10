@@ -114,6 +114,32 @@ impl Masked {
         Some(out)
     }
 }
+/// Spans of `"..."`, `` `...` `` and `'...'` on one line. A single quote opens
+/// only after a non-word character and closes only before one, so the
+/// apostrophes in "don't ... it's" do not pair up.
+fn quote_spans(text: &str) -> Vec<(usize, usize)> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut spans = vec![];
+    let mut at = 0;
+    while let Some(offset) = text[at..].find(['"', '\'', '`']) {
+        let start = at + offset;
+        let mark = text.as_bytes()[start] as char;
+        at = start + 1;
+        if mark == '\'' && text[..start].chars().next_back().is_some_and(word) {
+            continue;
+        }
+        let line_end = text[at..].find('\n').map_or(text.len(), |n| at + n);
+        let close = text[at..line_end]
+            .match_indices(mark)
+            .find(|(i, _)| mark != '\'' || !text[at + i + 1..].chars().next().is_some_and(word));
+        if let Some((i, _)) = close {
+            let end = at + i + 1;
+            spans.push((start, end));
+            at = end;
+        }
+    }
+    spans
+}
 pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
     let mut spans: Vec<(usize, usize, String)> = vec![];
     let mut groups = std::collections::BTreeMap::<String, Vec<&Mapping>>::new();
@@ -163,32 +189,32 @@ pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
             chosen.push(span);
         }
     }
-    let quotes = regex::Regex::new(r#""[^"\n]*"|'[^'\n]*'|`[^`\n]*`"#).unwrap();
-    for quote in quotes.find_iter(raw) {
+    let quotes = quote_spans(raw);
+    for &(quote_start, quote_end) in &quotes {
         let crossing = chosen.iter().any(|(start, end, _)| {
-            *start < quote.end()
-                && quote.start() < *end
-                && !(*start >= quote.start() && *end <= quote.end())
+            *start < quote_end
+                && quote_start < *end
+                && !(*start >= quote_start && *end <= quote_end)
         });
         if crossing {
             continue;
         }
         let mut inside: Vec<_> = chosen
             .iter()
-            .filter(|(start, end, _)| *start >= quote.start() && *end <= quote.end())
+            .filter(|(start, end, _)| *start >= quote_start && *end <= quote_end)
             .cloned()
             .collect();
         inside.sort_by_key(|span| std::cmp::Reverse(span.0));
-        let mut literal = quote.as_str().to_owned();
+        let mut literal = raw[quote_start..quote_end].to_owned();
         for (start, end, replacement) in inside {
-            literal.replace_range(start - quote.start()..end - quote.start(), &replacement);
+            literal.replace_range(start - quote_start..end - quote_start, &replacement);
         }
-        chosen.retain(|(start, end, _)| !(*start >= quote.start() && *end <= quote.end()));
-        chosen.push((quote.start(), quote.end(), literal));
+        chosen.retain(|(start, end, _)| !(*start >= quote_start && *end <= quote_end));
+        chosen.push((quote_start, quote_end, literal));
     }
     let mut protected: Vec<_> = quotes
-        .find_iter(raw)
-        .map(|m| (m.start(), m.end(), m.as_str().to_owned()))
+        .iter()
+        .map(|&(start, end)| (start, end, raw[start..end].to_owned()))
         .collect();
     for v in &snapshot.vocabulary {
         if v.text.is_empty() {
@@ -644,6 +670,42 @@ mod tests {
         let result = prepare("'max groups' and max groups", &snapshot);
         assert_eq!(result.suggestions.len(), 1);
         assert_eq!(result.suggestions[0].start, 17);
+    }
+    #[test]
+    fn basic_leaves_apostrophes_in_contractions_alone() {
+        let text = "I don't know what it's doing and we can't tell";
+        assert_eq!(prepare(text, &Snapshot::default()).text, text);
+    }
+    #[test]
+    fn contractions_are_not_masked_as_quotes() {
+        let text = "I don't know what it's doing";
+        let masked = mask(text, &Snapshot::default());
+        assert_eq!(masked.text, text);
+        assert!(masked.literals.is_empty());
+    }
+    #[test]
+    fn single_quotes_after_contractions_still_mask_as_quotes() {
+        let text = "I don't know 'max groups' and it's 'fine'";
+        let masked = mask(text, &Snapshot::default());
+        assert_eq!(masked.literals, ["'max groups'", "'fine'"]);
+        assert_eq!(
+            masked.text,
+            "I don't know CONCHPROTECTED0X and it's CONCHPROTECTED1X"
+        );
+    }
+    #[test]
+    fn apostrophes_inside_single_quotes_stay_in_the_quote() {
+        let masked = mask("say 'it's fine' now", &Snapshot::default());
+        assert_eq!(masked.literals, ["'it's fine'"]);
+    }
+    #[test]
+    fn enhanced_output_keeps_contractions_intact() {
+        let text = "I don't know what it's doing";
+        let masked = mask(text, &Snapshot::default());
+        assert_eq!(
+            validate_enhanced(&masked.text, "I don't know what it's doing", &masked).unwrap(),
+            text
+        );
     }
     #[test]
     fn mapped_words_inside_quotes_preserve_other_quoted_fillers() {

@@ -3,6 +3,8 @@ use serde::Serialize;
 #[derive(Clone, Serialize)]
 pub struct Indicator {
     pub visible: bool,
+    /// "recording", "processing", or "notice" (a delivery outcome or error).
+    pub mode: String,
     pub label: String,
     pub hint: String,
     pub level: f32,
@@ -31,6 +33,12 @@ pub fn presentation(
     };
     Indicator {
         visible: *phase != Phase::Idle || notice.is_some(),
+        mode: match phase {
+            Phase::Recording => "recording",
+            Phase::Processing => "processing",
+            Phase::Idle => "notice",
+        }
+        .into(),
         label: label.into(),
         hint: hint.into(),
         level: if *phase == Phase::Recording {
@@ -69,10 +77,36 @@ pub fn state(app: &tauri::AppHandle) -> Indicator {
     value.visible &= inner.settings.show_overlay;
     value
 }
+/// Logical size of the indicator window. Recording and processing show only an
+/// animation and the timer, so the window is a small pill. A notice carries
+/// text and needs the wider window.
+pub const HEIGHT: f64 = 44.0;
+const PILL_WIDTH: f64 = 104.0;
+const NOTICE_WIDTH: f64 = 320.0;
+/// The notice shown after delivery, if any. A paste that was requested needs no
+/// message: the text appeared where the user was typing. The other outcomes ask
+/// the user to act or explain why nothing was copied.
+pub fn delivery_notice(status: &str, text_empty: bool) -> Option<String> {
+    if status.starts_with("Copied; paste requested") {
+        None
+    } else if text_empty {
+        Some("No text to copy".into())
+    } else {
+        Some("Copied - paste manually".into())
+    }
+}
+pub fn width_for(mode: &str) -> f64 {
+    if mode == "notice" {
+        NOTICE_WIDTH
+    } else {
+        PILL_WIDTH
+    }
+}
 pub fn placement(
     screen: tauri::PhysicalRect<i32, u32>,
     work_area: tauri::PhysicalRect<i32, u32>,
     scale: f64,
+    logical_width: f64,
 ) -> tauri::PhysicalRect<i32, u32> {
     let area = if work_area.size.width == 0 || work_area.size.height == 0 {
         screen
@@ -84,8 +118,8 @@ pub fn placement(
     } else {
         1.0
     };
-    let width = ((320.0 * scale).round() as u32).min(area.size.width);
-    let height = ((68.0 * scale).round() as u32).min(area.size.height);
+    let width = ((logical_width * scale).round() as u32).min(area.size.width);
+    let height = ((HEIGHT * scale).round() as u32).min(area.size.height);
     let margin = ((24.0 * scale).round() as u32).min(area.size.height.saturating_sub(height));
     tauri::PhysicalRect {
         position: tauri::PhysicalPosition::new(
@@ -103,7 +137,7 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
         WebviewUrl::App("index.html?overlay".into()),
     )
     .title("Conch recording")
-    .inner_size(320.0, 68.0)
+    .inner_size(PILL_WIDTH, HEIGHT)
     .resizable(false)
     .decorations(false)
     .always_on_top(true)
@@ -141,6 +175,7 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
                         },
                         *monitor.work_area(),
                         monitor.scale_factor(),
+                        width_for(&value.mode),
                     );
                     let key = (
                         bounds.position.x,
@@ -203,7 +238,7 @@ mod tests {
     fn popup_stays_above_bottom_dock_and_inside_work_area() {
         let screen = area(0, 0, 1440, 900);
         let work = area(0, 25, 1440, 789);
-        let popup = placement(screen, work, 1.0);
+        let popup = placement(screen, work, 1.0, PILL_WIDTH);
         assert_eq!(popup.position.y + popup.size.height as i32, 790);
         assert!(popup.position.y >= work.position.y);
     }
@@ -211,16 +246,16 @@ mod tests {
     fn popup_handles_retina_negative_origins_and_side_docks() {
         let screen = area(-2880, -1800, 2880, 1800);
         let work = area(-2700, -1750, 2700, 1600);
-        let popup = placement(screen, work, 2.0);
+        let popup = placement(screen, work, 2.0, PILL_WIDTH);
         assert_eq!(popup.position.y + popup.size.height as i32, -198);
-        assert_eq!(popup.position.x, -1670);
+        assert_eq!(popup.position.x, -2700 + (2700 - 2 * PILL_WIDTH as i32) / 2);
         assert!(popup.position.x >= work.position.x);
     }
     #[test]
     fn popup_clamps_to_small_fractionally_scaled_work_areas() {
         let screen = area(0, 0, 640, 480);
         let work = area(200, 20, 300, 90);
-        let popup = placement(screen, work, 1.25);
+        let popup = placement(screen, work, 1.25, PILL_WIDTH);
         assert!(popup.position.x >= work.position.x);
         assert!(popup.position.x as i64 + popup.size.width as i64 <= 500);
         assert!(popup.position.y as i64 + popup.size.height as i64 <= 110);
@@ -246,6 +281,36 @@ mod tests {
         assert_eq!(
             presentation(&Phase::Recording, true, true, 0.0, 0, None).hint,
             "Press shortcut to finish"
+        );
+    }
+    #[test]
+    fn only_notices_use_the_wide_window() {
+        assert_eq!(width_for("recording"), PILL_WIDTH);
+        assert_eq!(width_for("processing"), PILL_WIDTH);
+        assert_eq!(width_for("notice"), NOTICE_WIDTH);
+        let screen = area(0, 0, 1440, 900);
+        let notice = placement(screen, screen, 1.0, width_for("notice"));
+        assert_eq!(notice.size.width, 320);
+        assert_eq!(notice.position.x, (1440 - 320) / 2);
+    }
+    #[test]
+    fn indicator_mode_distinguishes_recording_processing_and_notices() {
+        let mode = |phase, notice| presentation(&phase, true, false, 0.5, 4, notice).mode;
+        assert_eq!(mode(Phase::Recording, None), "recording");
+        assert_eq!(mode(Phase::Processing, None), "processing");
+        assert_eq!(mode(Phase::Idle, Some("Copied")), "notice");
+    }
+    #[test]
+    fn a_requested_paste_leaves_no_notice_and_other_outcomes_keep_theirs() {
+        let paste = "Copied; paste requested once (insertion is not confirmed)";
+        assert_eq!(delivery_notice(paste, false), None);
+        assert_eq!(
+            delivery_notice("Copied; paste is unavailable", false).as_deref(),
+            Some("Copied - paste manually")
+        );
+        assert_eq!(
+            delivery_notice("Copied", true).as_deref(),
+            Some("No text to copy")
         );
     }
 }

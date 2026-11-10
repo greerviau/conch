@@ -12,10 +12,17 @@ Model files remain in Conch's local application data directory.
 
 ## Repositories, mappings, and the shortcut
 
-Choose a repository folder, save, and refresh its index.
-Manual path entry remains available under Enter a path manually.
-Select the repositories that supply context before recording.
-Define global or repository mappings for recurring transcription errors.
+The top bar switches between Dictation, Repositories, Mappings, and Settings.
+On Repositories, click Add repository to choose a folder, or Enter a path instead to type one.
+Changes to repositories, mappings, and settings stay in a draft until you click Save changes in the bar that appears at the bottom.
+After saving, click Refresh indexes.
+Each repository shows Ready, Partial index, or Folder not found, its term count, when it was last indexed, and how many symbol extractions were skipped.
+Click Terms to browse what Conch indexed for a repository: file paths, file names, and function, class, and type names.
+Search the terms, filter them to Files or Symbols, and move through them 100 at a time with Previous and Next.
+Click Exclusions to add ignore patterns, one per line.
+Select the repositories that supply context on the Dictation page before recording.
+Define global or repository mappings for recurring transcription errors on Mappings.
+Each mapping has an enable switch, the spoken phrase, the replacement text, and a scope.
 Conch also sends the recognizer a short list of identifiers from the selected repositories and your mappings, so it spells them correctly.
 If a repository suggestion appears for a phrase you say often, choose Accept and always replace. Conch saves a mapping for that phrase and applies it from the next recording.
 The default shortcut is Command-or-Control + Shift + Space in push-to-talk mode.
@@ -29,7 +36,7 @@ The in-app recording buttons work independently of shortcut availability.
 
 Recordings stop after 180 seconds.
 Conch starts the recognizer when recording starts and recognizes each finished chunk while you keep speaking.
-A chunk ends at the first pause of 400 ms after 8 seconds of audio, or at the quietest point once 25 seconds are pending.
+A chunk ends at the first pause of one second after 8 seconds of audio, or at the quietest point once 25 seconds are pending.
 Only the audio after the last chunk remains to be recognized when you stop.
 If a chunk fails, Conch recognizes the whole recording once.
 Workers stay running between recordings and stop after 10 minutes (recognizer) or 5 minutes (managed cleanup) without use.
@@ -37,7 +44,11 @@ Conch stops workers left by a crashed earlier run when it starts.
 
 ## Recording indicator
 
-A floating indicator shows microphone startup, recording level, duration, processing, and the delivery outcome above other apps.
+A small dark pill floats above other apps while you dictate.
+It shows animated level bars and the elapsed time while recording.
+While Conch prepares the result, the bars become a single line that draws the conch spiral from its center, then erases from the center.
+When Conch pastes the result, the pill disappears without a message.
+It shows text only when the result was copied but not pasted, when there was no text to copy, or when something failed.
 The indicator ignores pointer input and does not activate Conch.
 It uses the monitor work area to stay above the Dock or taskbar, with 24 logical pixels of bottom clearance when space permits.
 It refreshes its bounds while visible to follow work-area changes.

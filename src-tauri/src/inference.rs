@@ -661,9 +661,27 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     #[cfg(unix)]
     #[test]
     fn startup_reaps_workers_left_behind_by_a_crashed_process() {
+        // `reap_orphans` matches a command line that starts with the worker
+        // path, so the stand-in must be a compiled program. A script shows its
+        // interpreter first, and `pkill` would not match it.
         let dir = tempfile::tempdir().unwrap();
-        fake::install(dir.path());
-        let mut orphan = Command::new(dir.path().join("whisper-server"))
+        let source = dir.path().join("orphan.rs");
+        std::fs::write(
+            &source,
+            "fn main() { loop { std::thread::sleep(std::time::Duration::from_secs(1)); } }",
+        )
+        .unwrap();
+        let worker = dir.path().join("whisper-server");
+        assert!(
+            Command::new("rustc")
+                .arg(&source)
+                .arg("-o")
+                .arg(&worker)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mut orphan = Command::new(&worker)
             .args(["--host", "127.0.0.1", "--port", "1", "--model", "m"])
             .spawn()
             .unwrap();

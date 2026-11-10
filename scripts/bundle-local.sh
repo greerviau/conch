@@ -24,12 +24,29 @@ for arg in "$@"; do
   esac
 done
 
+# tauri-build bundles whatever matches workers/*, so a missing runtime build
+# would still package an app that cannot transcribe. Stop before building.
+workers=(whisper-server llama-server)
+for name in "${workers[@]}"; do
+  if [ ! -x "src-tauri/workers/$name" ]; then
+    echo "error: src-tauri/workers/$name is missing; run python3 scripts/build-runtimes.py first" >&2
+    exit 1
+  fi
+done
+
 identity=$(scripts/setup-local-signing.sh)
 app="src-tauri/target/$profile/bundle/macos/Conch.app"
 
 # The command-line config overrides the "-" (ad-hoc) default in tauri.conf.json.
 npm run tauri -- build --bundles app ${extra[@]+"${extra[@]}"} \
   --config "{\"bundle\":{\"macOS\":{\"signingIdentity\":\"$identity\"}}}"
+
+for name in "${workers[@]}"; do
+  if [ ! -x "$app/Contents/Resources/workers/$name" ]; then
+    echo "error: $app does not contain workers/$name" >&2
+    exit 1
+  fi
+done
 
 requirement=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
 expected="identifier \"app.conch.desktop\" and certificate leaf = H\"$(echo "$identity" | tr 'A-F' 'a-f')\""
