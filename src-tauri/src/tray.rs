@@ -36,6 +36,9 @@ pub fn presentation(phase: &Phase, microphone_ready: bool) -> Presentation {
         },
     }
 }
+pub fn version_label(version: &str) -> String {
+    format!("Conch {version}")
+}
 pub fn setup(app: &AppHandle) -> Result<(), String> {
     let failed = |_: tauri::Error| "Cannot create the menu bar icon".to_string();
     let status = MenuItem::with_id(app, "status", "Ready", false, None::<&str>).map_err(failed)?;
@@ -48,10 +51,24 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
         None::<&str>,
     )
     .map_err(failed)?;
+    let version = MenuItem::with_id(
+        app,
+        "version",
+        version_label(&app.package_info().version.to_string()),
+        false,
+        None::<&str>,
+    )
+    .map_err(failed)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Conch", true, None::<&str>).map_err(failed)?;
     let separator = PredefinedMenuItem::separator(app).map_err(failed)?;
-    let menu =
-        Menu::with_items(app, &[&status, &separator, &show, &update, &quit]).map_err(failed)?;
+    let footer = PredefinedMenuItem::separator(app).map_err(failed)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &status, &separator, &show, &update, &footer, &version, &quit,
+        ],
+    )
+    .map_err(failed)?;
     let tray = TrayIconBuilder::with_id("conch")
         .icon(Image::from_bytes(include_bytes!("../icons/tray.png")).map_err(failed)?)
         .icon_as_template(true)
@@ -112,6 +129,10 @@ pub fn hide_main(app: &AppHandle) {
 mod tests {
     use super::*;
     use crate::session::Phase;
+    #[test]
+    fn menu_shows_the_version() {
+        assert_eq!(version_label("0.1.1"), "Conch 0.1.1");
+    }
     #[test]
     fn menu_bar_shows_recording_and_processing_but_stays_quiet_when_idle() {
         assert_eq!(presentation(&Phase::Idle, false).title, "");
