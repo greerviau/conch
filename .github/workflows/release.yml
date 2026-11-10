@@ -36,17 +36,21 @@ jobs:
       - run: python scripts/build-runtimes.py
       # Sign with the same certificate on every release. macOS keys the
       # Accessibility grant to it, so a different one revokes the grant on update.
+      # Tauri's own APPLE_CERTIFICATE import rejects this self-signed certificate
+      # because its name is not Apple's, so import it here and sign by hash.
       - if: runner.os == 'macOS'
         env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: echo "TAURI_CONFIG={\"bundle\":{\"macOS\":{\"signingIdentity\":\"$IDENTITY\"}}}" >> "$GITHUB_ENV"
+        run: |
+          scripts/import-signing-certificate.sh
+          echo "TAURI_CONFIG={\"bundle\":{\"macOS\":{\"signingIdentity\":\"$IDENTITY\"}}}" >> "$GITHUB_ENV"
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Conch ${{ github.ref_name }}
