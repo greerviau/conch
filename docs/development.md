@@ -47,7 +47,7 @@ To release:
 2. Push a tag `vX.Y.Z`. The version job fails if the tag and manifests disagree, and the macOS job fails if the app is not signed with the stable identity.
 3. Open the draft release, check the installers and `latest.json`, and publish it. Installed copies see it only after this step.
 
-The macOS release is built on Apple Silicon only (`macos-14`), so Intel Macs get no updater artifact.
+The macOS release is built on Apple Silicon only (`macos-15`), so Intel Macs get no updater artifact.
 The first updater build must be installed by hand; earlier copies cannot update themselves.
 Forks replace `pubkey` and `endpoints` in `tauri.conf.json` and use their own keys.
 To build a copy that never updates, clear `endpoints` with `--config '{"plugins":{"updater":{"endpoints":[]}}}'`.
