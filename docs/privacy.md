@@ -1,7 +1,7 @@
 # Cleanup and privacy
 
-Off keeps recognition output after exact mappings.
-Basic removes configured standalone hesitation tokens and preserves quoted text, excluded terms, mapping output, and exact repository vocabulary.
+Basic with no hesitation tokens keeps recognition output after exact mappings.
+Basic with tokens removes configured standalone hesitation tokens and preserves quoted text, excluded terms, mapping output, and exact repository vocabulary.
 Repository corrections remain suggestions until accepted.
 Enhanced uses managed local S1-mini or an explicitly configured chat-completions endpoint.
 It masks protected spans and checks placeholder order, selected constraint terms, and numeric literals.
