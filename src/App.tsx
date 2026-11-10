@@ -26,6 +26,7 @@ export default function App() {
   const [progress, setProgress] = useState("");
   const [busy, setBusy] = useState(false);
   const [modelBusy, setModelBusy] = useState(false);
+  const [microphones, setMicrophones] = useState<string[]>();
   const captureShortcut = useCallback(async (active: boolean) => {
     try {
       await invoke("shortcut_capture", { active });
@@ -51,6 +52,12 @@ export default function App() {
   useEffect(() => {
     if (!dirty) setText(view?.result?.text ?? "");
   }, [view?.result?.text, dirty]);
+  useEffect(() => {
+    if (tab !== "Settings") return;
+    invoke<string[]>("microphones")
+      .then((names) => setMicrophones(Array.isArray(names) ? names : []))
+      .catch(() => setMicrophones([]));
+  }, [tab]);
   useEffect(() => {
     const unlisten = listen<[number, number]>("model-progress", (e) =>
       setProgress(`${Math.round((e.payload[0] / e.payload[1]) * 100)}%`),
@@ -159,7 +166,8 @@ export default function App() {
   const needsSetup =
     !modelInstalled ||
     (view.platform === "macos" &&
-      (!view.accessibility || view.microphone !== "granted"));
+      ((view.settings.auto_paste && !view.accessibility) ||
+        view.microphone !== "granted"));
   const canRecord = modelInstalled && microphoneReady;
   const showWorkspace = canRecord || !!view.result;
   const hasChanges = JSON.stringify(draft) !== JSON.stringify(view.settings);
@@ -266,6 +274,7 @@ export default function App() {
                 onMicrophone={() => void command("request_microphone")}
                 toggle={toggleMode}
                 clipboardOnly={view.platform === "linux"}
+                autoPaste={view.settings.auto_paste}
                 hotkey={view.settings.hotkey}
                 onSettings={() => setTab("Settings")}
               />
@@ -522,6 +531,51 @@ export default function App() {
                 </select>
               </Row>
               <Row
+                title="Microphone"
+                note={
+                  draft.microphone === ""
+                    ? "Follows the input your system uses, including when you switch it."
+                    : microphones && !microphones.includes(draft.microphone)
+                      ? `${draft.microphone} is not connected. Conch uses the system input until it returns.`
+                      : "Always uses this device. If it is unplugged, Conch uses the system input."
+                }
+              >
+                <select
+                  aria-label="Microphone"
+                  value={draft.microphone}
+                  onChange={(e) =>
+                    setDraft({ ...draft, microphone: e.target.value })
+                  }
+                >
+                  <option value="">System default</option>
+                  {[
+                    ...(microphones ?? []),
+                    ...(draft.microphone !== "" &&
+                    !(microphones ?? []).includes(draft.microphone)
+                      ? [draft.microphone]
+                      : []),
+                  ].map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+              <Row
+                title="Automatic paste"
+                note={
+                  draft.auto_paste
+                    ? "Conch pastes the result into the focused text field and also copies it."
+                    : "Conch only copies the result to the clipboard. Paste it yourself."
+                }
+              >
+                <Toggle
+                  label="Automatic paste"
+                  checked={draft.auto_paste}
+                  onChange={(auto_paste) => setDraft({ ...draft, auto_paste })}
+                />
+              </Row>
+              <Row
                 title="Floating indicator"
                 note="Show a floating recording indicator over other apps."
               >
@@ -578,7 +632,7 @@ export default function App() {
               </Row>
               <div className="row stack">
                 <div className="row-text">
-                  <b>Automatic paste</b>
+                  <b>Paste permission</b>
                 </div>
                 {view.platform === "macos" ? (
                   <PasteAccess
@@ -605,34 +659,10 @@ export default function App() {
             </div>
             <h3 className="group">Transcript cleanup</h3>
             <div className="card rows">
-              <Row title="Mode">
-                <select
-                  aria-label="Mode"
-                  value={cleanup.mode}
-                  onChange={(e) => updateCleanup({ mode: e.target.value })}
-                >
-                  <option value="off">Off</option>
-                  <option value="basic">Basic</option>
-                  <option value="enhanced">Enhanced</option>
-                </select>
-              </Row>
-              {cleanup.mode === "enhanced" &&
-                cleanup.provider === "managed" &&
-                !installed(CLEANUP.id) && (
-                  <div className="callout">
-                    <p>
-                      Enhanced cleanup needs the optional S1-mini model (484
-                      MB). Basic cleanup works immediately.
-                    </p>
-                    <button
-                      disabled={modelBusy || view.downloading}
-                      onClick={() => void downloadModel(CLEANUP.id)}
-                    >
-                      Download optional cleanup model
-                    </button>
-                  </div>
-                )}
-              <Row title="Hesitation tokens" note="Comma separated">
+              <Row
+                title="Hesitation tokens"
+                note="Comma separated. Leave blank to remove nothing."
+              >
                 <input
                   aria-label="Hesitation tokens"
                   value={cleanup.fillers.join(",")}
@@ -641,7 +671,10 @@ export default function App() {
                   }
                 />
               </Row>
-              <Row title="Excluded literal terms" note="Comma separated">
+              <Row
+                title="Excluded literal terms"
+                note="Comma separated. Conch keeps these exactly as dictated."
+              >
                 <input
                   aria-label="Excluded literal terms"
                   value={cleanup.excluded.join(",")}
@@ -650,23 +683,42 @@ export default function App() {
                   }
                 />
               </Row>
-              <Row title="Enhanced provider">
+              <Row
+                title="Enhanced cleanup"
+                note="Rewrites the transcript with a language model after Basic cleanup."
+              >
                 <select
-                  aria-label="Enhanced provider"
-                  value={cleanup.provider}
+                  aria-label="Enhanced cleanup"
+                  value={cleanup.enhanced}
                   onChange={(e) =>
                     updateCleanup({
-                      provider: e.target.value,
+                      enhanced: e.target.value,
                       remote_enabled: false,
                     })
                   }
                 >
+                  <option value="disabled">Disabled</option>
                   <option value="managed">Managed S1-mini</option>
                   <option value="local">Local endpoint</option>
                   <option value="remote">Remote endpoint</option>
                 </select>
               </Row>
-              {cleanup.provider !== "managed" && (
+              {cleanup.enhanced === "managed" && !installed(CLEANUP.id) && (
+                <div className="callout">
+                  <p>
+                    Managed cleanup needs the optional S1-mini model (484 MB).
+                    Until it is installed, Conch uses Basic cleanup.
+                  </p>
+                  <button
+                    disabled={modelBusy || view.downloading}
+                    onClick={() => void downloadModel(CLEANUP.id)}
+                  >
+                    Download optional cleanup model
+                  </button>
+                </div>
+              )}
+              {(cleanup.enhanced === "local" ||
+                cleanup.enhanced === "remote") && (
                 <>
                   <Row title="Endpoint" note="Full chat-completions endpoint">
                     <input
@@ -690,7 +742,7 @@ export default function App() {
                   </Row>
                 </>
               )}
-              {cleanup.provider === "remote" && (
+              {cleanup.enhanced === "remote" && (
                 <div className="callout">
                   <p>
                     Destination: {cleanup.endpoint || "Set an HTTPS endpoint"}
@@ -756,10 +808,13 @@ export default function App() {
                   </div>
                 </div>
               )}
-              <p className="note">
-                Enhanced failures use Basic. Preservation checks do not prove
-                semantic equivalence. Enhanced input is limited to 3,000 bytes.
-              </p>
+              {cleanup.enhanced !== "disabled" && (
+                <p className="note">
+                  Enhanced failures use Basic. Preservation checks do not prove
+                  semantic equivalence. Enhanced input is limited to 3,000
+                  bytes.
+                </p>
+              )}
             </div>
             <h3 className="group">Recognition</h3>
             <div className="card rows">

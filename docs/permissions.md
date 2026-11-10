@@ -3,6 +3,7 @@
 Click Enable microphone in setup to request microphone access on macOS.
 Click Enable automatic paste in setup to open System Settings / Privacy & Security / Accessibility.
 Enable Conch there for focused-input detection and paste.
+Only paste needs this permission. With Automatic paste off in Settings, setup omits the step and Conch copies without requesting it.
 macOS ties the Accessibility grant to the app's code signature.
 An ad-hoc signature changes with every build, so each rebuilt copy loses the grant.
 Build local copies with `npm run bundle:local` to keep one grant across rebuilds.

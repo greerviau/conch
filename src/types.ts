@@ -11,10 +11,10 @@ export type Mapping = {
   enabled: boolean;
 };
 export type Cleanup = {
-  mode: string;
   fillers: string[];
   excluded: string[];
-  provider: string;
+  /** Enhanced cleanup: disabled, managed, local, or remote. */
+  enhanced: string;
   endpoint: string;
   model: string;
   remote_enabled: boolean;
@@ -25,6 +25,9 @@ export type Settings = {
   cleanup: Cleanup;
   hotkey: string;
   activation: string;
+  auto_paste: boolean;
+  /** Input device name. Empty follows the system input. */
+  microphone: string;
   recognizer: string;
   show_overlay: boolean;
   check_updates: boolean;

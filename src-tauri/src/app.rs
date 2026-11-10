@@ -93,12 +93,27 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
 /// Whether every enumerated setting holds a value Conch offers.
 fn choices_valid(settings: &Settings) -> bool {
     matches!(settings.activation.as_str(), "push" | "toggle")
-        && matches!(settings.cleanup.mode.as_str(), "off" | "basic" | "enhanced")
         && matches!(
-            settings.cleanup.provider.as_str(),
-            "managed" | "local" | "remote"
+            settings.cleanup.enhanced.as_str(),
+            "disabled" | "managed" | "local" | "remote"
         )
         && inference::recognizer(&settings.recognizer).is_some()
+}
+/// Local and remote Enhanced cleanup need an allowed endpoint, and a remote
+/// destination needs the user's confirmation.
+fn check_enhanced(cleanup: &crate::core::Cleanup) -> Result<(), String> {
+    let remote = cleanup.enhanced == "remote";
+    if matches!(cleanup.enhanced.as_str(), "local" | "remote")
+        && !inference::endpoint_allowed(&cleanup.endpoint, remote)
+    {
+        return Err(
+            "Use HTTPS for remote cleanup, or a loopback endpoint for local cleanup".into(),
+        );
+    }
+    if remote && !cleanup.remote_enabled {
+        return Err("Confirm the remote destination before enabling remote cleanup".into());
+    }
+    Ok(())
 }
 #[tauri::command]
 pub fn save_settings(
@@ -116,19 +131,7 @@ pub fn save_settings(
     if !choices_valid(&settings) {
         return Err("Invalid settings".into());
     }
-    if settings.cleanup.provider != "managed"
-        && !inference::endpoint_allowed(
-            &settings.cleanup.endpoint,
-            settings.cleanup.provider == "remote",
-        )
-    {
-        return Err(
-            "Use HTTPS for remote cleanup, or a loopback endpoint for local cleanup".into(),
-        );
-    }
-    if settings.cleanup.provider == "remote" && !settings.cleanup.remote_enabled {
-        return Err("Confirm the remote destination before enabling remote cleanup".into());
-    }
+    check_enhanced(&settings.cleanup)?;
     for repository in &mut settings.repositories {
         if !repository.root.is_absolute() {
             return Err("Repository roots must be absolute paths".into());
@@ -229,6 +232,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     inner.audio_ready = false;
     inner.recording_since = None;
     inner.indicator_notice = None;
+    let microphone = inner.settings.microphone.clone();
     let level = inner.level.clone();
     level.store(0, std::sync::atomic::Ordering::Relaxed);
     let worker = inner.worker.clone();
@@ -248,7 +252,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
             move |wav| inference::transcribe(&workers, &model, wav, &hint, &worker, false)
         },
     );
-    if snapshot.cleanup.mode == "enhanced" && snapshot.cleanup.provider == "managed" {
+    if snapshot.cleanup.enhanced == "managed" {
         let workers = state.workers.clone();
         let model = state.data.join(inference::CLEANUP.name);
         std::thread::spawn(move || {
@@ -259,6 +263,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     std::thread::spawn(move || {
         let mut chunker = Chunker::default();
         let captured = audio::capture(
+            &microphone,
             receive,
             || {
                 let state = handle.state::<AppState>();
@@ -404,7 +409,7 @@ fn process(
         return;
     }
     let mut result = core::prepare(&raw, &snapshot);
-    if snapshot.cleanup.mode == "enhanced" {
+    if snapshot.cleanup.enhanced != "disabled" {
         match inference::enhanced(inference::CleanupRequest {
             workers: &state.workers,
             data: &state.data,
@@ -426,7 +431,8 @@ fn process(
     if !inner.session.complete(generation) {
         return;
     }
-    match delivery::deliver(&mut platform::NativeDesktop::default(), &result.text) {
+    let paste = inner.settings.auto_paste;
+    match delivery::deliver(&mut platform::NativeDesktop::default(), &result.text, paste) {
         Ok(status) => {
             inner.indicator_notice =
                 crate::indicator::delivery_notice(&status, result.text.is_empty())
@@ -720,6 +726,13 @@ pub fn shortcut(
 pub fn indicator_state(app: AppHandle) -> crate::indicator::Indicator {
     crate::indicator::state(&app)
 }
+/// Names of the input devices, read when Settings opens and not on every poll.
+#[tauri::command]
+pub async fn microphones() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(audio::input_names)
+        .await
+        .map_err(|_| "Cannot list microphones".to_string())
+}
 #[tauri::command]
 pub async fn request_microphone() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(platform::request_microphone)
@@ -849,6 +862,37 @@ mod tests {
         }
         settings.recognizer = "large-v3".into();
         assert!(!choices_valid(&settings));
+    }
+    #[test]
+    fn enhanced_cleanup_is_disabled_or_one_of_three_providers() {
+        let mut settings = Settings::default();
+        for choice in ["disabled", "managed", "local", "remote"] {
+            settings.cleanup.enhanced = choice.into();
+            assert!(choices_valid(&settings), "{choice}");
+        }
+        for choice in ["", "off", "basic", "enhanced"] {
+            settings.cleanup.enhanced = choice.into();
+            assert!(!choices_valid(&settings), "{choice}");
+        }
+    }
+    #[test]
+    fn only_local_and_remote_cleanup_need_a_valid_endpoint() {
+        let mut cleanup = crate::core::Cleanup::default();
+        assert!(check_enhanced(&cleanup).is_ok());
+        cleanup.enhanced = "managed".into();
+        assert!(check_enhanced(&cleanup).is_ok());
+        cleanup.enhanced = "local".into();
+        assert!(check_enhanced(&cleanup).is_err());
+        cleanup.endpoint = "http://127.0.0.1:8080/v1/chat/completions".into();
+        assert!(check_enhanced(&cleanup).is_ok());
+        cleanup.enhanced = "remote".into();
+        cleanup.endpoint = "https://api.example.com/v1/chat/completions".into();
+        assert!(
+            check_enhanced(&cleanup).is_err(),
+            "remote needs confirmation"
+        );
+        cleanup.remote_enabled = true;
+        assert!(check_enhanced(&cleanup).is_ok());
     }
     #[test]
     fn recording_needs_the_selected_recognizer_and_the_voice_detection_model() {

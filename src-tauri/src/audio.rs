@@ -9,17 +9,56 @@ pub struct Captured {
     pub wav: Vec<u8>,
     pub samples: Vec<f32>,
 }
+fn device_name(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|description| description.name().to_owned())
+        .unwrap_or_default()
+}
+/// Names of the input devices the system offers, without duplicates.
+pub fn input_names() -> Vec<String> {
+    let mut names: Vec<String> = cpal::default_host()
+        .input_devices()
+        .map(|devices| devices.map(|device| device_name(&device)).collect())
+        .unwrap_or_default();
+    names.retain(|name| !name.is_empty());
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+    names
+}
+/// Index of the device `wanted` names. An empty or unplugged name yields
+/// `None`, which means the system input.
+fn pick_input(available: &[String], wanted: &str) -> Option<usize> {
+    if wanted.is_empty() {
+        return None;
+    }
+    available.iter().position(|name| name == wanted)
+}
+fn input_device(wanted: &str) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    if !wanted.is_empty() {
+        let devices: Vec<cpal::Device> = host
+            .input_devices()
+            .map(|devices| devices.collect())
+            .unwrap_or_default();
+        let names: Vec<String> = devices.iter().map(device_name).collect();
+        if let Some(index) = pick_input(&names, wanted) {
+            return Ok(devices.into_iter().nth(index).expect("index from names"));
+        }
+    }
+    host.default_input_device()
+        .ok_or_else(|| "No microphone is available".to_string())
+}
 /// Records until `stop` fires. `observe` sees the whole recording so far about
 /// every 100 ms while the audio callback waits, so it must return quickly.
 pub fn capture(
+    microphone: &str,
     stop: mpsc::Receiver<bool>,
     ready: impl FnOnce(),
     level: Arc<std::sync::atomic::AtomicU32>,
     mut observe: impl FnMut(&[f32]),
 ) -> Result<Option<Captured>, String> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .ok_or("No microphone is available")?;
+    let device = input_device(microphone)?;
     let config = device
         .default_input_config()
         .map_err(|_| "Microphone permission or format is unavailable")?;
@@ -168,4 +207,26 @@ pub fn wav(samples: &[f32]) -> Result<Vec<u8>, String> {
         writer.finalize().map_err(|_| "Cannot finish recording")?;
     }
     Ok(cursor.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|n| (*n).into()).collect()
+    }
+    #[test]
+    fn an_empty_choice_follows_the_system_input() {
+        assert_eq!(pick_input(&names(&["Built-in", "USB"]), ""), None);
+    }
+    #[test]
+    fn a_named_microphone_is_found_by_its_exact_name() {
+        let available = names(&["Built-in", "USB", "USB 2"]);
+        assert_eq!(pick_input(&available, "USB"), Some(1));
+        assert_eq!(pick_input(&available, "USB 2"), Some(2));
+    }
+    #[test]
+    fn an_unplugged_microphone_falls_back_to_the_system_input() {
+        assert_eq!(pick_input(&names(&["Built-in"]), "USB"), None);
+    }
 }

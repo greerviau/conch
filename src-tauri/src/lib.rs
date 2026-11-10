@@ -18,6 +18,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app::view,
             app::indicator_state,
+            app::microphones,
             app::request_microphone,
             app::request_accessibility,
             app::repair_accessibility,

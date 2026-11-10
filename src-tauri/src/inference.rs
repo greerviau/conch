@@ -373,7 +373,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         cpu,
     } = request;
     let cleanup = &snapshot.cleanup;
-    if cleanup.mode != "enhanced" {
+    if cleanup.enhanced == "disabled" {
         return Err("Enhanced cleanup is disabled".into());
     }
     if worker.lock().unwrap().cancelled {
@@ -391,7 +391,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         return Err("Enhanced input exceeds the conservative 3,000-byte limit; using Basic".into());
     }
     let mut lease = None;
-    let (endpoint, token, system, user) = if cleanup.provider == "managed" {
+    let (endpoint, token, system, user) = if cleanup.enhanced == "managed" {
         let held = acquire(workers, &data.join(CLEANUP.name), Kind::Llama, worker, cpu)?;
         let (url, key) = (held.server.endpoint.clone(), held.server.token.clone());
         lease = Some(held);
@@ -402,7 +402,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
             format!("[Styling: semi-formal] [Structure: prose] [Context: general]\n{basic}"),
         )
     } else {
-        let remote = cleanup.provider == "remote";
+        let remote = cleanup.enhanced == "remote";
         if remote && !cleanup.remote_enabled {
             return Err("Remote cleanup is disabled".into());
         }
@@ -427,9 +427,9 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         let operation = async {
             if worker.lock().unwrap().cancelled {return Err("Cancelled".to_string());}
             let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(30));
-            if cleanup.provider != "remote" {builder = builder.no_proxy();}
+            if cleanup.enhanced != "remote" {builder = builder.no_proxy();}
             let client = builder.build().map_err(|_| "Cannot initialize cleanup client")?;
-            if cleanup.provider == "managed" {
+            if cleanup.enhanced == "managed" {
                 let tokenizer = endpoint.trim_end_matches("/v1/chat/completions").to_owned()+"/tokenize";
                 let tokens: Value = client.post(tokenizer).bearer_auth(&token).json(&json!({"content":format!("{system}\n{user}")})).send().await.and_then(|r|r.error_for_status()).map_err(|_| "Local tokenization failed; using Basic")?.json().await.map_err(|_| "Invalid tokenizer response")?;
                 if tokens["tokens"].as_array().is_none_or(|tokens|tokens.len() > 1000) {return Err("Managed cleanup input exceeds 1,000 tokens; using Basic".into());}

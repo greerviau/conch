@@ -19,6 +19,10 @@ pub struct Settings {
     pub cleanup: Cleanup,
     pub hotkey: String,
     pub activation: String,
+    /// Whether to paste into the focused field. Off copies the result only.
+    pub auto_paste: bool,
+    /// Name of the input device. Empty follows the system input.
+    pub microphone: String,
     /// Id of the recognition model, from `inference::RECOGNIZERS`.
     pub recognizer: String,
     pub show_overlay: bool,
@@ -32,6 +36,8 @@ impl Default for Settings {
             cleanup: Cleanup::default(),
             hotkey: "CommandOrControl+Shift+Space".into(),
             activation: "push".into(),
+            auto_paste: true,
+            microphone: String::new(),
             recognizer: "tiny.en".into(),
             show_overlay: true,
             check_updates: true,
@@ -306,6 +312,20 @@ mod tests {
         assert_eq!(older.recognizer, "tiny.en");
         let chosen: Settings = serde_json::from_str(r#"{"recognizer":"small.en"}"#).unwrap();
         assert_eq!(chosen.recognizer, "small.en");
+    }
+
+    #[test]
+    fn automatic_paste_is_on_and_the_microphone_follows_the_system_by_default() {
+        let defaults = Settings::default();
+        assert!(defaults.auto_paste);
+        assert_eq!(defaults.microphone, "");
+        let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
+        assert!(older.auto_paste);
+        assert_eq!(older.microphone, "");
+        let chosen: Settings =
+            serde_json::from_str(r#"{"auto_paste":false,"microphone":"USB"}"#).unwrap();
+        assert!(!chosen.auto_paste);
+        assert_eq!(chosen.microphone, "USB");
     }
 
     #[test]

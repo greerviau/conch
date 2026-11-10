@@ -92,8 +92,7 @@ fn local_endpoint_receives_only_masked_transcript_and_fixed_instruction() {
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
     });
     let mut snapshot = Snapshot::default();
-    snapshot.cleanup.mode = "enhanced".into();
-    snapshot.cleanup.provider = "local".into();
+    snapshot.cleanup.enhanced = "local".into();
     snapshot.cleanup.endpoint = endpoint;
     snapshot.mappings.push(Mapping {
         phrase: "secret class".into(),
@@ -118,8 +117,7 @@ fn local_endpoint_receives_only_masked_transcript_and_fixed_instruction() {
 fn disabled_remote_cleanup_makes_no_request_and_cancellation_prevents_launch() {
     let data = tempfile::tempdir().unwrap();
     let mut snapshot = Snapshot::default();
-    snapshot.cleanup.mode = "enhanced".into();
-    snapshot.cleanup.provider = "remote".into();
+    snapshot.cleanup.enhanced = "remote".into();
     snapshot.cleanup.endpoint = "https://127.0.0.1:1".into();
     let worker = inference::new_worker();
     assert_eq!(
@@ -192,7 +190,7 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
         assert_eq!(text, "", "non-speech audio produced text");
     }
     let mut snapshot = Snapshot::default();
-    snapshot.cleanup.mode = "enhanced".into();
+    snapshot.cleanup.enhanced = "managed".into();
     let result = inference::enhanced(inference::CleanupRequest {
         workers: &workers,
         data: &data,
@@ -220,8 +218,7 @@ fn managed_download_installs_verified_model_without_persisting_audio_or_transcri
 fn pre_cancelled_external_cleanup_does_not_start_a_request() {
     let data = tempfile::tempdir().unwrap();
     let mut snapshot = Snapshot::default();
-    snapshot.cleanup.mode = "enhanced".into();
-    snapshot.cleanup.provider = "local".into();
+    snapshot.cleanup.enhanced = "local".into();
     snapshot.cleanup.endpoint = "http://127.0.0.1:1/v1/chat/completions".into();
     let worker = inference::new_worker();
     inference::stop(&worker);
@@ -264,8 +261,7 @@ fn cancellation_drops_an_in_flight_endpoint_request() {
     let job = std::thread::spawn(move || {
         let data = tempfile::tempdir().unwrap();
         let mut snapshot = Snapshot::default();
-        snapshot.cleanup.mode = "enhanced".into();
-        snapshot.cleanup.provider = "local".into();
+        snapshot.cleanup.enhanced = "local".into();
         snapshot.cleanup.endpoint = endpoint;
         let outcome = inference::enhanced(inference::CleanupRequest {
             workers: data.path(),

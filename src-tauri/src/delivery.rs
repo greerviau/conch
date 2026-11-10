@@ -7,9 +7,13 @@ pub trait Desktop {
     }
     fn paste(&mut self) -> Result<(), String>;
 }
-pub fn deliver<D: Desktop>(desktop: &mut D, text: &str) -> Result<String, String> {
+pub fn deliver<D: Desktop>(desktop: &mut D, text: &str, paste: bool) -> Result<String, String> {
     if text.trim().is_empty() {
         return Ok("Nothing remains; clipboard unchanged".into());
+    }
+    if !paste {
+        desktop.copy(text)?;
+        return Ok("Copied; automatic paste is off".into());
     }
     let focus = desktop.focus();
     desktop.copy(text)?;
@@ -58,32 +62,42 @@ mod tests {
             focus: vec![Some(1), Some(1)],
             ..Default::default()
         };
-        deliver(&mut d, "hello").unwrap();
+        deliver(&mut d, "hello", true).unwrap();
         assert_eq!((d.copies, d.pastes), (1, 1));
         let mut d = Fake {
             focus: vec![Some(1), Some(2)],
             ..Default::default()
         };
-        deliver(&mut d, "hello").unwrap();
+        deliver(&mut d, "hello", true).unwrap();
         assert_eq!((d.copies, d.pastes), (1, 0));
         let mut d = Fake {
             focus: vec![None],
             ..Default::default()
         };
-        deliver(&mut d, "hello").unwrap();
+        deliver(&mut d, "hello", true).unwrap();
         assert_eq!((d.copies, d.pastes), (1, 0));
+    }
+    #[test]
+    fn with_automatic_paste_off_the_result_is_only_copied_and_focus_is_never_read() {
+        let mut d = Fake::default();
+        let status = deliver(&mut d, "hello", false).unwrap();
+        assert_eq!((d.copies, d.pastes), (1, 0));
+        assert_eq!(status, "Copied; automatic paste is off");
+        let mut d = Fake::default();
+        deliver(&mut d, "", false).unwrap();
+        assert_eq!(d.copies, 0);
     }
     #[test]
     fn empty_results_leave_clipboard_unchanged_and_failed_pastes_are_not_retried() {
         let mut d = Fake::default();
-        deliver(&mut d, "").unwrap();
+        deliver(&mut d, "", true).unwrap();
         assert_eq!(d.copies, 0);
         let mut d = Fake {
             focus: vec![Some(1), Some(1)],
             fail: true,
             ..Default::default()
         };
-        assert!(deliver(&mut d, "text").unwrap().contains("Clipboard"));
+        assert!(deliver(&mut d, "text", true).unwrap().contains("Clipboard"));
         assert_eq!(d.pastes, 1);
     }
 }

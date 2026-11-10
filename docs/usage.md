@@ -5,6 +5,7 @@
 The Dictation page shows the setup checklist and a Download recognition model button for the recognition model chosen in Settings.
 Tiny (Whisper tiny.en, 77.7 MB) is the default.
 Enable microphone access and automatic paste from the same checklist.
+The paste step disappears while Automatic paste is off in Settings.
 Conch reports permission status when you return from System Settings.
 The optional S1-mini by Superwhisper download enables managed Enhanced cleanup.
 Conch verifies model size and SHA-256 before installation.
@@ -22,6 +23,23 @@ Retry recognizes the kept recording with the model selected when you retry.
 Every recognition model download also installs the 0.9 MB Silero voice detection model.
 The recognizer skips audio that voice detection classifies as silence or noise, so a pause or room noise after you stop speaking does not turn into words such as "Thank you."
 Copies that installed Tiny before this model existed show Download recognition model once more to fetch it.
+
+## Cleanup
+
+Basic cleanup always runs. It removes the hesitation tokens in Settings, `um` and `uh` at first, and repairs the spacing and punctuation around them.
+Leave Hesitation tokens blank and Basic cleanup leaves the transcript exactly as recognized.
+Excluded literal terms stay as dictated.
+Enhanced cleanup is Disabled until you choose Managed S1-mini, Local endpoint, or Remote endpoint.
+Managed S1-mini asks for the 484 MB download; until it is installed, Conch uses Basic cleanup.
+Settings saved by an earlier version start with Enhanced cleanup Disabled.
+
+## Microphone and paste
+
+Microphone in Settings starts at System default, which follows the input your system uses, including when you switch it.
+Choose a device to always record from it. If it is unplugged, Settings says so and Conch records from the system input.
+Settings lists the devices when you open it, so reopen Settings after plugging one in.
+Automatic paste is on by default. Turn it off and Conch only copies each result; paste it yourself.
+With Automatic paste off, Conch does not ask for the Accessibility permission.
 
 ## Repositories, mappings, and the shortcut
 
@@ -90,7 +108,8 @@ Only an AppImage updates itself on Linux.
 ## Delivery
 
 Conch copies each initial nonempty result once.
-Conch requests one paste when the same eligible text input remains focused across the delivery check.
+While Automatic paste is on, Conch requests one paste when the same eligible text input remains focused across the delivery check.
+With Automatic paste off, it only copies the result and the status line says so.
 It never sends Enter.
 Uncertain or secure fields receive clipboard fallback.
 Review edits and accepted suggestions require explicit copying.

@@ -26,6 +26,7 @@ export function Setup({
   onSettings,
   toggle = false,
   clipboardOnly = false,
+  autoPaste = true,
   mac = false,
   onRepair,
   onRestart,
@@ -47,6 +48,8 @@ export function Setup({
   onSettings?: () => void;
   toggle?: boolean;
   clipboardOnly?: boolean;
+  /** Off copies the result without pasting, so no paste permission is needed. */
+  autoPaste?: boolean;
   mac?: boolean;
   onRepair?: () => Promise<boolean>;
   onRestart?: () => void;
@@ -54,7 +57,8 @@ export function Setup({
   busy?: boolean;
 }) {
   const microphoneReady = microphone === "system" || microphone === "granted";
-  const pasteReady = clipboardOnly || accessibility;
+  const copyOnly = clipboardOnly || !autoPaste;
+  const pasteReady = copyOnly || accessibility;
   return (
     <section className="card setup" aria-label="Dictation setup">
       <h2>
@@ -107,10 +111,8 @@ export function Setup({
       <div className="step">
         <Step done={pasteReady} number={3} />
         <div>
-          <h3>
-            {clipboardOnly ? "Clipboard delivery" : "Paste into other apps"}
-          </h3>
-          {mac && onRepair && onRestart && onPermission ? (
+          <h3>{copyOnly ? "Clipboard delivery" : "Paste into other apps"}</h3>
+          {!copyOnly && mac && onRepair && onRestart && onPermission ? (
             <PasteAccess
               granted={accessibility}
               path={installationPath}
@@ -121,16 +123,18 @@ export function Setup({
             />
           ) : (
             <p>
-              {clipboardOnly
-                ? "This desktop copies your text. Paste it manually into the receiving app."
-                : accessibility
-                  ? "Automatic paste is enabled for supported text fields."
-                  : "Enable Accessibility for Conch to paste after dictation. Clipboard copying works without it."}
+              {!autoPaste
+                ? "Automatic paste is off in Settings. Conch copies your text; paste it manually into the receiving app."
+                : clipboardOnly
+                  ? "This desktop copies your text. Paste it manually into the receiving app."
+                  : accessibility
+                    ? "Automatic paste is enabled for supported text fields."
+                    : "Enable Accessibility for Conch to paste after dictation. Clipboard copying works without it."}
             </p>
           )}
         </div>
         {!(mac && onRepair && onRestart && onPermission) &&
-          !clipboardOnly &&
+          !copyOnly &&
           !accessibility &&
           onPermission && (
             <button onClick={onPermission}>Enable automatic paste</button>
@@ -150,8 +154,8 @@ export function Setup({
         </div>
       )}
       <p className="note">
-        Repository context and Enhanced cleanup are optional. Start with Basic
-        cleanup.
+        Repository context and Enhanced cleanup are optional. Basic cleanup
+        removes your hesitation tokens and needs no model.
       </p>
     </section>
   );
