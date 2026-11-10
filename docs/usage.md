@@ -45,7 +45,8 @@ Conch stops workers left by a crashed earlier run when it starts.
 A small dark pill floats above other apps while you dictate.
 It shows animated level bars and the elapsed time while recording.
 While Conch prepares the result, the bars become a single line that draws the conch spiral from its center, then erases from the center.
-After delivery, the pill shows the outcome or error as text.
+When Conch pastes the result, the pill disappears without a message.
+It shows text only when the result was copied but not pasted, when there was no text to copy, or when something failed.
 The indicator ignores pointer input and does not activate Conch.
 It uses the monitor work area to stay above the Dock or taskbar, with 24 logical pixels of bottom clearance when space permits.
 It refreshes its bounds while visible to follow work-area changes.

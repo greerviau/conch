@@ -80,9 +80,21 @@ pub fn state(app: &tauri::AppHandle) -> Indicator {
 /// Logical size of the indicator window. Recording and processing show only an
 /// animation and the timer, so the window is a small pill. A notice carries
 /// text and needs the wider window.
-pub const HEIGHT: f64 = 52.0;
-const PILL_WIDTH: f64 = 168.0;
+pub const HEIGHT: f64 = 44.0;
+const PILL_WIDTH: f64 = 104.0;
 const NOTICE_WIDTH: f64 = 320.0;
+/// The notice shown after delivery, if any. A paste that was requested needs no
+/// message: the text appeared where the user was typing. The other outcomes ask
+/// the user to act or explain why nothing was copied.
+pub fn delivery_notice(status: &str, text_empty: bool) -> Option<String> {
+    if status.starts_with("Copied; paste requested") {
+        None
+    } else if text_empty {
+        Some("No text to copy".into())
+    } else {
+        Some("Copied - paste manually".into())
+    }
+}
 pub fn width_for(mode: &str) -> f64 {
     if mode == "notice" {
         NOTICE_WIDTH
@@ -236,7 +248,7 @@ mod tests {
         let work = area(-2700, -1750, 2700, 1600);
         let popup = placement(screen, work, 2.0, PILL_WIDTH);
         assert_eq!(popup.position.y + popup.size.height as i32, -198);
-        assert_eq!(popup.position.x, -2700 + (2700 - 336) / 2);
+        assert_eq!(popup.position.x, -2700 + (2700 - 2 * PILL_WIDTH as i32) / 2);
         assert!(popup.position.x >= work.position.x);
     }
     #[test]
@@ -287,5 +299,18 @@ mod tests {
         assert_eq!(mode(Phase::Recording, None), "recording");
         assert_eq!(mode(Phase::Processing, None), "processing");
         assert_eq!(mode(Phase::Idle, Some("Copied")), "notice");
+    }
+    #[test]
+    fn a_requested_paste_leaves_no_notice_and_other_outcomes_keep_theirs() {
+        let paste = "Copied; paste requested once (insertion is not confirmed)";
+        assert_eq!(delivery_notice(paste, false), None);
+        assert_eq!(
+            delivery_notice("Copied; paste is unavailable", false).as_deref(),
+            Some("Copied - paste manually")
+        );
+        assert_eq!(
+            delivery_notice("Copied", true).as_deref(),
+            Some("No text to copy")
+        );
     }
 }

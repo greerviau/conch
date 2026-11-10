@@ -40,7 +40,7 @@ void conch_overlay_visibility(void *window, bool visible) {
     panel.hasShadow = NO;
     NSView *content = panel.contentView;
     content.wantsLayer = YES;
-    content.layer.cornerRadius = 26.0;
+    content.layer.cornerRadius = NSHeight(content.bounds) / 2.0;
     content.layer.masksToBounds = YES;
     if (visible) [panel orderFrontRegardless]; else [panel orderOut:nil];
 }

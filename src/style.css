@@ -1017,7 +1017,7 @@ mark {
 }
 html.overlay-surface,
 body.overlay-surface {
-  background: #14201c;
+  background: #000;
   overflow: hidden;
   user-select: none;
 }
