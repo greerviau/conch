@@ -19,6 +19,11 @@ Whisper preserves the tested negation and numbers but produces casing difference
 The S1-mini fixtures preserve the tested placeholders and return empty output for hesitation-only input.
 The self-correction fixture removes a phrase containing "no", which the app's conservative constraint check rejects and replaces with Basic output.
 
+One run of the ignored acceptance test sends the synthetic recording to Whisper tiny.en with and without the recognition hint `Vocabulary: podGC, maxGroups.`.
+Without the hint the output is "Do not change PODGC before 12 tests pass. Set MAX Groups to 4."
+With the hint the output is "Do not change podGC before 12 tests pass. Set maxGroups to 4."
+This is one synthetic utterance, so it does not measure the hint's effect on human speech or on longer hints.
+
 No representative recordings, approved expected-output corpus, or target-hardware performance thresholds have been supplied.
 Identifier error rate, unwanted substitution rate, manual edit count, full-app peak memory, long-input model quality, and human voice quality remain unmeasured.
 The runtime/model selection remains provisional pending that corpus.

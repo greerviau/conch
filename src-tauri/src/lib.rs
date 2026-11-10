@@ -7,6 +7,7 @@ pub mod inference;
 pub mod pipeline;
 pub mod platform;
 pub mod session;
+pub mod spoken;
 pub mod storage;
 pub fn run() {
     use tauri::Manager;
@@ -31,6 +32,7 @@ pub fn run() {
             app::retry,
             app::edit,
             app::accept,
+            app::accept_always,
             app::undo,
             app::reject,
             app::copy,

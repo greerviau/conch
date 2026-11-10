@@ -16,6 +16,8 @@ Choose a repository folder, save, and refresh its index.
 Manual path entry remains available under Enter a path manually.
 Select the repositories that supply context before recording.
 Define global or repository mappings for recurring transcription errors.
+Conch also sends the recognizer a short list of identifiers from the selected repositories and your mappings, so it spells them correctly.
+If a repository suggestion appears for a phrase you say often, choose Accept and always replace. Conch saves a mapping for that phrase and applies it from the next recording.
 The default shortcut is Command-or-Control + Shift + Space in push-to-talk mode.
 In Settings, click Change shortcut and press the desired combination.
 Conch pauses its registered shortcut during capture and ignores repeat events.

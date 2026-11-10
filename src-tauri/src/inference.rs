@@ -313,6 +313,7 @@ pub fn transcribe(
     workers: &Path,
     model: &Path,
     wav: Vec<u8>,
+    hint: &str,
     worker: &Worker,
     cpu: bool,
 ) -> Result<String, String> {
@@ -323,13 +324,16 @@ pub fn transcribe(
         .timeout(Duration::from_secs(90))
         .build()
         .map_err(|_| "Cannot initialize recognizer IPC")?;
-    let form = reqwest::blocking::multipart::Form::new()
+    let mut form = reqwest::blocking::multipart::Form::new()
         .part(
             "file",
             reqwest::blocking::multipart::Part::bytes(wav).file_name("recording.wav"),
         )
         .text("response_format", "json")
         .text("temperature", "0");
+    if !hint.is_empty() {
+        form = form.text("prompt", hint.to_owned());
+    }
     let value: Value = client
         .post(format!("{url}/inference"))
         .bearer_auth(token)
@@ -553,7 +557,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        request = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        with open(os.path.join(here, "last-request.bin"), "wb") as saved:
+            saved.write(request)
         body = json.dumps({"text": str(os.getpid())}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -567,6 +573,10 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::write(dir.join("model.bin"), b"model").unwrap();
         }
+        pub fn last_request(dir: &Path) -> String {
+            String::from_utf8_lossy(&std::fs::read(dir.join("last-request.bin")).unwrap())
+                .into_owned()
+        }
         pub fn starts(dir: &Path) -> usize {
             std::fs::read_to_string(dir.join("starts.log"))
                 .map(|log| log.lines().count())
@@ -575,7 +585,23 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     }
     #[cfg(unix)]
     fn run(dir: &Path, worker: &Worker) -> String {
-        transcribe(dir, &dir.join("model.bin"), vec![0; 64], worker, true).unwrap()
+        transcribe(dir, &dir.join("model.bin"), vec![0; 64], "", worker, true).unwrap()
+    }
+    #[cfg(unix)]
+    #[test]
+    fn recognizer_receives_the_vocabulary_hint_as_its_initial_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let model = dir.path().join("model.bin");
+        transcribe(dir.path(), &model, vec![0; 64], "", &new_worker(), true).unwrap();
+        let without = fake::last_request(dir.path());
+        assert!(!without.contains("name=\"prompt\""));
+        let hint = "Vocabulary: podGC, maxGroups.";
+        transcribe(dir.path(), &model, vec![0; 64], hint, &new_worker(), true).unwrap();
+        let with = fake::last_request(dir.path());
+        assert!(with.contains("name=\"prompt\""));
+        assert!(with.contains(hint));
+        shutdown(dir.path());
     }
     #[cfg(unix)]
     #[test]
@@ -620,6 +646,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
                 dir.path(),
                 &dir.path().join("model.bin"),
                 vec![0; 64],
+                "",
                 &cancelled,
                 true
             )

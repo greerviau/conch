@@ -31,7 +31,7 @@ const fixture = () => ({
     },
   },
   phase: "idle",
-  result: null,
+  result: null as null | ReturnType<typeof suggestionResult>,
   error: "",
   indexes: [],
   models: [
@@ -183,4 +183,41 @@ it("activates a captured shortcut immediately without saving unrelated settings"
     }),
   );
   expect(ipc.mock.calls.some(([name]) => name === "save_settings")).toBe(false);
+});
+const suggestionResult = (conflict: boolean) => ({
+  raw: "raise max group",
+  text: "raise max group",
+  basic: "raise max group",
+  status: "Prepared locally",
+  edits: [],
+  suggestions: [
+    {
+      start: 6,
+      end: 15,
+      original: "max group",
+      conflict,
+      candidates: [{ text: "maxGroups", repository: "r", file: "a.ts" }],
+    },
+  ],
+});
+it("offers to remember an accepted repository suggestion as a mapping", async () => {
+  view.result = suggestionResult(false);
+  render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Accept and always replace" }),
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("accept_always", {
+      index: 0,
+      candidate: 0,
+    }),
+  );
+});
+it("does not offer to remember a mapping conflict", async () => {
+  view.result = suggestionResult(true);
+  render(<App />);
+  await screen.findByRole("button", { name: "Accept" });
+  expect(
+    screen.queryByRole("button", { name: "Accept and always replace" }),
+  ).toBeNull();
 });
