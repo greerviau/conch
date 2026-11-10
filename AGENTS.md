@@ -12,7 +12,7 @@ Use the glossary's terms verbatim and update the spec and glossary when a decisi
 - `src-tauri/src/chunk.rs`: splits a growing recording at pauses. `pipeline.rs`: recognizes chunks on a background thread. `audio.rs`: microphone capture and WAV encoding.
 - `src-tauri/src/core.rs`: mappings, masking, Basic cleanup, suggestions, recognition hint, result edits. `spoken.rs`: sound-alike matching of identifiers against recognizer output. `index.rs`, `storage.rs`: repository vocabulary and SQLite.
 - `src-tauri/src/platform.rs`, `macos.m`, `windows.rs`: focused-field detection, paste, permissions. `delivery.rs`: the copy-then-paste decision.
-- `src-tauri/src/update.rs`: update check, install, and restart with `tauri-plugin-updater`. `scripts/check-version.mjs`, `scripts/verify-signing.sh`, and `.github/workflows/release.yml` publish releases.
+- `src-tauri/src/update.rs`: update check, install, and restart with `tauri-plugin-updater`. `scripts/check-version.mjs`, `scripts/verify-signing.sh`, and `.github/workflows/release.yml` publish releases. `scripts/install.sh` is the one-line installer; it finds assets by name (`Conch_aarch64.app.tar.gz`, `*_amd64.AppImage`), so renaming them breaks it.
 - `src-tauri/src/tray.rs`: menu bar icon, state display, show and hide of the main window. `indicator.rs`: floating recording indicator.
 - `scripts/`: runtime build (`build-runtimes.py`), brand assets, `setup-local-signing.sh`, `bundle-local.sh`.
 - `docs/validation/`: evidence and measurements. Do not state a result there that was not observed.
