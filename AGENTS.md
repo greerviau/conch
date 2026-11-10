@@ -29,7 +29,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 npm run bundle:local -- --install   # macOS: build, verify signing, replace /Applications/Conch.app
 ```
 
-Acceptance tests marked `#[ignore]` need `.runtime/` (models and a synthetic WAV) and built workers: `cargo test --test acceptance -- --ignored`.
+Acceptance tests marked `#[ignore]` need `.runtime/` (models, `ggml-silero-v5.1.2.bin`, and a synthetic WAV) and built workers: `cargo test --test acceptance -- --ignored`.
 `src-tauri/examples/latency.rs` measures stop-to-text latency on real workers.
 
 ## Conventions

@@ -189,7 +189,7 @@ fn acquire(
             "Bundled inference worker is missing; run the runtime build before packaging".into(),
         );
     }
-    if !model.is_file() {
+    if !model.is_file() || (kind == Kind::Whisper && !vad_path(model).is_file()) {
         return Err("Download the required model in Settings first".into());
     }
     if worker.lock().unwrap().cancelled {
@@ -246,7 +246,8 @@ fn launch(
         .args(["--threads", "4"]);
     if kind == Kind::Whisper {
         command.env("CONCH_WORKER_TOKEN", &token);
-        command.args(["--language", "en", "--suppress-nst"]);
+        command.args(["--language", "en", "--suppress-nst", "--vad", "--vad-model"]);
+        command.arg(vad_path(model));
         if cpu {
             command.arg("--no-gpu");
         }
@@ -391,13 +392,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
     }
     let mut lease = None;
     let (endpoint, token, system, user) = if cleanup.provider == "managed" {
-        let held = acquire(
-            workers,
-            &data.join("s1-mini-q4_k_m.gguf"),
-            Kind::Llama,
-            worker,
-            cpu,
-        )?;
+        let held = acquire(workers, &data.join(CLEANUP.name), Kind::Llama, worker, cpu)?;
         let (url, key) = (held.server.endpoint.clone(), held.server.token.clone());
         lease = Some(held);
         (
@@ -464,25 +459,73 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
 }
 #[derive(Clone, Copy)]
 pub struct Model {
+    pub id: &'static str,
     pub name: &'static str,
     pub url: &'static str,
     pub sha256: &'static str,
     pub size: u64,
 }
-pub const MODELS: [Model; 2] = [
+/// English recognizers the user can choose between, smallest first. Larger
+/// models make fewer errors and take longer to recognize a chunk.
+pub const RECOGNIZERS: [Model; 3] = [
     Model {
+        id: "tiny.en",
         name: "ggml-tiny.en.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin",
         sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
         size: 77704715,
     },
     Model {
-        name: "s1-mini-q4_k_m.gguf",
-        url: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/34add00a48a2e5d24e5a4ee5405a99620a3a240c/s1-mini-q4_k_m.gguf",
-        sha256: "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634",
-        size: 484219808,
+        id: "base.en",
+        name: "ggml-base.en.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin",
+        sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+        size: 147964211,
+    },
+    Model {
+        id: "small.en",
+        name: "ggml-small.en.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en.bin",
+        sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+        size: 487614201,
     },
 ];
+/// Silero voice detection model. The recognizer runs only on the
+/// parts of a chunk that contain speech, so silence and room noise after the
+/// user stops talking cannot turn into words such as "Thank you."
+pub const VAD: Model = Model {
+    id: "silero-vad",
+    name: "ggml-silero-v5.1.2.bin",
+    url: "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v5.1.2.bin",
+    sha256: "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf",
+    size: 885098,
+};
+pub const CLEANUP: Model = Model {
+    id: "s1-mini",
+    name: "s1-mini-q4_k_m.gguf",
+    url: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/34add00a48a2e5d24e5a4ee5405a99620a3a240c/s1-mini-q4_k_m.gguf",
+    sha256: "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634",
+    size: 484219808,
+};
+pub const MODELS: [Model; 5] = [RECOGNIZERS[0], RECOGNIZERS[1], RECOGNIZERS[2], VAD, CLEANUP];
+pub fn recognizer(id: &str) -> Option<Model> {
+    RECOGNIZERS.iter().find(|m| m.id == id).copied()
+}
+/// The models to download so `id` works: the model itself, plus the voice
+/// activity model when `id` is a recognizer. Models already on disk are left out.
+pub fn missing(data: &Path, id: &str) -> Result<Vec<Model>, String> {
+    let model = *MODELS.iter().find(|m| m.id == id).ok_or("Unknown model")?;
+    let mut wanted = vec![model];
+    if recognizer(id).is_some() {
+        wanted.push(VAD);
+    }
+    wanted.retain(|m| !data.join(m.name).is_file());
+    Ok(wanted)
+}
+/// The voice detection model sits next to the recognizer in the data directory.
+fn vad_path(model: &Path) -> PathBuf {
+    model.with_file_name(VAD.name)
+}
 pub fn download(data: &Path, model: Model, progress: impl Fn(u64, u64)) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
@@ -550,6 +593,8 @@ port = int(sys.argv[sys.argv.index("--port") + 1])
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "starts.log"), "a") as log:
     log.write(str(os.getpid()) + "\n")
+with open(os.path.join(here, "args.log"), "a") as log:
+    log.write("\0".join(sys.argv[1:]) + "\n")
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -572,6 +617,17 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             std::fs::write(&exe, SCRIPT).unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::write(dir.join("model.bin"), b"model").unwrap();
+            std::fs::write(dir.join(super::VAD.name), b"vad").unwrap();
+        }
+        pub fn arguments(dir: &Path) -> Vec<String> {
+            std::fs::read_to_string(dir.join("args.log"))
+                .unwrap()
+                .lines()
+                .next_back()
+                .unwrap()
+                .split('\0')
+                .map(String::from)
+                .collect()
         }
         pub fn last_request(dir: &Path) -> String {
             String::from_utf8_lossy(&std::fs::read(dir.join("last-request.bin")).unwrap())
@@ -602,6 +658,77 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         assert!(with.contains("name=\"prompt\""));
         assert!(with.contains(hint));
         shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn recognizer_starts_with_voice_detection_so_silence_yields_no_text() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        run(dir.path(), &new_worker());
+        let args = fake::arguments(dir.path());
+        assert!(args.iter().any(|a| a == "--vad"), "{args:?}");
+        let model = args.iter().position(|a| a == "--vad-model").unwrap();
+        assert_eq!(args[model + 1], dir.path().join(VAD.name).to_string_lossy());
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn recognition_without_the_voice_detection_model_asks_for_the_download() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        std::fs::remove_file(dir.path().join(VAD.name)).unwrap();
+        let error = transcribe(
+            dir.path(),
+            &dir.path().join("model.bin"),
+            vec![0; 64],
+            "",
+            &new_worker(),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("Download"), "{error}");
+        assert_eq!(fake::starts(dir.path()), 0);
+    }
+    #[test]
+    fn recognition_models_are_chosen_by_id_and_pinned() {
+        let ids: Vec<_> = RECOGNIZERS.iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["tiny.en", "base.en", "small.en"]);
+        assert_eq!(recognizer("small.en").unwrap().name, "ggml-small.en.bin");
+        assert!(recognizer("large-v3").is_none());
+        let mut all: Vec<_> = MODELS.iter().map(|m| m.id).collect();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), MODELS.len());
+        for model in MODELS {
+            assert_eq!(model.sha256.len(), 64, "{}", model.id);
+            assert!(model.url.contains("/resolve/"), "{}", model.id);
+            assert!(
+                !model.url.contains("/resolve/main/"),
+                "{} is not pinned",
+                model.id
+            );
+        }
+        assert_eq!(RECOGNIZERS[2].size, 487614201);
+        assert_eq!(VAD.size, 885098);
+    }
+    #[test]
+    fn downloading_a_recognizer_also_fetches_the_missing_voice_detection_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = |id: &str| -> Vec<&str> {
+            missing(dir.path(), id)
+                .unwrap()
+                .iter()
+                .map(|m| m.name)
+                .collect()
+        };
+        assert_eq!(plan("small.en"), ["ggml-small.en.bin", VAD.name]);
+        std::fs::write(dir.path().join("ggml-small.en.bin"), b"x").unwrap();
+        assert_eq!(plan("small.en"), [VAD.name]);
+        std::fs::write(dir.path().join(VAD.name), b"x").unwrap();
+        assert!(plan("small.en").is_empty());
+        assert_eq!(plan("tiny.en"), ["ggml-tiny.en.bin"]);
+        assert_eq!(plan("s1-mini"), ["s1-mini-q4_k_m.gguf"]);
+        assert!(missing(dir.path(), "huge").is_err());
     }
     #[cfg(unix)]
     #[test]

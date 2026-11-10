@@ -1,6 +1,7 @@
 //! Measures stop-to-text latency for a long recording: one request after the
 //! recording ends versus chunks recognized while it is still running.
 //! Usage: cargo run --release --example latency -- <workers dir> <model> <wav> <seconds>
+//! The voice detection model `ggml-silero-v5.1.2.bin` must sit next to `<model>`.
 use conch_lib::{chunk::Chunker, inference, pipeline::Transcriber};
 use std::{
     path::PathBuf,

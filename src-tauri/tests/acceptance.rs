@@ -170,6 +170,27 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
     assert!(hinted.to_lowercase().contains("do not change"));
     assert!(!hinted.contains("Vocabulary"));
     assert!(hinted.contains("podGC") && hinted.contains("maxGroups"));
+    // Without voice detection whisper tiny.en answers silence or room
+    // noise with "Thank you." when the initial prompt is present.
+    let mut seed = 1u32;
+    let noise: Vec<f32> = (0..3 * 16_000)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            ((seed >> 16) as f32 / 32_768.0 - 1.0) * 0.004
+        })
+        .collect();
+    for samples in [noise, vec![0.0; 16_000]] {
+        let text = inference::transcribe(
+            &workers,
+            &data.join("ggml-tiny.en.bin"),
+            conch_lib::audio::wav(&samples).unwrap(),
+            "Vocabulary: podGC, maxGroups.",
+            &inference::new_worker(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(text, "", "non-speech audio produced text");
+    }
     let mut snapshot = Snapshot::default();
     snapshot.cleanup.mode = "enhanced".into();
     let result = inference::enhanced(inference::CleanupRequest {
@@ -189,8 +210,9 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
 #[ignore = "Explicitly downloads the 77.7 MB recognition model"]
 fn managed_download_installs_verified_model_without_persisting_audio_or_transcripts() {
     let dir = tempfile::tempdir().unwrap();
-    let path = inference::download(dir.path(), inference::MODELS[0], |_, _| {}).unwrap();
-    assert_eq!(path.metadata().unwrap().len(), inference::MODELS[0].size);
+    let tiny = inference::recognizer("tiny.en").unwrap();
+    let path = inference::download(dir.path(), tiny, |_, _| {}).unwrap();
+    assert_eq!(path.metadata().unwrap().len(), tiny.size);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 

@@ -53,3 +53,10 @@ Tests written before the update logic reproduce these failures.
 # One-line installer
 
 - The eight `tests/install.test.mjs` tests fail because `scripts/install.sh` does not exist.
+
+# Recognition models and voice detection
+
+- The Rust tests `recognizer_starts_with_voice_detection_so_silence_yields_no_text`, `recognition_without_the_voice_detection_model_asks_for_the_download`, `recognition_models_are_chosen_by_id_and_pinned`, `downloading_a_recognizer_also_fetches_the_missing_voice_detection_model`, and `the_recognizer_defaults_to_tiny_en_and_survives_settings_saved_before_the_choice` fail to compile because `VAD`, `RECOGNIZERS`, `recognizer`, `missing`, `Model::id`, and `Settings::recognizer` do not exist.
+- The Rust tests `settings_must_name_an_offered_recognition_model` and `recording_needs_the_selected_recognizer_and_the_voice_detection_model` were written in the same step as `choices_valid` and `recognition_model`, so no separate failing run was recorded for them.
+- Review found two more gaps, and each got a failing test first. `an_unknown_stored_recognizer_loads_as_the_default` failed because `load` returned `"huge"`. The interface test for a copy with the recognizer but no voice detection model failed because the setup card said "Download the 78 MB speech model."
+- Five interface tests in `src/App.test.tsx` fail: the setup download sends `{ model: 0 }` instead of `{ id: "tiny.en" }`, recording stays enabled without the voice detection model, the setup text names 78 MB for every model, and the Settings page has no Recognition model menu.

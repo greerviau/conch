@@ -13,6 +13,8 @@ export function shortcutLabel(value: string, mac = false) {
 }
 export function Setup({
   installed,
+  modelSize = "78 MB",
+  voiceOnly = false,
   onDownload,
   downloading = false,
   progress = "",
@@ -31,6 +33,9 @@ export function Setup({
   busy = false,
 }: {
   installed: boolean;
+  modelSize?: string;
+  /** The recognizer is installed and only the voice detection model is missing. */
+  voiceOnly?: boolean;
   onDownload: () => void;
   downloading?: boolean;
   progress?: string;
@@ -64,7 +69,9 @@ export function Setup({
           <p>
             {installed
               ? "Installed. Speech stays on this device."
-              : "Download the 78 MB speech model. No account or payment required."}
+              : voiceOnly
+                ? "Conch now also needs a 0.9 MB voice detection model so silence is not turned into words. No account or payment required."
+                : `Download the ${modelSize} speech model. No account or payment required.`}
           </p>
         </div>
         {!installed && (

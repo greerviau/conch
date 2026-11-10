@@ -19,6 +19,7 @@ const fixture = () => ({
     mappings: [],
     hotkey: "Control+Space",
     activation: "push",
+    recognizer: "tiny.en",
     show_overlay: true,
     check_updates: true,
     cleanup: {
@@ -36,9 +37,12 @@ const fixture = () => ({
   error: "",
   indexes: [],
   models: [
-    ["ggml-tiny.en.bin", false],
-    ["s1-mini-q4_k_m.gguf", false],
-  ],
+    ["tiny.en", false],
+    ["base.en", false],
+    ["small.en", false],
+    ["silero-vad", false],
+    ["s1-mini", false],
+  ] as [string, boolean][],
   accessibility: false,
   microphone: "unknown",
   platform: "macos",
@@ -49,6 +53,10 @@ const fixture = () => ({
   update: { state: "idle" } as { state: string; detail?: string },
 });
 let view = fixture();
+const install = (...ids: string[]) =>
+  view.models.forEach((model) => {
+    if (ids.includes(model[0])) model[1] = true;
+  });
 beforeEach(() => {
   view = fixture();
   ipc.mockReset();
@@ -56,7 +64,9 @@ beforeEach(() => {
     async (name: string, args?: Record<string, unknown>) => {
       if (name === "view") return structuredClone(view);
       if (name === "download") {
-        view.models[0][1] = true;
+        // Downloading a recognizer also installs the voice detection model.
+        const id = args?.id as string;
+        install(id, ...(id === "s1-mini" ? [] : ["silero-vad"]));
         return;
       }
       if (name === "save_settings") {
@@ -82,7 +92,7 @@ it("starts model setup directly from the dictation page and enables recording on
   ).toBe(true);
   fireEvent.click(download);
   await waitFor(() =>
-    expect(ipc).toHaveBeenCalledWith("download", { model: 0 }),
+    expect(ipc).toHaveBeenCalledWith("download", { id: "tiny.en" }),
   );
   await waitFor(() =>
     expect(
@@ -95,9 +105,88 @@ it("starts model setup directly from the dictation page and enables recording on
   );
   expect(
     ipc.mock.calls.some(
-      ([name, args]) => name === "download" && args?.model === 1,
+      ([name, args]) => name === "download" && args?.id === "s1-mini",
     ),
   ).toBe(false);
+});
+it("keeps recording off until the voice detection model is installed with the recognizer", async () => {
+  view.microphone = "granted";
+  install("tiny.en");
+  render(<App />);
+  expect(
+    await screen.findByRole("button", { name: /download recognition model/i }),
+  ).toBeTruthy();
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Start recording",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+});
+it("tells a copy that has the recognizer but not voice detection that one small file is missing", async () => {
+  install("tiny.en");
+  render(<App />);
+  expect(await screen.findByText(/0\.9 MB voice detection model/)).toBeTruthy();
+  expect(screen.queryByText(/Download the 78 MB speech model/)).toBeNull();
+  fireEvent.click(
+    screen.getByRole("button", { name: /download recognition model/i }),
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("download", { id: "tiny.en" }),
+  );
+});
+it("sizes the setup download for the selected recognition model", async () => {
+  view.settings.recognizer = "small.en";
+  render(<App />);
+  expect(
+    await screen.findByText(/Download the 488 MB speech model/),
+  ).toBeTruthy();
+  fireEvent.click(
+    screen.getByRole("button", { name: /download recognition model/i }),
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("download", { id: "small.en" }),
+  );
+});
+it("lets the user choose a larger recognition model, download it, and save the choice", async () => {
+  install("tiny.en", "silero-vad");
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const choice = (await screen.findByRole("combobox", {
+    name: "Recognition model",
+  })) as HTMLSelectElement;
+  expect(choice.value).toBe("tiny.en");
+  expect(Array.from(choice.options).map((option) => option.value)).toEqual([
+    "tiny.en",
+    "base.en",
+    "small.en",
+  ]);
+  fireEvent.change(choice, { target: { value: "small.en" } });
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Download Small (English), 487.6 MB",
+    }),
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("download", { id: "small.en" }),
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({ recognizer: "small.en" }),
+    }),
+  );
+});
+it("offers no download for a recognition model that is already installed", async () => {
+  install("tiny.en", "base.en", "silero-vad");
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Recognition model" }),
+    { target: { value: "base.en" } },
+  );
+  expect(screen.queryByRole("button", { name: /^Download Base/ })).toBeNull();
 });
 it("offers automatic-paste permission from setup", async () => {
   render(<App />);
@@ -308,7 +397,7 @@ it("navigates between pages from the top bar and keeps one save bar", async () =
 });
 it("reads Ready when you are on the idle dictation page", async () => {
   view.microphone = "granted";
-  view.models[0][1] = true;
+  install("tiny.en", "silero-vad");
   render(<App />);
   expect(await screen.findByText("Ready when you are")).toBeTruthy();
   expect(
@@ -321,7 +410,7 @@ it("reads Ready when you are on the idle dictation page", async () => {
 });
 it("tells the user about the 180 second recording limit before they record", async () => {
   view.microphone = "granted";
-  view.models[0][1] = true;
+  install("tiny.en", "silero-vad");
   render(<App />);
   expect(await screen.findByText(/stop after 180 seconds/i)).toBeTruthy();
 });

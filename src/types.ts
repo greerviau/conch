@@ -25,6 +25,7 @@ export type Settings = {
   cleanup: Cleanup;
   hotkey: string;
   activation: string;
+  recognizer: string;
   show_overlay: boolean;
   check_updates: boolean;
 };

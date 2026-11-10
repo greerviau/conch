@@ -9,6 +9,7 @@ import { Mic, Stop } from "./icons";
 import { Updates } from "./Updates";
 import { Row, Toggle } from "./ui";
 import { folderName } from "./types";
+import { CLEANUP, MODELS, RECOGNIZERS, VAD, size } from "./models";
 import type { Cleanup, Settings, View } from "./types";
 
 const TABS = ["Dictation", "Repositories", "Mappings", "Settings"];
@@ -95,11 +96,11 @@ export default function App() {
       setNotice("Settings saved");
     }
   }
-  async function downloadModel(model: number) {
+  async function downloadModel(id: string) {
     setModelBusy(true);
     setProgress("Starting...");
     try {
-      await command("download", { model });
+      await command("download", { id });
     } finally {
       setModelBusy(false);
       setProgress("");
@@ -144,7 +145,15 @@ export default function App() {
         <p>{error || "Loading local settings..."}</p>
       </main>
     );
-  const modelInstalled = !!view.models[0]?.[1];
+  const installed = (id: string) =>
+    view.models.some(([model, ready]) => model === id && ready);
+  // A recognizer runs with the voice detection model, so both must be on disk.
+  const recognizerReady = (id: string) => installed(id) && installed(VAD.id);
+  const modelInstalled = recognizerReady(view.settings.recognizer);
+  const recognizerInfo = (id: string) =>
+    RECOGNIZERS.find((model) => model.id === id) ?? RECOGNIZERS[0];
+  const selectedRecognizer = recognizerInfo(view.settings.recognizer);
+  const draftRecognizer = recognizerInfo(draft.recognizer);
   const microphoneReady =
     view.platform !== "macos" || view.microphone === "granted";
   const needsSetup =
@@ -242,7 +251,9 @@ export default function App() {
               <Setup
                 mac={view.platform === "macos"}
                 installed={modelInstalled}
-                onDownload={() => void downloadModel(0)}
+                modelSize={`${Math.round(selectedRecognizer.mb)} MB`}
+                voiceOnly={installed(view.settings.recognizer)}
+                onDownload={() => void downloadModel(view.settings.recognizer)}
                 downloading={modelBusy || view.downloading}
                 progress={progress}
                 accessibility={view.accessibility || view.platform === "linux"}
@@ -607,7 +618,7 @@ export default function App() {
               </Row>
               {cleanup.mode === "enhanced" &&
                 cleanup.provider === "managed" &&
-                !view.models[1]?.[1] && (
+                !installed(CLEANUP.id) && (
                   <div className="callout">
                     <p>
                       Enhanced cleanup needs the optional S1-mini model (484
@@ -615,7 +626,7 @@ export default function App() {
                     </p>
                     <button
                       disabled={modelBusy || view.downloading}
-                      onClick={() => void downloadModel(1)}
+                      onClick={() => void downloadModel(CLEANUP.id)}
                     >
                       Download optional cleanup model
                     </button>
@@ -750,32 +761,73 @@ export default function App() {
                 semantic equivalence. Enhanced input is limited to 3,000 bytes.
               </p>
             </div>
-            <h3 className="group">Local models</h3>
+            <h3 className="group">Recognition</h3>
             <div className="card rows">
-              {view.models.map(([name, installed], i) => (
-                <Row
-                  key={name}
-                  title={
-                    i === 0 ? "Whisper tiny.en" : "S1-mini by Superwhisper"
-                  }
-                  note={
-                    i === 0
-                      ? "English recognition / 77.7 MB"
-                      : "Optional English cleanup / 484.2 MB"
+              <Row
+                title="Recognition model"
+                note="Larger models make fewer errors and take longer to finish after you stop speaking."
+              >
+                <select
+                  aria-label="Recognition model"
+                  value={draft.recognizer}
+                  onChange={(e) =>
+                    setDraft({ ...draft, recognizer: e.target.value })
                   }
                 >
-                  {installed ? (
-                    <span className="installed">Installed</span>
-                  ) : (
-                    <button
-                      disabled={modelBusy || view.downloading}
-                      onClick={() => void downloadModel(i)}
-                    >
-                      Download
-                    </button>
-                  )}
-                </Row>
-              ))}
+                  {RECOGNIZERS.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label} - {size(model)} - {model.note}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+              {!recognizerReady(draft.recognizer) && (
+                <div className="callout">
+                  <p>
+                    This model needs a one-time download before you can record
+                    with it.
+                  </p>
+                  <button
+                    disabled={modelBusy || view.downloading}
+                    onClick={() => void downloadModel(draft.recognizer)}
+                  >
+                    {installed(draftRecognizer.id)
+                      ? `Download ${VAD.label}, ${size(VAD)}`
+                      : `Download ${draftRecognizer.label}, ${size(draftRecognizer)}`}
+                  </button>
+                </div>
+              )}
+            </div>
+            <h3 className="group">Local models</h3>
+            <div className="card rows">
+              {view.models.map(([id, ready]) => {
+                const model = MODELS.find((m) => m.id === id);
+                if (!model) return null;
+                return (
+                  <Row
+                    key={id}
+                    title={model.label}
+                    note={`${
+                      id === CLEANUP.id
+                        ? "Optional English cleanup"
+                        : id === VAD.id
+                          ? "Skips silence before recognition"
+                          : "English recognition"
+                    } / ${size(model)}`}
+                  >
+                    {ready ? (
+                      <span className="installed">Installed</span>
+                    ) : (
+                      <button
+                        disabled={modelBusy || view.downloading}
+                        onClick={() => void downloadModel(id)}
+                      >
+                        Download
+                      </button>
+                    )}
+                  </Row>
+                );
+              })}
               <p className="note">
                 Explicit downloads are required once. Core dictation then works
                 offline.

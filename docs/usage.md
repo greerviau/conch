@@ -2,13 +2,26 @@
 
 ## Setup
 
-The Dictation page shows the setup checklist and a Download recognition model button.
-Download Whisper tiny.en there for English recognition.
+The Dictation page shows the setup checklist and a Download recognition model button for the recognition model chosen in Settings.
+Tiny (Whisper tiny.en, 77.7 MB) is the default.
 Enable microphone access and automatic paste from the same checklist.
 Conch reports permission status when you return from System Settings.
 The optional S1-mini by Superwhisper download enables managed Enhanced cleanup.
 Conch verifies model size and SHA-256 before installation.
 Model files remain in Conch's local application data directory.
+
+## Choosing a recognition model
+
+Settings has a Recognition model menu with three English models: Tiny (77.7 MB), Base (148.0 MB), and Small (487.6 MB).
+Larger models make fewer errors and take longer to finish after you stop speaking.
+`docs/validation/recognition-models.md` has the measurements.
+A model you have not downloaded shows a Download button under the menu, and Dictation asks for the download until the saved model is installed.
+Saving a different model stops the idle recognizer, and the next recording starts the new one.
+Retry recognizes the kept recording with the model selected when you retry.
+
+Every recognition model download also installs the 0.9 MB Silero voice detection model.
+The recognizer skips audio that voice detection classifies as silence or noise, so a pause or room noise after you stop speaking does not turn into words such as "Thank you."
+Copies that installed Tiny before this model existed show Download recognition model once more to fetch it.
 
 ## Repositories, mappings, and the shortcut
 
