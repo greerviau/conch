@@ -155,6 +155,23 @@ pub fn save_settings(
     inner.settings = settings;
     Ok(())
 }
+/// One page of a repository's indexed terms for the Repositories page.
+#[tauri::command]
+pub async fn index_terms(
+    app: AppHandle,
+    repository: String,
+    query: String,
+    kind: storage::TermKind,
+    offset: usize,
+    limit: usize,
+) -> Result<storage::TermPage, String> {
+    let dir = app.state::<AppState>().data.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        storage::index_terms(&dir, &repository, &query, kind, offset, limit.min(500))
+    })
+    .await
+    .map_err(|_| "Index worker failed")?
+}
 #[tauri::command]
 pub async fn refresh(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || refresh_now(&app))
@@ -383,16 +400,9 @@ fn process(
     }
     match delivery::deliver(&mut platform::NativeDesktop::default(), &result.text) {
         Ok(status) => {
-            inner.indicator_notice = Some((
-                Instant::now(),
-                if status.starts_with("Copied; paste requested") {
-                    "Paste sent".into()
-                } else if result.text.is_empty() {
-                    "No text to copy".into()
-                } else {
-                    "Copied - paste manually".into()
-                },
-            ));
+            inner.indicator_notice =
+                crate::indicator::delivery_notice(&status, result.text.is_empty())
+                    .map(|text| (Instant::now(), text));
             result.status.push_str(&format!(". {status}"));
         }
         Err(error) => inner.error = error,

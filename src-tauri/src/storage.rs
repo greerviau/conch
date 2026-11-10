@@ -1,5 +1,5 @@
 use crate::{
-    core::{Cleanup, Mapping, Snapshot},
+    core::{Cleanup, Mapping, Snapshot, Vocabulary},
     index::Index,
 };
 use serde::{Deserialize, Serialize};
@@ -146,6 +146,26 @@ pub struct IndexStatus {
     pub available: bool,
     pub incomplete: bool,
     pub skipped: usize,
+    #[serde(default, deserialize_with = "count_entries")]
+    pub entries: usize,
+}
+/// Counts a JSON list without allocating its elements.
+fn count_entries<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<usize, D::Error> {
+    struct Count;
+    impl<'de> serde::de::Visitor<'de> for Count {
+        type Value = usize;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a list")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut list: A) -> Result<usize, A::Error> {
+            let mut count = 0;
+            while list.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                count += 1;
+            }
+            Ok(count)
+        }
+    }
+    deserializer.deserialize_seq(Count)
 }
 pub fn index_status(dir: &Path) -> Result<Vec<(String, IndexStatus, i64)>, String> {
     let db = open(dir)?;
@@ -171,10 +191,73 @@ pub fn index_status(dir: &Path) -> Result<Vec<(String, IndexStatus, i64)>, Strin
     })
     .collect()
 }
+/// Which indexed terms the repository page lists. A term is a file term when
+/// it is a relative path or a file name; every other term is a declared symbol.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TermKind {
+    #[default]
+    All,
+    Files,
+    Symbols,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct TermPage {
+    pub items: Vec<Vocabulary>,
+    pub total: usize,
+}
+fn is_file_term(term: &Vocabulary) -> bool {
+    term.text == term.file || term.file.rsplit('/').next() == Some(term.text.as_str())
+}
+/// One page of a repository's indexed terms that match `query` (a
+/// case-insensitive substring of the term) and `kind`. `total` counts every
+/// match, not only the page.
+pub fn index_terms(
+    dir: &Path,
+    repository: &str,
+    query: &str,
+    kind: TermKind,
+    offset: usize,
+    limit: usize,
+) -> Result<TermPage, String> {
+    use rusqlite::OptionalExtension;
+    let json: Option<String> = open(dir)?
+        .query_row(
+            "SELECT value FROM indexes WHERE repository=?1",
+            [repository],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|_| "Cannot read index")?;
+    let Some(json) = json else {
+        return Ok(TermPage {
+            items: Vec::new(),
+            total: 0,
+        });
+    };
+    let index: Index = serde_json::from_str(&json).map_err(|_| "Invalid index")?;
+    let query = query.trim().to_lowercase();
+    let mut total = 0;
+    let mut items = Vec::new();
+    for term in index.entries {
+        let wanted = match kind {
+            TermKind::All => true,
+            TermKind::Files => is_file_term(&term),
+            TermKind::Symbols => !is_file_term(&term),
+        };
+        if !wanted || !term.text.to_lowercase().contains(&query) {
+            continue;
+        }
+        if total >= offset && items.len() < limit {
+            items.push(term);
+        }
+        total += 1;
+    }
+    Ok(TermPage { items, total })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Vocabulary;
     #[test]
     fn status_reports_index_flags_without_needing_entries() {
         let dir = tempfile::tempdir().unwrap();
@@ -194,5 +277,74 @@ mod tests {
         assert_eq!(status[0].0, "r");
         assert!(status[0].1.available && status[0].1.incomplete);
         assert_eq!(status[0].1.skipped, 3);
+    }
+
+    fn term(text: &str, file: &str) -> Vocabulary {
+        Vocabulary {
+            text: text.into(),
+            repository: "r".into(),
+            file: file.into(),
+        }
+    }
+    fn sample(dir: &Path) {
+        let index = Index {
+            entries: vec![
+                term("api/users.ts", "api/users.ts"),
+                term("users.ts", "api/users.ts"),
+                term("fetchUserProfile", "api/users.ts"),
+                term("main.py", "main.py"),
+                term("FetchError", "lib/http.ts"),
+                term("fetch_user_flags", "scripts/flags.py"),
+            ],
+            skipped: 0,
+            incomplete: false,
+            available: true,
+        };
+        put_index(dir, "r", &index).unwrap();
+    }
+    #[test]
+    fn status_counts_entries_without_loading_them() {
+        let dir = tempfile::tempdir().unwrap();
+        sample(dir.path());
+        assert_eq!(index_status(dir.path()).unwrap()[0].1.entries, 6);
+    }
+    #[test]
+    fn terms_come_back_in_pages_with_the_total() {
+        let dir = tempfile::tempdir().unwrap();
+        sample(dir.path());
+        let page = index_terms(dir.path(), "r", "", TermKind::All, 2, 3).unwrap();
+        assert_eq!(page.total, 6);
+        let texts: Vec<_> = page.items.iter().map(|v| v.text.as_str()).collect();
+        assert_eq!(texts, ["fetchUserProfile", "main.py", "FetchError"]);
+        let past_end = index_terms(dir.path(), "r", "", TermKind::All, 60, 3).unwrap();
+        assert_eq!((past_end.items.len(), past_end.total), (0, 6));
+    }
+    #[test]
+    fn terms_search_ignores_case_and_counts_only_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        sample(dir.path());
+        let page = index_terms(dir.path(), "r", "FETCH", TermKind::All, 0, 10).unwrap();
+        assert_eq!(page.total, 3);
+        assert!(
+            page.items
+                .iter()
+                .all(|v| v.text.to_lowercase().contains("fetch"))
+        );
+    }
+    #[test]
+    fn terms_filter_separates_file_names_from_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        sample(dir.path());
+        let files = index_terms(dir.path(), "r", "", TermKind::Files, 0, 10).unwrap();
+        let texts: Vec<_> = files.items.iter().map(|v| v.text.as_str()).collect();
+        assert_eq!(texts, ["api/users.ts", "users.ts", "main.py"]);
+        let symbols = index_terms(dir.path(), "r", "", TermKind::Symbols, 0, 10).unwrap();
+        assert_eq!(symbols.total, 3);
+    }
+    #[test]
+    fn terms_of_an_unindexed_repository_are_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let page = index_terms(dir.path(), "missing", "", TermKind::All, 0, 10).unwrap();
+        assert_eq!((page.items.len(), page.total), (0, 0));
     }
 }

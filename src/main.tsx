@@ -4,7 +4,10 @@ import App from "./App";
 import { RecordingIndicator } from "./RecordingIndicator";
 import "./style.css";
 const overlay = new URLSearchParams(window.location.search).has("overlay");
-if (overlay) document.body.classList.add("overlay-surface");
+if (overlay) {
+  document.documentElement.classList.add("overlay-surface");
+  document.body.classList.add("overlay-surface");
+}
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {overlay ? <RecordingIndicator /> : <App />}

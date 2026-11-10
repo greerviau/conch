@@ -25,6 +25,7 @@ pub fn run() {
             app::set_hotkey,
             app::save_settings,
             app::refresh,
+            app::index_terms,
             app::start,
             app::finish,
             app::cancel,
