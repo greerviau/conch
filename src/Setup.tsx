@@ -1,4 +1,5 @@
 import { PasteAccess } from "./PasteAccess";
+import { Check } from "./icons";
 import { useEffect, useRef, useState } from "react";
 
 export function shortcutLabel(value: string, mac = false) {
@@ -47,23 +48,17 @@ export function Setup({
   installationPath?: string | null;
   busy?: boolean;
 }) {
+  const microphoneReady = microphone === "system" || microphone === "granted";
+  const pasteReady = clipboardOnly || accessibility;
   return (
-    <section className="setup-card" aria-label="Dictation setup">
-      <div className="section-title">
-        <div>
-          <p className="eyebrow">GET STARTED</p>
-          <h2>
-            {installed
-              ? "Your dictation setup"
-              : "One download, then you can dictate"}
-          </h2>
-        </div>
-        <span className="badge">
-          {installed ? "Model installed" : "Setup needed"}
-        </span>
-      </div>
-      <div className="setup-step">
-        <span className="step-number">1</span>
+    <section className="card setup" aria-label="Dictation setup">
+      <h2>
+        {installed
+          ? "Your dictation setup"
+          : "One download, then you can dictate"}
+      </h2>
+      <div className="step">
+        <Step done={installed} number={1} />
         <div>
           <h3>English recognition</h3>
           <p>
@@ -84,8 +79,8 @@ export function Setup({
           </button>
         )}
       </div>
-      <div className="setup-step">
-        <span className="step-number">2</span>
+      <div className="step">
+        <Step done={microphoneReady} number={2} />
         <div>
           <h3>Microphone</h3>
           <p>
@@ -98,14 +93,12 @@ export function Setup({
                   : "Allow microphone access before your first recording."}
           </p>
         </div>
-        {microphone !== "system" &&
-          microphone !== "granted" &&
-          onMicrophone && (
-            <button onClick={onMicrophone}>Enable microphone</button>
-          )}
+        {!microphoneReady && onMicrophone && (
+          <button onClick={onMicrophone}>Enable microphone</button>
+        )}
       </div>
-      <div className="setup-step">
-        <span className="step-number">3</span>
+      <div className="step">
+        <Step done={pasteReady} number={3} />
         <div>
           <h3>
             {clipboardOnly ? "Clipboard delivery" : "Paste into other apps"}
@@ -120,37 +113,47 @@ export function Setup({
               onRestart={onRestart}
             />
           ) : (
-            <>
-              <p>
-                {clipboardOnly
-                  ? "This desktop copies your text. Paste it manually into the receiving app."
-                  : accessibility
-                    ? "Automatic paste is enabled for supported text fields."
-                    : "Enable Accessibility for Conch to paste after dictation. Clipboard copying works without it."}
-              </p>
-              {!clipboardOnly && !accessibility && onPermission && (
-                <button onClick={onPermission}>Enable automatic paste</button>
-              )}
-            </>
+            <p>
+              {clipboardOnly
+                ? "This desktop copies your text. Paste it manually into the receiving app."
+                : accessibility
+                  ? "Automatic paste is enabled for supported text fields."
+                  : "Enable Accessibility for Conch to paste after dictation. Clipboard copying works without it."}
+            </p>
           )}
         </div>
+        {!(mac && onRepair && onRestart && onPermission) &&
+          !clipboardOnly &&
+          !accessibility &&
+          onPermission && (
+            <button onClick={onPermission}>Enable automatic paste</button>
+          )}
       </div>
       {hotkey && (
-        <div className="setup-howto">
+        <div className="howto">
           <kbd>{shortcutLabel(hotkey, mac)}</kbd>
           <span>
             {toggle
               ? "Focus a text field in another app. Press the shortcut to start, then press again to finish."
               : "Focus a text field in another app, hold to speak, then release."}
           </span>
-          <button onClick={onSettings}>Change shortcut</button>
+          <button className="ghost" onClick={onSettings}>
+            Change shortcut
+          </button>
         </div>
       )}
-      <p className="muted">
+      <p className="note">
         Repository context and Enhanced cleanup are optional. Start with Basic
         cleanup.
       </p>
     </section>
+  );
+}
+function Step({ done, number }: { done: boolean; number: number }) {
+  return (
+    <span className={`step-mark${done ? " done" : ""}`} aria-hidden="true">
+      {done ? <Check /> : number}
+    </span>
   );
 }
 export function ShortcutRecorder({
@@ -273,11 +276,9 @@ export function ShortcutRecorder({
               : "Press your shortcut - Esc to cancel"
             : "Change shortcut"}
       </button>
-      <small>
-        {capturing
-          ? "Recording shortcuts are paused while you choose."
-          : "Click Change shortcut, then press your preferred key combination."}
-      </small>
+      {capturing && (
+        <small>Recording shortcuts are paused while you choose.</small>
+      )}
       {error && (
         <p role="alert" className="error">
           {error}

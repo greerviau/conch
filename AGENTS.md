@@ -6,7 +6,7 @@ Use the glossary's terms verbatim and update the spec and glossary when a decisi
 
 ## Layout
 
-- `src/`: React interface (`App.tsx`, setup and paste-permission components, recording indicator) with Vitest component tests beside each file.
+- `src/`: React interface with Vitest component tests beside each file. `App.tsx` holds the top bar, Dictation, and Settings; `Repositories.tsx`, `Terms.tsx`, and `Mappings.tsx` are the other pages. `Setup.tsx` and `PasteAccess.tsx` are the setup checklist, `RecordingIndicator.tsx` and `Spiral.tsx` the floating indicator, `style.css` the light and dark themes.
 - `src-tauri/src/app.rs`: Tauri commands, shared state, the recording flow, and `process` (recognition result to delivery).
 - `src-tauri/src/inference.rs`: worker pool (`acquire`, `preload`, `reap_idle_within`, `shutdown`, `reap_orphans`), recognizer and cleanup requests, model downloads.
 - `src-tauri/src/chunk.rs`: splits a growing recording at pauses. `pipeline.rs`: recognizes chunks on a background thread. `audio.rs`: microphone capture and WAV encoding.

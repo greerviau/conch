@@ -12,10 +12,17 @@ Model files remain in Conch's local application data directory.
 
 ## Repositories, mappings, and the shortcut
 
-Choose a repository folder, save, and refresh its index.
-Manual path entry remains available under Enter a path manually.
-Select the repositories that supply context before recording.
-Define global or repository mappings for recurring transcription errors.
+The top bar switches between Dictation, Repositories, Mappings, and Settings.
+On Repositories, click Add repository to choose a folder, or Enter a path instead to type one.
+Changes to repositories, mappings, and settings stay in a draft until you click Save changes in the bar that appears at the bottom.
+After saving, click Refresh indexes.
+Each repository shows Ready, Partial index, or Folder not found, its term count, and when it was last indexed.
+Click Terms to browse what Conch indexed for a repository: file paths, file names, and function, class, and type names.
+Search the terms, filter them to Files or Symbols, and move through them 100 at a time with Previous and Next.
+Click Exclusions to add ignore patterns, one per line.
+Select the repositories that supply context on the Dictation page before recording.
+Define global or repository mappings for recurring transcription errors on Mappings.
+Each mapping has an enable switch, the spoken phrase, the replacement text, and a scope.
 The default shortcut is Command-or-Control + Shift + Space in push-to-talk mode.
 In Settings, click Change shortcut and press the desired combination.
 Conch pauses its registered shortcut during capture and ignores repeat events.
@@ -35,7 +42,10 @@ Conch stops workers left by a crashed earlier run when it starts.
 
 ## Recording indicator
 
-A floating indicator shows microphone startup, recording level, duration, processing, and the delivery outcome above other apps.
+A small dark pill floats above other apps while you dictate.
+It shows animated level bars and the elapsed time while recording.
+While Conch prepares the result, the bars become a single line that draws the conch spiral from its center, then erases from the center.
+After delivery, the pill shows the outcome or error as text.
 The indicator ignores pointer input and does not activate Conch.
 It uses the monitor work area to stay above the Dock or taskbar, with 24 logical pixels of bottom clearance when space permits.
 It refreshes its bounds while visible to follow work-area changes.
