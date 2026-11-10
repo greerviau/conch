@@ -1,7 +1,7 @@
 use crate::delivery::Desktop;
 #[derive(Default)]
 pub struct NativeDesktop {
-    reason: &'static str,
+    reason: String,
 }
 impl Desktop for NativeDesktop {
     type Focus = Focus;
@@ -28,7 +28,7 @@ impl Desktop for NativeDesktop {
             .map_err(|_| "Clipboard unavailable".into())
     }
     fn fallback_reason(&self) -> &str {
-        self.reason
+        &self.reason
     }
     fn paste(&mut self) -> Result<(), String> {
         paste()
@@ -38,8 +38,8 @@ impl Desktop for NativeDesktop {
 #[derive(PartialEq)]
 pub struct Focus;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn focused() -> Result<Focus, &'static str> {
-    Err("Automatic paste is unavailable on this desktop; paste the copied text manually")
+fn focused() -> Result<Focus, String> {
+    Err("Automatic paste is unavailable on this desktop; paste the copied text manually".into())
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn paste() -> Result<(), String> {
@@ -71,6 +71,12 @@ mod macos {
             settable: *mut u8,
         ) -> i32;
         fn AXUIElementGetPid(element: CFTypeRef, pid: *mut i32) -> i32;
+        fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
+        fn AXUIElementSetAttributeValue(
+            element: CFTypeRef,
+            name: *const c_void,
+            value: CFTypeRef,
+        ) -> i32;
         fn AXIsProcessTrusted() -> bool;
         fn AXUIElementSetMessagingTimeout(element: CFTypeRef, timeout: f32) -> i32;
     }
@@ -110,17 +116,56 @@ mod macos {
     pub fn permission() -> bool {
         unsafe { AXIsProcessTrusted() }
     }
-    pub fn focused() -> Result<Focus, &'static str> {
+    /// Electron and Chromium build no accessibility tree for a process until an
+    /// assistive client sets AXManualAccessibility on its application element.
+    /// Returns true when the attribute was set for the first time in this run.
+    fn wake_application(system: CFTypeRef) -> bool {
+        use core_foundation::boolean::CFBoolean;
+        static WOKEN: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+        let Some(app) = attr(system, "AXFocusedApplication") else {
+            return false;
+        };
+        let mut pid = 0;
+        if unsafe { AXUIElementGetPid(app.0, &mut pid) } != 0 || pid == std::process::id() as i32 {
+            return false;
+        }
+        let mut woken = WOKEN.lock().unwrap();
+        if woken.contains(&pid) {
+            return false;
+        }
+        woken.push(pid);
+        let element = Focus(unsafe { AXUIElementCreateApplication(pid) });
+        let key = CFString::new("AXManualAccessibility");
+        unsafe {
+            AXUIElementSetAttributeValue(
+                element.0,
+                key.as_concrete_TypeRef().cast(),
+                CFBoolean::true_value().as_concrete_TypeRef().cast(),
+            ) == 0
+        }
+    }
+    /// Called when recording starts so the target app has built its tree by the
+    /// time the transcript is ready.
+    pub fn prepare() {
+        if !permission() {
+            return;
+        }
+        let system = Focus(unsafe { AXUIElementCreateSystemWide() });
+        wake_application(system.0);
+    }
+    pub fn focused() -> Result<Focus, String> {
         if !permission() {
             return Err(
-                "Enable Conch in Privacy & Security / Accessibility to paste automatically",
+                "Enable Conch in Privacy & Security / Accessibility to paste automatically".into(),
             );
         }
         let system = Focus(unsafe { AXUIElementCreateSystemWide() });
         unsafe {
             AXUIElementSetMessagingTimeout(system.0, 0.25);
         }
-
+        if wake_application(system.0) {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
         let element = attr(system.0, "AXFocusedUIElement")
             .ok_or("The focused app does not expose its text input")?;
         unsafe {
@@ -130,11 +175,11 @@ mod macos {
             .ok_or("The focused element has no accessible text role")?;
         let subrole = string_attr(element.0, "AXSubrole").unwrap_or_default();
         if subrole == "AXSecureTextField" {
-            return Err("Secure fields receive clipboard output only");
+            return Err("Secure fields receive clipboard output only".into());
         }
         let mut pid = 0;
         if unsafe { AXUIElementGetPid(element.0, &mut pid) } != 0 {
-            return Err("Cannot identify the focused application");
+            return Err("Cannot identify the focused application".into());
         }
         let enabled = attr(element.0, "AXEnabled").and_then(|value| {
             use core_foundation::{base::CFGetTypeID, boolean::CFBoolean};
@@ -167,9 +212,14 @@ mod macos {
                 || attr(element.0, "AXHighestEditableAncestor").is_some(),
         };
         if !super::eligible_input(&input) {
-            return Err(
-                "The focused control is not an enabled editable input; paste the copied text manually",
-            );
+            return Err(format!(
+                "The focused control is not an editable input (role {role}, subrole {}, value settable {}, selection settable {}, range settable {}, web editable {}); paste the copied text manually",
+                if subrole.is_empty() { "none" } else { &subrole },
+                input.value_settable,
+                input.selected_text_settable,
+                input.selected_range_settable,
+                input.web_editable,
+            ));
         }
         Ok(element)
     }
@@ -192,7 +242,7 @@ mod macos {
     }
 }
 #[cfg(target_os = "macos")]
-pub use macos::{Focus, permission};
+pub use macos::{Focus, permission, prepare};
 #[cfg(target_os = "macos")]
 use macos::{focused, paste};
 
@@ -204,14 +254,17 @@ pub use windows::Focus;
 #[cfg(target_os = "windows")]
 use windows::paste;
 #[cfg(target_os = "windows")]
-fn focused() -> Result<Focus, &'static str> {
-    windows::focused().ok_or("The focused control does not expose a writable UI Automation input")
+fn focused() -> Result<Focus, String> {
+    windows::focused()
+        .ok_or_else(|| "The focused control does not expose a writable UI Automation input".into())
 }
 
 #[cfg(target_os = "windows")]
 pub fn permission() -> bool {
     true
 }
+#[cfg(not(target_os = "macos"))]
+pub fn prepare() {}
 
 #[derive(Default)]
 pub struct InputEvidence<'a> {

@@ -9,6 +9,7 @@
     "check": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs && vitest run",
     "tauri": "tauri",
+    "bundle:local": "APPLE_SIGNING_IDENTITY=$(scripts/setup-local-signing.sh) tauri build --bundles app",
     "lint": "eslint src",
     "format:check": "prettier --check src",
     "test:ui": "vitest run",

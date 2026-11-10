@@ -200,6 +200,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     let level = inner.level.clone();
     level.store(0, std::sync::atomic::Ordering::Relaxed);
     drop(inner);
+    std::thread::spawn(platform::prepare);
     let handle = app.clone();
     std::thread::spawn(move || {
         let captured = audio::capture(
