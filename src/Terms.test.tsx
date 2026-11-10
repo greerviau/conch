@@ -123,3 +123,38 @@ it("keeps the page it is on until the search text changes", async () => {
     expect.objectContaining({ offset: 100 }),
   );
 });
+it("loads the terms again when the index is refreshed", async () => {
+  const { rerender } = render(
+    <RepositoryTerms
+      id="r1"
+      name="api-server"
+      refreshed={1}
+      onBack={vi.fn()}
+    />,
+  );
+  await screen.findByText("1-100 of 150 terms");
+  const before = ipc.mock.calls.length;
+  rerender(
+    <RepositoryTerms
+      id="r1"
+      name="api-server"
+      refreshed={2}
+      onBack={vi.fn()}
+    />,
+  );
+  await waitFor(() => expect(ipc.mock.calls.length).toBe(before + 1));
+});
+it("keeps the range of the page it shows when the next page fails", async () => {
+  open();
+  await screen.findByText("1-100 of 150 terms");
+  ipc.mockRejectedValueOnce("Cannot read index");
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.getByText("1-100 of 150 terms")).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Next" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(await screen.findByText("101-150 of 150 terms")).toBeTruthy();
+});

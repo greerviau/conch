@@ -16,7 +16,7 @@ The top bar switches between Dictation, Repositories, Mappings, and Settings.
 On Repositories, click Add repository to choose a folder, or Enter a path instead to type one.
 Changes to repositories, mappings, and settings stay in a draft until you click Save changes in the bar that appears at the bottom.
 After saving, click Refresh indexes.
-Each repository shows Ready, Partial index, or Folder not found, its term count, and when it was last indexed.
+Each repository shows Ready, Partial index, or Folder not found, its term count, when it was last indexed, and how many symbol extractions were skipped.
 Click Terms to browse what Conch indexed for a repository: file paths, file names, and function, class, and type names.
 Search the terms, filter them to Files or Symbols, and move through them 100 at a time with Previous and Next.
 Click Exclusions to add ignore patterns, one per line.

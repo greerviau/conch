@@ -77,6 +77,7 @@ export function Repositories({
       <RepositoryTerms
         id={browsing.id}
         name={folderName(browsing.root)}
+        refreshed={indexes.find((x) => x[0] === browsing.id)?.[2]}
         onBack={() => setTerms(null)}
       />
     );
@@ -163,7 +164,11 @@ export function Repositories({
                     <span className={`tag ${tag[0]}`}>{tag[1]}</span>
                     {status?.[1].available && (
                       <span>
-                        {`${status[1].entries.toLocaleString()} terms - updated ${ago(status[2], now)}`}
+                        {`${status[1].entries.toLocaleString()} terms - updated ${ago(status[2], now)}${
+                          status[1].skipped
+                            ? ` - ${status[1].skipped.toLocaleString()} symbol extractions skipped`
+                            : ""
+                        }`}
                       </span>
                     )}
                   </div>

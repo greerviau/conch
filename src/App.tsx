@@ -293,6 +293,9 @@ export default function App() {
               </button>
               <h2>{heroTitle}</h2>
               {heroHint && <p>{heroHint}</p>}
+              {canRecord && view.phase === "idle" && (
+                <p className="note">Recordings stop after 180 seconds.</p>
+              )}
               {(view.phase !== "idle" || view.can_retry) && (
                 <div className="actions">
                   {view.phase !== "idle" && (

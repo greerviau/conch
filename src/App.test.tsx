@@ -266,3 +266,9 @@ it("reads Ready when you are on the idle dictation page", async () => {
     ).disabled,
   ).toBe(false);
 });
+it("tells the user about the 180 second recording limit before they record", async () => {
+  view.microphone = "granted";
+  view.models[0][1] = true;
+  render(<App />);
+  expect(await screen.findByText(/stop after 180 seconds/i)).toBeTruthy();
+});

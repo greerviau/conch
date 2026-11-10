@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  cleanup,
+  waitFor,
+} from "@testing-library/react";
 import { Repositories } from "./Repositories";
 import type { Repository } from "./types";
 const ipc = vi.hoisted(() => vi.fn());
@@ -149,4 +155,42 @@ it("resets an open exclusions editor when the draft is discarded", () => {
   expect(box().value).toBe("vendor/");
   rerender(<Repositories {...p} repositories={repos} />);
   expect(box().value).toBe("");
+});
+it("reports symbol extractions skipped for a ready repository", () => {
+  render(
+    <Repositories
+      {...props()}
+      indexes={[
+        [
+          "a",
+          { available: true, incomplete: false, skipped: 7, entries: 10 },
+          NOW - 60,
+        ],
+      ]}
+    />,
+  );
+  expect(screen.getByText("Ready")).toBeTruthy();
+  expect(screen.getByText(/7 symbol extractions skipped/)).toBeTruthy();
+});
+it("reloads the open terms when the repository is indexed again", async () => {
+  const p = props();
+  const { rerender } = render(<Repositories {...p} />);
+  fireEvent.click(screen.getByRole("button", { name: "Terms for conch" }));
+  await screen.findByText("No terms indexed yet");
+  const before = ipc.mock.calls.length;
+  rerender(
+    <Repositories
+      {...p}
+      indexes={[
+        [
+          "a",
+          { available: true, incomplete: false, skipped: 0, entries: 1300 },
+          NOW + 30,
+        ],
+        indexes[1],
+        indexes[2],
+      ]}
+    />,
+  );
+  await waitFor(() => expect(ipc.mock.calls.length).toBe(before + 1));
 });

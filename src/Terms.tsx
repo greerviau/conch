@@ -23,17 +23,23 @@ function Highlight({ text, query }: { text: string; query: string }) {
 export function RepositoryTerms({
   id,
   name,
+  refreshed,
   onBack,
 }: {
   id: string;
   name: string;
+  /** Changes when the repository is indexed again, so the list reloads. */
+  refreshed?: number;
   onBack: () => void;
 }) {
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<Kind>("all");
   const [offset, setOffset] = useState(0);
-  const [page, setPage] = useState<TermPage>();
+  // The page on screen with the offset it was requested at. A failed request
+  // leaves the previous page and its own range in place.
+  const [page, setPage] = useState<TermPage & { offset: number }>();
+  const [reload, setReload] = useState(0);
   const [error, setError] = useState("");
   useEffect(() => {
     // Only a changed search text restarts from the first page.
@@ -56,7 +62,7 @@ export function RepositoryTerms({
     })
       .then((next) => {
         if (stale) return;
-        setPage(next);
+        setPage({ ...next, offset });
         setError("");
       })
       .catch((e) => {
@@ -65,11 +71,17 @@ export function RepositoryTerms({
     return () => {
       stale = true;
     };
-  }, [id, query, kind, offset]);
+  }, [id, query, kind, offset, reload, refreshed]);
   const filtered = query !== "" || kind !== "all";
   const total = page?.total ?? 0;
-  const from = total ? offset + 1 : 0;
-  const to = offset + (page?.items.length ?? 0);
+  const shown = page?.offset ?? 0;
+  const from = total ? shown + 1 : 0;
+  const to = shown + (page?.items.length ?? 0);
+  // Asking for the offset that already failed has to fetch again.
+  const go = (next: number) => {
+    if (next === offset) setReload((n) => n + 1);
+    else setOffset(next);
+  };
   return (
     <div className="terms">
       <button className="crumb" onClick={onBack}>
@@ -121,7 +133,7 @@ export function RepositoryTerms({
         <>
           <div className="card list">
             {page?.items.map((term, i) => (
-              <div className="term" key={`${offset}-${i}`}>
+              <div className="term" key={`${shown}-${i}`}>
                 <code>
                   <Highlight text={term.text} query={query} />
                 </code>
@@ -134,14 +146,14 @@ export function RepositoryTerms({
               <span>{`${from}-${to} of ${total.toLocaleString()} ${filtered ? "matches" : "terms"}`}</span>
               <span className="actions">
                 <button
-                  disabled={offset === 0}
-                  onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                  disabled={shown === 0}
+                  onClick={() => go(Math.max(0, shown - PAGE_SIZE))}
                 >
                   Previous
                 </button>
                 <button
-                  disabled={offset + PAGE_SIZE >= total}
-                  onClick={() => setOffset(offset + PAGE_SIZE)}
+                  disabled={shown + PAGE_SIZE >= total}
+                  onClick={() => go(shown + PAGE_SIZE)}
                 >
                   Next
                 </button>
