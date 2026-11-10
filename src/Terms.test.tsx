@@ -111,3 +111,15 @@ it("says when nothing matches and returns to the list", async () => {
   fireEvent.click(screen.getByRole("button", { name: /Repositories/ }));
   expect(back).toHaveBeenCalledOnce();
 });
+it("keeps the page it is on until the search text changes", async () => {
+  open();
+  await screen.findByText("1-100 of 150 terms");
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  await screen.findByText("101-150 of 150 terms");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  expect(screen.getByText("101-150 of 150 terms")).toBeTruthy();
+  expect(ipc).toHaveBeenLastCalledWith(
+    "index_terms",
+    expect.objectContaining({ offset: 100 }),
+  );
+});

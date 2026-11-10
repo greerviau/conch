@@ -36,12 +36,15 @@ export function RepositoryTerms({
   const [page, setPage] = useState<TermPage>();
   const [error, setError] = useState("");
   useEffect(() => {
+    // Only a changed search text restarts from the first page.
+    const next = input.trim();
+    if (next === query) return;
     const timer = window.setTimeout(() => {
-      setQuery(input.trim());
+      setQuery(next);
       setOffset(0);
     }, 150);
     return () => window.clearTimeout(timer);
-  }, [input]);
+  }, [input, query]);
   useEffect(() => {
     let stale = false;
     invoke<TermPage>("index_terms", {
