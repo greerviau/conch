@@ -1022,6 +1022,10 @@ body.overlay-surface {
   user-select: none;
 }
 .recording-indicator {
+  /* The rim keeps the black pill visible over dark windows. Its radius is half
+     the 44 px window height, which is also the corner radius macOS applies. */
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 22px;
   height: 100vh;
   display: flex;
   align-items: center;
