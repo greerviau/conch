@@ -9,13 +9,15 @@
 - Repository suggestion: a proposed transcript edit derived from indexed vocabulary that requires user acceptance. It matches the exact words of an identifier, a spelled-out acronym, or a close misspelling of a multi-word identifier.
 - Recognition hint: the short list of mapping replacements and identifiers that Conch sends the local recognizer as its initial prompt so it spells them correctly. It is not sent to cleanup endpoints.
 - Always replace: accepting a repository suggestion and saving an explicit mapping from the heard phrase to the candidate, so later recordings apply it without review.
-- Result: the editable transcript after mappings and configured cleanup, with optional accepted suggestions and manual edits. Initial delivery copies it automatically and pastes it into an eligible focused input; subsequent review edits require explicit copying.
+- Result: the editable transcript after mappings and configured cleanup, with optional accepted suggestions and manual edits. Initial delivery copies it automatically and, while Automatic paste is on, pastes it into an eligible focused input; subsequent review edits require explicit copying.
 - Push-to-talk: recording activation mode that starts on hotkey press and finishes on release.
 - Toggle recording: recording activation mode that starts on one hotkey press and finishes on the next.
 - Eligible focused input: the currently focused text-editable element that the app can identify with sufficient certainty and that is not a secure/password field.
+- Automatic paste: the Settings choice, on by default, to paste the delivered result into an eligible focused input. Off copies the result only and needs no paste permission.
 - Clipboard fallback: delivery that retains the result on the clipboard when automatic paste cannot be performed.
-- Basic cleanup: local deterministic removal of configured hesitation tokens with limited whitespace/punctuation repair.
-- Enhanced cleanup: optional model-assisted transcript cleanup using managed local S1-mini or a configured local/remote endpoint, with Basic fallback on failure.
+- Basic cleanup: local deterministic removal of configured hesitation tokens with limited whitespace/punctuation repair. It always runs, and blank tokens leave the transcript unchanged.
+- Enhanced cleanup: optional model-assisted transcript cleanup using managed local S1-mini or a configured local/remote endpoint, with Basic fallback on failure. It is disabled by default.
+- Microphone: the input device Conch records from. System default follows the system input, and a chosen device that is not connected falls back to it.
 - Protected span: transcript text that mappings or exact repository matches identify for preservation through cleanup.
 - Recording indicator: the small, nonactivating overlay above other applications. It shows level bars and the duration while recording, a drawing spiral while processing, and text only when the result was copied without a paste or something failed.
 - Indexed term: one entry of the vocabulary index. A file term is a relative path or file name; every other term is a declared symbol. The Repositories page lists a repository's indexed terms in pages of 100.

@@ -16,10 +16,10 @@ pub struct Vocabulary {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Cleanup {
-    pub mode: String,
     pub fillers: Vec<String>,
     pub excluded: Vec<String>,
-    pub provider: String,
+    /// Enhanced cleanup: `disabled`, `managed`, `local`, or `remote`.
+    pub enhanced: String,
     pub endpoint: String,
     pub model: String,
     pub remote_enabled: bool,
@@ -27,10 +27,9 @@ pub struct Cleanup {
 impl Default for Cleanup {
     fn default() -> Self {
         Self {
-            mode: "basic".into(),
             fillers: vec!["um".into(), "uh".into()],
             excluded: vec![],
-            provider: "managed".into(),
+            enhanced: "disabled".into(),
             endpoint: String::new(),
             model: String::new(),
             remote_enabled: false,
@@ -255,7 +254,11 @@ pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
     out
 }
 pub fn basic(masked: &str, cleanup: &Cleanup) -> String {
-    if cleanup.mode == "off" {
+    if cleanup
+        .fillers
+        .iter()
+        .all(|filler| filler.trim().is_empty())
+    {
         return masked.into();
     }
     let mut text = masked.to_owned();
@@ -779,8 +782,26 @@ mod tests {
             "do not change 12 uh.py or 'uh' or um repeat repeat"
         );
         assert_eq!(prepare("um uh", &s).text, "");
-        s.cleanup.mode = "off".into();
+        s.cleanup.fillers.clear();
         assert_eq!(prepare("um uh", &s).text, "um uh");
+    }
+    #[test]
+    fn blank_hesitation_tokens_leave_the_transcript_exactly_as_recognized() {
+        let mut s = Snapshot::default();
+        s.cleanup.fillers = vec!["".into(), "  ".into()];
+        assert_eq!(
+            prepare(" um,  hello  ,  uh world ", &s).text,
+            " um,  hello  ,  uh world "
+        );
+    }
+    #[test]
+    fn enhanced_cleanup_is_disabled_unless_settings_name_a_choice() {
+        assert_eq!(Cleanup::default().enhanced, "disabled");
+        let saved: Cleanup =
+            serde_json::from_str(r#"{"mode":"enhanced","provider":"managed"}"#).unwrap();
+        assert_eq!(saved.enhanced, "disabled");
+        let chosen: Cleanup = serde_json::from_str(r#"{"enhanced":"local"}"#).unwrap();
+        assert_eq!(chosen.enhanced, "local");
     }
     fn indexed(texts: &[&str]) -> Snapshot {
         Snapshot {

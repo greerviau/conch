@@ -20,13 +20,14 @@ const fixture = () => ({
     hotkey: "Control+Space",
     activation: "push",
     recognizer: "tiny.en",
+    auto_paste: true,
+    microphone: "",
     show_overlay: true,
     check_updates: true,
     cleanup: {
-      mode: "basic",
       fillers: ["um", "uh"],
       excluded: [],
-      provider: "managed",
+      enhanced: "disabled",
       endpoint: "",
       model: "",
       remote_enabled: false,
@@ -69,6 +70,8 @@ beforeEach(() => {
         install(id, ...(id === "s1-mini" ? [] : ["silero-vad"]));
         return;
       }
+      if (name === "microphones")
+        return ["Built-in Microphone", "USB Microphone"];
       if (name === "save_settings") {
         view.settings = args?.settings as typeof view.settings;
       }
@@ -187,6 +190,115 @@ it("offers no download for a recognition model that is already installed", async
     { target: { value: "base.en" } },
   );
   expect(screen.queryByRole("button", { name: /^Download Base/ })).toBeNull();
+});
+const openSettings = async () =>
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+const savedSettings = async () => {
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", expect.anything()),
+  );
+  const call = ipc.mock.calls.find(([name]) => name === "save_settings");
+  return call?.[1].settings as typeof view.settings;
+};
+it("has no cleanup mode: Basic cleanup always runs and blank hesitation tokens remove nothing", async () => {
+  render(<App />);
+  await openSettings();
+  expect(screen.queryByRole("combobox", { name: "Mode" })).toBeNull();
+  expect(screen.getByLabelText("Hesitation tokens")).toBeTruthy();
+  expect(screen.getByText(/leave blank to remove nothing/i)).toBeTruthy();
+});
+it("turns Enhanced cleanup off by default and offers the S1-mini download only for the managed choice", async () => {
+  render(<App />);
+  await openSettings();
+  const choice = (await screen.findByRole("combobox", {
+    name: "Enhanced cleanup",
+  })) as HTMLSelectElement;
+  expect(choice.value).toBe("disabled");
+  expect(Array.from(choice.options).map((option) => option.value)).toEqual([
+    "disabled",
+    "managed",
+    "local",
+    "remote",
+  ]);
+  expect(
+    screen.queryByRole("button", { name: /download optional cleanup model/i }),
+  ).toBeNull();
+  expect(screen.queryByLabelText("Endpoint")).toBeNull();
+  fireEvent.change(choice, { target: { value: "managed" } });
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: /download optional cleanup model/i,
+    }),
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("download", { id: "s1-mini" }),
+  );
+  expect((await savedSettings()).cleanup.enhanced).toBe("managed");
+});
+it("asks for an endpoint when Enhanced cleanup uses a local or remote model", async () => {
+  render(<App />);
+  await openSettings();
+  const choice = await screen.findByRole("combobox", {
+    name: "Enhanced cleanup",
+  });
+  fireEvent.change(choice, { target: { value: "local" } });
+  expect(await screen.findByLabelText("Endpoint")).toBeTruthy();
+  expect(screen.queryByText(/dictated text leaves this device/i)).toBeNull();
+  fireEvent.change(choice, { target: { value: "remote" } });
+  expect(
+    await screen.findByText(/dictated text leaves this device/i),
+  ).toBeTruthy();
+  fireEvent.change(choice, { target: { value: "disabled" } });
+  expect(screen.queryByLabelText("Endpoint")).toBeNull();
+});
+it("follows the system microphone until the user picks a device, then saves its name", async () => {
+  render(<App />);
+  await openSettings();
+  const choice = (await screen.findByRole("combobox", {
+    name: "Microphone",
+  })) as HTMLSelectElement;
+  await waitFor(() => expect(choice.options.length).toBe(3));
+  expect(choice.value).toBe("");
+  expect(
+    Array.from(choice.options).map((option) => option.textContent),
+  ).toEqual(["System default", "Built-in Microphone", "USB Microphone"]);
+  fireEvent.change(choice, { target: { value: "USB Microphone" } });
+  expect((await savedSettings()).microphone).toBe("USB Microphone");
+});
+it("keeps a saved microphone in the list when it is unplugged", async () => {
+  view.settings.microphone = "Studio Mic";
+  render(<App />);
+  await openSettings();
+  const choice = (await screen.findByRole("combobox", {
+    name: "Microphone",
+  })) as HTMLSelectElement;
+  expect(choice.value).toBe("Studio Mic");
+  expect(screen.getByText(/not connected/i)).toBeTruthy();
+});
+it("pastes automatically by default and saves copy-only when the user turns it off", async () => {
+  render(<App />);
+  await openSettings();
+  const toggle = (await screen.findByRole("checkbox", {
+    name: "Automatic paste",
+  })) as HTMLInputElement;
+  expect(toggle.checked).toBe(true);
+  fireEvent.click(toggle);
+  expect(screen.getByText(/only copies the result/i)).toBeTruthy();
+  expect((await savedSettings()).auto_paste).toBe(false);
+});
+it("skips the paste permission step in setup when automatic paste is off", async () => {
+  view.settings.auto_paste = false;
+  view.microphone = "granted";
+  install("tiny.en", "silero-vad");
+  render(<App />);
+  expect(
+    await screen.findByRole("button", { name: "Start recording" }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Dictation setup" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Enable automatic paste" }),
+  ).toBeNull();
 });
 it("offers automatic-paste permission from setup", async () => {
   render(<App />);

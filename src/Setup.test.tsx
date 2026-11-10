@@ -24,6 +24,34 @@ describe("first-run setup", () => {
     ).toBeNull();
   });
 });
+describe("paste step", () => {
+  it("asks for the paste permission only while automatic paste is on", () => {
+    const { rerender } = render(
+      <Setup
+        installed
+        onDownload={vi.fn()}
+        accessibility={false}
+        onPermission={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Enable automatic paste" }),
+    ).toBeTruthy();
+    rerender(
+      <Setup
+        installed
+        onDownload={vi.fn()}
+        accessibility={false}
+        autoPaste={false}
+        onPermission={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Enable automatic paste" }),
+    ).toBeNull();
+    expect(screen.getByText(/automatic paste is off/i)).toBeTruthy();
+  });
+});
 describe("shortcut capture", () => {
   it("captures a chord and ignores key repeat without typing shortcut syntax", async () => {
     const change = vi.fn();
