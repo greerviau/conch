@@ -22,6 +22,17 @@ Independent review and subsequent regression tests also reproduce these failures
 - `pre_cancelled_external_cleanup_does_not_start_a_request` reports endpoint failure instead of `Cancelled`.
 - `repeated_accepted_replacements_keep_independent_undo` retains one undo entry instead of two.
 
+Sound-alike matching, recognition hint, and Always replace.
+
+- `spelled_out_acronym_letters_match_an_indexed_identifier` returns no suggestions instead of `("pod gee see", "podGC")`.
+- `near_miss_of_a_multiword_identifier_is_suggested` returns no suggestions instead of `("max group", "maxGroups")`.
+- `overlapping_fuzzy_matches_keep_only_the_longest_span` returns zero suggestions instead of one.
+- `recognizer_hint_lists_mapped_text_then_common_identifiers` returns an empty hint instead of `Vocabulary: podGC, maxGroups, readFile.`.
+- `recognizer_hint_stays_within_its_budget_and_keeps_whole_terms` fails `hint.ends_with('.')` on the empty hint.
+- `recognizer_receives_the_vocabulary_hint_as_its_initial_prompt` finds no `prompt` field in the recognizer request.
+- `remembered_mapping_replaces_the_heard_phrase_on_the_next_recording` panics because `mapping_for` returns an error.
+- `offers to remember an accepted repository suggestion as a mapping` finds no button named "Accept and always replace".
+
 # Update check and install
 
 Tests written before the update logic reproduce these failures.
@@ -34,4 +45,3 @@ Tests written before the update logic reproduce these failures.
 - `automatic_update_checks_are_on_by_default_and_for_settings_saved_before_they_existed` fails to compile because `Settings` has no `check_updates` field.
 - The harness tests for `createUpdaterArtifacts`, the updater public key, `scripts/check-version.mjs`, and `scripts/verify-signing.sh` fail because the configuration keys and scripts do not exist.
 - The five interface tests in `src/App.test.tsx` for the update switch, version line, check button, install button, and failure message cannot find their controls.
-

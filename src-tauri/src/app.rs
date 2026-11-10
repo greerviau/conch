@@ -237,7 +237,8 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         },
         {
             let workers = state.workers.clone();
-            move |wav| inference::transcribe(&workers, &model, wav, &worker, false)
+            let hint = core::recognition_hint(&snapshot);
+            move |wav| inference::transcribe(&workers, &model, wav, &hint, &worker, false)
         },
     );
     if snapshot.cleanup.mode == "enhanced" && snapshot.cleanup.provider == "managed" {
@@ -357,6 +358,7 @@ fn process(
             &state.workers,
             &state.data.join(inference::MODELS[0].name),
             wav,
+            &core::recognition_hint(&snapshot),
             &worker,
             false,
         ),
@@ -454,6 +456,32 @@ pub fn accept(state: State<'_, AppState>, index: usize, candidate: usize) -> Res
     let mut inner = state.inner.lock().unwrap();
     let result = inner.result.as_mut().ok_or("No result")?;
     core::accept_suggestion(result, index, candidate)
+}
+/// Accepts a suggestion and saves a mapping so the same phrase is replaced
+/// automatically from the next recording on.
+#[tauri::command]
+pub fn accept_always(
+    state: State<'_, AppState>,
+    index: usize,
+    candidate: usize,
+) -> Result<(), String> {
+    let mut guard = state.inner.lock().unwrap();
+    let inner = &mut *guard;
+    let result = inner.result.as_mut().ok_or("No result")?;
+    let learned = core::mapping_for(result, index, candidate)?;
+    core::accept_suggestion(result, index, candidate)?;
+    let known = inner.settings.mappings.iter().any(|m| {
+        m.repository == learned.repository
+            && m.replacement == learned.replacement
+            && m.phrase.eq_ignore_ascii_case(&learned.phrase)
+    });
+    if !known {
+        let mut settings = inner.settings.clone();
+        settings.mappings.push(learned);
+        storage::save(&state.data, &settings)?;
+        inner.settings = settings;
+    }
+    Ok(())
 }
 #[tauri::command]
 pub fn undo(state: State<'_, AppState>, index: usize) -> Result<(), String> {

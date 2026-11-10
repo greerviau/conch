@@ -10,7 +10,7 @@ Use the glossary's terms verbatim and update the spec and glossary when a decisi
 - `src-tauri/src/app.rs`: Tauri commands, shared state, the recording flow, and `process` (recognition result to delivery).
 - `src-tauri/src/inference.rs`: worker pool (`acquire`, `preload`, `reap_idle_within`, `shutdown`, `reap_orphans`), recognizer and cleanup requests, model downloads.
 - `src-tauri/src/chunk.rs`: splits a growing recording at pauses. `pipeline.rs`: recognizes chunks on a background thread. `audio.rs`: microphone capture and WAV encoding.
-- `src-tauri/src/core.rs`: mappings, masking, Basic cleanup, suggestions, result edits. `index.rs`, `storage.rs`: repository vocabulary and SQLite.
+- `src-tauri/src/core.rs`: mappings, masking, Basic cleanup, suggestions, recognition hint, result edits. `spoken.rs`: sound-alike matching of identifiers against recognizer output. `index.rs`, `storage.rs`: repository vocabulary and SQLite.
 - `src-tauri/src/platform.rs`, `macos.m`, `windows.rs`: focused-field detection, paste, permissions. `delivery.rs`: the copy-then-paste decision.
 - `src-tauri/src/update.rs`: update check, install, and restart with `tauri-plugin-updater`. `scripts/check-version.mjs`, `scripts/verify-signing.sh`, and `.github/workflows/release.yml` publish releases.
 - `src-tauri/src/tray.rs`: menu bar icon, state display, show and hide of the main window. `indicator.rs`: floating recording indicator.
