@@ -1,5 +1,7 @@
 name: Desktop checks and packages
-on: [push, pull_request, workflow_dispatch]
+# Manual only while the full matrix takes 20 minutes or more per run.
+# Restore `push` and `pull_request` to run it on every change.
+on: workflow_dispatch
 jobs:
   desktop:
     strategy:
