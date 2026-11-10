@@ -11,6 +11,9 @@ export type IndicatorState = {
   seconds: number;
 };
 export function IndicatorView({ state }: { state: IndicatorState }) {
+  // The window is reused between dictations. Rendering nothing while hidden
+  // keeps the previous mode from showing before the first event of the next one.
+  if (!state.visible) return null;
   const time = `${Math.floor(state.seconds / 60)}:${String(state.seconds % 60).padStart(2, "0")}`;
   return (
     <div

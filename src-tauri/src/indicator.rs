@@ -193,6 +193,12 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
                     }
                 }
             }
+            // Send the state before the window is shown or after it is hidden,
+            // so the webview never holds the previous dictation's mode when the
+            // window appears.
+            if value.visible || was_visible {
+                let _ = app.emit_to("recording", "recording-state", value.clone());
+            }
             if value.visible != was_visible {
                 let window = window.clone();
                 let visible = value.visible;
@@ -216,9 +222,6 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
                 if !visible {
                     last_placement = None;
                 }
-            }
-            if value.visible {
-                let _ = app.emit_to("recording", "recording-state", value);
             }
             std::thread::sleep(std::time::Duration::from_millis(60));
         }
