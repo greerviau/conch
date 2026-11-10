@@ -333,6 +333,93 @@ pub fn eligible_input(input: &InputEvidence<'_>) -> bool {
             || input.selected_text_settable
             || (input.web_editable && input.selected_range_settable))
 }
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn conch_microphone_status() -> i32;
+    fn conch_request_microphone() -> i32;
+    fn conch_request_accessibility();
+    fn conch_open_microphone_settings();
+    pub fn conch_overlay_visibility(window: *mut std::ffi::c_void, visible: bool);
+}
+pub fn microphone_status() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        match unsafe { conch_microphone_status() } {
+            3 => "granted",
+            1 | 2 => "denied",
+            _ => "unknown",
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "system"
+    }
+}
+pub fn request_microphone() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let result = unsafe { conch_request_microphone() };
+        if result == 1 || result == 2 {
+            unsafe { conch_open_microphone_settings() };
+            return Err(
+                "Allow Conch in Microphone privacy settings, then try recording again".into(),
+            );
+        }
+    }
+    Ok(())
+}
+pub fn request_accessibility() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe { conch_request_accessibility() };
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("This desktop supports clipboard output; paste manually after recording".into())
+    }
+}
+
+pub fn installation_path() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe().ok()?;
+        let bundle = exe.parent()?.parent()?.parent()?;
+        if bundle
+            .extension()
+            .is_some_and(|extension| extension == "app")
+        {
+            return Some(bundle.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+pub fn repair_accessibility() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::accessibility::repair_with(
+            |program, args| {
+                let status = std::process::Command::new(program)
+                    .args(args)
+                    .output()
+                    .map_err(|_| "Cannot start the macOS permission repair")?;
+                if !status.status.success() {
+                    return Err("macOS could not remove Conch's Accessibility entry. Remove it in Settings, then add the current copy again".into());
+                }
+                Ok(())
+            },
+            request_accessibility,
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Accessibility entry repair is available on macOS only".into())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,96 +469,5 @@ mod tests {
         input.own_process = false;
         input.value_settable = false;
         assert!(!eligible_input(&input));
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn conch_microphone_status() -> i32;
-    fn conch_request_microphone() -> i32;
-    fn conch_request_accessibility();
-    fn conch_open_microphone_settings();
-    pub fn conch_overlay_visibility(window: *mut std::ffi::c_void, visible: bool);
-}
-pub fn microphone_status() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        match unsafe { conch_microphone_status() } {
-            3 => "granted",
-            1 | 2 => "denied",
-            _ => "unknown",
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        "system"
-    }
-}
-pub fn request_microphone() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let result = unsafe { conch_request_microphone() };
-        if result == 1 || result == 2 {
-            unsafe { conch_open_microphone_settings() };
-            return Err(
-                "Allow Conch in Microphone privacy settings, then try recording again".into(),
-            );
-        }
-    }
-    Ok(())
-}
-pub fn request_accessibility() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    unsafe {
-        conch_request_accessibility();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        return Ok(());
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        return Err(
-            "This desktop supports clipboard output; paste manually after recording".into(),
-        );
-    }
-    #[cfg(target_os = "macos")]
-    Ok(())
-}
-
-pub fn installation_path() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        let exe = std::env::current_exe().ok()?;
-        let bundle = exe.parent()?.parent()?.parent()?;
-        if bundle
-            .extension()
-            .is_some_and(|extension| extension == "app")
-        {
-            return Some(bundle.to_string_lossy().into_owned());
-        }
-    }
-    None
-}
-pub fn repair_accessibility() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        crate::accessibility::repair_with(
-            |program, args| {
-                let status = std::process::Command::new(program)
-                    .args(args)
-                    .output()
-                    .map_err(|_| "Cannot start the macOS permission repair")?;
-                if !status.status.success() {
-                    return Err("macOS could not remove Conch's Accessibility entry. Remove it in Settings, then add the current copy again".into());
-                }
-                Ok(())
-            },
-            request_accessibility,
-        )
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("Accessibility entry repair is available on macOS only".into())
     }
 }
