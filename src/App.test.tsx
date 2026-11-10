@@ -5,13 +5,25 @@ import {
   fireEvent,
   cleanup,
   waitFor,
+  act,
 } from "@testing-library/react";
 import App from "./App";
 import { IndicatorView } from "./RecordingIndicator";
 const ipc = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: ipc }));
+const events = vi.hoisted(() => ({
+  progress: null as null | ((event: { payload: [number, number] }) => void),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(
+    async (
+      _name: string,
+      callback: (event: { payload: [number, number] }) => void,
+    ) => {
+      events.progress = callback;
+      return () => {};
+    },
+  ),
 }));
 const fixture = () => ({
   settings: {
@@ -54,12 +66,15 @@ const fixture = () => ({
   update: { state: "idle" } as { state: string; detail?: string },
 });
 let view = fixture();
+let holdDownload: Promise<void> | null = null;
 const install = (...ids: string[]) =>
   view.models.forEach((model) => {
     if (ids.includes(model[0])) model[1] = true;
   });
 beforeEach(() => {
   view = fixture();
+  holdDownload = null;
+  events.progress = null;
   ipc.mockReset();
   ipc.mockImplementation(
     async (name: string, args?: Record<string, unknown>) => {
@@ -67,6 +82,7 @@ beforeEach(() => {
       if (name === "download") {
         // Downloading a recognizer also installs the voice detection model.
         const id = args?.id as string;
+        await holdDownload;
         install(id, ...(id === "s1-mini" ? [] : ["silero-vad"]));
         return;
       }
@@ -84,7 +100,7 @@ it("starts model setup directly from the dictation page and enables recording on
   view.microphone = "granted";
   render(<App />);
   const download = await screen.findByRole("button", {
-    name: /download recognition model/i,
+    name: "Download Tiny (English), 77.7 MB",
   });
   expect(
     (
@@ -117,7 +133,9 @@ it("keeps recording off until the voice detection model is installed with the re
   install("tiny.en");
   render(<App />);
   expect(
-    await screen.findByRole("button", { name: /download recognition model/i }),
+    await screen.findByRole("button", {
+      name: "Download Voice detection (Silero), 0.9 MB",
+    }),
   ).toBeTruthy();
   expect(
     (
@@ -131,26 +149,76 @@ it("tells a copy that has the recognizer but not voice detection that one small 
   install("tiny.en");
   render(<App />);
   expect(await screen.findByText(/0\.9 MB voice detection model/)).toBeTruthy();
-  expect(screen.queryByText(/Download the 78 MB speech model/)).toBeNull();
   fireEvent.click(
-    screen.getByRole("button", { name: /download recognition model/i }),
+    screen.getByRole("button", {
+      name: "Download Voice detection (Silero), 0.9 MB",
+    }),
   );
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("download", { id: "tiny.en" }),
   );
 });
-it("sizes the setup download for the selected recognition model", async () => {
+it("names the saved recognition model on the setup download", async () => {
   view.settings.recognizer = "small.en";
   render(<App />);
-  expect(
-    await screen.findByText(/Download the 488 MB speech model/),
-  ).toBeTruthy();
   fireEvent.click(
-    screen.getByRole("button", { name: /download recognition model/i }),
+    await screen.findByRole("button", {
+      name: "Download Small (English), 487.6 MB",
+    }),
   );
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("download", { id: "small.en" }),
   );
+});
+it("saves a recognition model picked on the setup card at once, without the Settings save bar", async () => {
+  render(<App />);
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Recognition model" }),
+    { target: { value: "small.en" } },
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({ recognizer: "small.en" }),
+    }),
+  );
+  expect(
+    await screen.findByRole("button", {
+      name: "Download Small (English), 487.6 MB",
+    }),
+  ).toBeTruthy();
+  expect(screen.queryByText("Unsaved changes")).toBeNull();
+});
+it("keeps unsaved Settings edits when the setup card saves a recognition model", async () => {
+  render(<App />);
+  await openSettings();
+  fireEvent.change(await screen.findByLabelText("Hesitation tokens"), {
+    target: { value: "um, uh, er" },
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Dictation" }));
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Recognition model" }),
+    { target: { value: "base.en" } },
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({
+        recognizer: "base.en",
+        cleanup: expect.objectContaining({ fillers: ["um", "uh"] }),
+      }),
+    }),
+  );
+  await openSettings();
+  expect(
+    ((await screen.findByLabelText("Hesitation tokens")) as HTMLInputElement)
+      .value,
+  ).toBe("um, uh, er");
+  expect(
+    (
+      screen.getByRole("combobox", {
+        name: "Recognition model",
+      }) as HTMLSelectElement
+    ).value,
+  ).toBe("base.en");
 });
 it("lets the user choose a larger recognition model, download it, and save the choice", async () => {
   install("tiny.en", "silero-vad");
@@ -222,13 +290,13 @@ it("turns Enhanced cleanup off by default and offers the S1-mini download only f
     "remote",
   ]);
   expect(
-    screen.queryByRole("button", { name: /download optional cleanup model/i }),
+    screen.queryByRole("button", { name: /download s1-mini/i }),
   ).toBeNull();
   expect(screen.queryByLabelText("Endpoint")).toBeNull();
   fireEvent.change(choice, { target: { value: "managed" } });
   fireEvent.click(
     await screen.findByRole("button", {
-      name: /download optional cleanup model/i,
+      name: "Download S1-mini by Superwhisper, 484.2 MB",
     }),
   );
   await waitFor(() =>
@@ -562,4 +630,119 @@ it("does not offer to remember a mapping conflict", async () => {
   expect(
     screen.queryByRole("button", { name: "Accept and always replace" }),
   ).toBeNull();
+});
+
+const models = () => screen.queryByRole("heading", { name: "Local models" });
+it("has no separate list of local models; every download sits beside its menu", async () => {
+  install("tiny.en", "silero-vad");
+  render(<App />);
+  await openSettings();
+  await screen.findByRole("combobox", { name: "Recognition model" });
+  expect(models()).toBeNull();
+  expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
+  expect(screen.getByText("Licenses and acknowledgments")).toBeTruthy();
+  expect(screen.getByText(/core dictation works offline/i)).toBeTruthy();
+});
+it("marks installed recognition models in the menu and confirms the selected one is installed", async () => {
+  install("tiny.en", "base.en", "silero-vad");
+  render(<App />);
+  await openSettings();
+  const menu = (await screen.findByRole("combobox", {
+    name: "Recognition model",
+  })) as HTMLSelectElement;
+  expect(Array.from(menu.options).map((option) => option.textContent)).toEqual([
+    "Tiny (English) - Installed - Fastest",
+    "Base (English) - Installed - Balanced",
+    "Small (English) - 487.6 MB - Most accurate",
+  ]);
+  expect(
+    screen.getByText(
+      "Tiny (English) is installed. Speech stays on this device.",
+    ),
+  ).toBeTruthy();
+  fireEvent.change(menu, { target: { value: "small.en" } });
+  expect(screen.queryByText(/Small \(English\) is installed/)).toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Download Small (English), 487.6 MB" }),
+  ).toBeTruthy();
+});
+it("shows download progress next to the model menu and then confirms the install", async () => {
+  install("tiny.en", "silero-vad");
+  let release = () => {};
+  holdDownload = new Promise((resolve) => (release = resolve));
+  render(<App />);
+  await openSettings();
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Recognition model" }),
+    { target: { value: "small.en" } },
+  );
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Download Small (English), 487.6 MB",
+    }),
+  );
+  const bar = await screen.findByRole("progressbar", {
+    name: "Download progress",
+  });
+  expect(bar.hasAttribute("aria-valuenow")).toBe(false);
+  await waitFor(() => expect(events.progress).not.toBeNull());
+  act(() => events.progress?.({ payload: [50, 100] }));
+  expect(
+    (await screen.findByRole("progressbar")).getAttribute("aria-valuenow"),
+  ).toBe("50");
+  expect(screen.getByText("Downloading Small (English), 50%")).toBeTruthy();
+  expect(
+    (
+      screen.getByRole("combobox", {
+        name: "Recognition model",
+      }) as HTMLSelectElement
+    ).disabled,
+  ).toBe(true);
+  release();
+  expect(
+    await screen.findByText(
+      "Small (English) is installed. Speech stays on this device.",
+    ),
+  ).toBeTruthy();
+  expect(screen.queryByRole("progressbar")).toBeNull();
+});
+it("shows S1-mini progress and its installed state under Enhanced cleanup", async () => {
+  holdDownload = new Promise(() => {});
+  render(<App />);
+  await openSettings();
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Enhanced cleanup" }),
+    { target: { value: "managed" } },
+  );
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Download S1-mini by Superwhisper, 484.2 MB",
+    }),
+  );
+  expect(
+    await screen.findByText("Downloading S1-mini by Superwhisper"),
+  ).toBeTruthy();
+});
+it("confirms S1-mini is installed once Managed cleanup is chosen", async () => {
+  install("s1-mini");
+  render(<App />);
+  await openSettings();
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Enhanced cleanup" }),
+    { target: { value: "managed" } },
+  );
+  expect(
+    await screen.findByText("S1-mini by Superwhisper is installed."),
+  ).toBeTruthy();
+});
+it("tells a copy with the recognizer but no voice detection that one small download is missing", async () => {
+  install("tiny.en");
+  render(<App />);
+  await openSettings();
+  expect(
+    await screen.findByRole("button", {
+      name: "Download Voice detection (Silero), 0.9 MB",
+    }),
+  ).toBeTruthy();
+  expect(screen.queryByText(/Tiny \(English\) is installed/)).toBeNull();
 });

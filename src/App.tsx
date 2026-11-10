@@ -9,7 +9,14 @@ import { Mic, Stop } from "./icons";
 import { Updates } from "./Updates";
 import { Row, Toggle } from "./ui";
 import { folderName } from "./types";
-import { CLEANUP, MODELS, RECOGNIZERS, VAD, size } from "./models";
+import {
+  ModelStatus,
+  RECOGNIZER_TRADEOFF,
+  RecognizerMenu,
+  VOICE_DETECTION_NOTE,
+  recognizerInfo,
+} from "./ModelChoice";
+import { CLEANUP, VAD, size } from "./models";
 import type { Cleanup, Settings, View } from "./types";
 
 const TABS = ["Dictation", "Repositories", "Mappings", "Settings"];
@@ -23,9 +30,9 @@ export default function App() {
   const [text, setText] = useState("");
   const [dirty, setDirty] = useState(false);
   const [secret, setSecret] = useState("");
-  const [progress, setProgress] = useState("");
+  const [percent, setPercent] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
-  const [modelBusy, setModelBusy] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [microphones, setMicrophones] = useState<string[]>();
   const captureShortcut = useCallback(async (active: boolean) => {
     try {
@@ -60,7 +67,7 @@ export default function App() {
   }, [tab]);
   useEffect(() => {
     const unlisten = listen<[number, number]>("model-progress", (e) =>
-      setProgress(`${Math.round((e.payload[0] / e.payload[1]) * 100)}%`),
+      setPercent(Math.round((e.payload[0] / e.payload[1]) * 100)),
     );
     return () => {
       void unlisten.then((f) => f());
@@ -104,14 +111,26 @@ export default function App() {
     }
   }
   async function downloadModel(id: string) {
-    setModelBusy(true);
-    setProgress("Starting...");
+    setDownloadingId(id);
+    setPercent(null);
     try {
       await command("download", { id });
     } finally {
-      setModelBusy(false);
-      setProgress("");
+      setDownloadingId(null);
+      setPercent(null);
     }
+  }
+  /** Saves the model alone, so unsaved edits on the Settings page stay in the draft. */
+  async function chooseRecognizer(id: string) {
+    if (!view) return;
+    if (
+      await command("save_settings", {
+        settings: { ...view.settings, recognizer: id },
+      })
+    )
+      setDraft((current) =>
+        current ? { ...current, recognizer: id } : current,
+      );
   }
   async function chooseRepository() {
     try {
@@ -157,10 +176,9 @@ export default function App() {
   // A recognizer runs with the voice detection model, so both must be on disk.
   const recognizerReady = (id: string) => installed(id) && installed(VAD.id);
   const modelInstalled = recognizerReady(view.settings.recognizer);
-  const recognizerInfo = (id: string) =>
-    RECOGNIZERS.find((model) => model.id === id) ?? RECOGNIZERS[0];
-  const selectedRecognizer = recognizerInfo(view.settings.recognizer);
+  const downloadBusy = downloadingId !== null || view.downloading;
   const draftRecognizer = recognizerInfo(draft.recognizer);
+  const voiceDetectionOnly = installed(draft.recognizer) && !installed(VAD.id);
   const microphoneReady =
     view.platform !== "macos" || view.microphone === "granted";
   const needsSetup =
@@ -259,11 +277,14 @@ export default function App() {
               <Setup
                 mac={view.platform === "macos"}
                 installed={modelInstalled}
-                modelSize={`${Math.round(selectedRecognizer.mb)} MB`}
+                recognizer={view.settings.recognizer}
+                onRecognizer={(id) => void chooseRecognizer(id)}
+                ready={recognizerReady}
                 voiceOnly={installed(view.settings.recognizer)}
                 onDownload={() => void downloadModel(view.settings.recognizer)}
-                downloading={modelBusy || view.downloading}
-                progress={progress}
+                downloading={downloadingId === view.settings.recognizer}
+                otherDownload={downloadBusy}
+                percent={percent}
                 accessibility={view.accessibility || view.platform === "linux"}
                 microphone={view.microphone}
                 onPermission={() => void command("request_accessibility")}
@@ -703,19 +724,18 @@ export default function App() {
                   <option value="remote">Remote endpoint</option>
                 </select>
               </Row>
-              {cleanup.enhanced === "managed" && !installed(CLEANUP.id) && (
-                <div className="callout">
-                  <p>
-                    Managed cleanup needs the optional S1-mini model (484 MB).
-                    Until it is installed, Conch uses Basic cleanup.
-                  </p>
-                  <button
-                    disabled={modelBusy || view.downloading}
-                    onClick={() => void downloadModel(CLEANUP.id)}
-                  >
-                    Download optional cleanup model
-                  </button>
-                </div>
+              {cleanup.enhanced === "managed" && (
+                <ModelStatus
+                  ready={installed(CLEANUP.id)}
+                  downloading={downloadingId === CLEANUP.id}
+                  percent={percent}
+                  blocked={downloadBusy}
+                  label={CLEANUP.label}
+                  readyText={`${CLEANUP.label} is installed.`}
+                  needText="Managed cleanup needs the optional S1-mini model. Until it is installed, Conch uses Basic cleanup."
+                  button={`Download ${CLEANUP.label}, ${size(CLEANUP)}`}
+                  onDownload={() => void downloadModel(CLEANUP.id)}
+                />
               )}
               {(cleanup.enhanced === "local" ||
                 cleanup.enhanced === "remote") && (
@@ -818,89 +838,46 @@ export default function App() {
             </div>
             <h3 className="group">Recognition</h3>
             <div className="card rows">
-              <Row
-                title="Recognition model"
-                note="Larger models make fewer errors and take longer to finish after you stop speaking."
-              >
-                <select
-                  aria-label="Recognition model"
+              <Row title="Recognition model" note={RECOGNIZER_TRADEOFF}>
+                <RecognizerMenu
                   value={draft.recognizer}
-                  onChange={(e) =>
-                    setDraft({ ...draft, recognizer: e.target.value })
-                  }
-                >
-                  {RECOGNIZERS.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label} - {size(model)} - {model.note}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(id) => setDraft({ ...draft, recognizer: id })}
+                  ready={recognizerReady}
+                  disabled={downloadBusy}
+                />
               </Row>
-              {!recognizerReady(draft.recognizer) && (
-                <div className="callout">
-                  <p>
-                    This model needs a one-time download before you can record
-                    with it.
-                  </p>
-                  <button
-                    disabled={modelBusy || view.downloading}
-                    onClick={() => void downloadModel(draft.recognizer)}
-                  >
-                    {installed(draftRecognizer.id)
-                      ? `Download ${VAD.label}, ${size(VAD)}`
-                      : `Download ${draftRecognizer.label}, ${size(draftRecognizer)}`}
-                  </button>
-                </div>
-              )}
+              <ModelStatus
+                ready={recognizerReady(draft.recognizer)}
+                downloading={downloadingId === draft.recognizer}
+                percent={percent}
+                blocked={downloadBusy}
+                label={draftRecognizer.label}
+                readyText={`${draftRecognizer.label} is installed. Speech stays on this device.`}
+                needText={
+                  voiceDetectionOnly
+                    ? "This model needs the voice detection model before you can record with it."
+                    : "This model needs a one-time download before you can record with it."
+                }
+                button={
+                  voiceDetectionOnly
+                    ? `Download ${VAD.label}, ${size(VAD)}`
+                    : `Download ${draftRecognizer.label}, ${size(draftRecognizer)}`
+                }
+                note={voiceDetectionOnly ? undefined : VOICE_DETECTION_NOTE}
+                onDownload={() => void downloadModel(draft.recognizer)}
+              />
             </div>
-            <h3 className="group">Local models</h3>
-            <div className="card rows">
-              {view.models.map(([id, ready]) => {
-                const model = MODELS.find((m) => m.id === id);
-                if (!model) return null;
-                return (
-                  <Row
-                    key={id}
-                    title={model.label}
-                    note={`${
-                      id === CLEANUP.id
-                        ? "Optional English cleanup"
-                        : id === VAD.id
-                          ? "Skips silence before recognition"
-                          : "English recognition"
-                    } / ${size(model)}`}
-                  >
-                    {ready ? (
-                      <span className="installed">Installed</span>
-                    ) : (
-                      <button
-                        disabled={modelBusy || view.downloading}
-                        onClick={() => void downloadModel(id)}
-                      >
-                        Download
-                      </button>
-                    )}
-                  </Row>
-                );
-              })}
+            <p className="note">
+              Core dictation works offline after a model download.
+            </p>
+            <details>
+              <summary>Licenses and acknowledgments</summary>
               <p className="note">
-                Explicit downloads are required once. Core dictation then works
-                offline.
+                whisper.cpp and llama.cpp use the MIT license. S1-mini by
+                Superwhisper uses Apache 2.0 with an additional naming
+                condition. Model LICENSE and NOTICE files ship with Conch.
               </p>
-              {(view.downloading || progress) && (
-                <p role="status">
-                  {view.downloading ? `Downloading ${progress}` : progress}
-                </p>
-              )}
-              <details>
-                <summary>Licenses and acknowledgments</summary>
-                <p>
-                  whisper.cpp and llama.cpp use the MIT license. S1-mini by
-                  Superwhisper uses Apache 2.0 with an additional naming
-                  condition. Model LICENSE and NOTICE files ship with Conch.
-                </p>
-              </details>
-            </div>
+            </details>
           </>
         )}
         {hasChanges && (
