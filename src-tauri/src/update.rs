@@ -63,6 +63,24 @@ impl Tracker {
     pub fn status(&self) -> Status {
         self.inner.lock().unwrap().0.clone()
     }
+    /// Moves to `next` unless a check or install is already running, in one step.
+    pub fn begin(&self, next: Status) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if matches!(inner.0, Status::Checking | Status::Installing) {
+            return false;
+        }
+        inner.0 = next;
+        true
+    }
+    pub fn set(&self, status: Status) {
+        self.inner.lock().unwrap().0 = status;
+    }
+    fn schedule(&self, due: Instant) {
+        self.inner.lock().unwrap().1 = Some(due);
+    }
+    fn due(&self) -> Option<Instant> {
+        self.inner.lock().unwrap().1
+    }
 }
 impl Default for Tracker {
     fn default() -> Self {
@@ -73,50 +91,57 @@ impl Default for Tracker {
 /// The menu bar item whose label follows the update status.
 pub struct MenuEntry(pub MenuItem<tauri::Wry>);
 
-fn set_status(app: &AppHandle, status: Status) {
+fn show(app: &AppHandle, status: &Status) {
     if let Some(entry) = app.try_state::<MenuEntry>() {
-        let _ = entry.0.set_text(menu_label(&status));
+        let _ = entry.0.set_text(menu_label(status));
         let _ = entry
             .0
             .set_enabled(!matches!(status, Status::Checking | Status::Installing));
     }
-    app.state::<Tracker>().inner.lock().unwrap().0 = status;
 }
 
-fn busy(app: &AppHandle) -> bool {
-    matches!(
-        app.state::<Tracker>().status(),
-        Status::Checking | Status::Installing
-    )
+fn begin(app: &AppHandle, status: Status) -> bool {
+    let started = app.state::<Tracker>().begin(status.clone());
+    if started {
+        show(app, &status);
+    }
+    started
+}
+
+fn finish(app: &AppHandle, status: Status) {
+    show(app, &status);
+    app.state::<Tracker>().set(status);
 }
 
 async fn find(app: &AppHandle) -> Result<Option<tauri_plugin_updater::Update>, String> {
     app.updater()
-        .map_err(|_| "Updates are not configured in this build".to_string())?
+        .map_err(|error| format!("Updates are not configured in this build: {error}"))?
         .check()
         .await
-        .map_err(|_| "Cannot reach the update server".to_string())
+        .map_err(|error| format!("The update check failed: {error}"))
 }
 
 /// Asks the update server whether a newer release exists. Blocks the calling
 /// thread, so call it off the main thread.
 pub fn check_now(app: &AppHandle) {
-    if busy(app) {
+    if !begin(app, Status::Checking) {
         return;
     }
-    set_status(app, Status::Checking);
     let found = tauri::async_runtime::block_on(find(app));
-    let status = match &found {
-        Ok(Some(update)) => Status::Available(update.version.clone()),
-        Ok(None) => Status::Current,
-        Err(message) => Status::Failed(message.clone()),
-    };
-    app.state::<Tracker>().inner.lock().unwrap().1 = Some(next_due(Instant::now(), found.is_ok()));
-    set_status(app, status);
+    app.state::<Tracker>()
+        .schedule(next_due(Instant::now(), found.is_ok()));
+    finish(
+        app,
+        match found {
+            Ok(Some(update)) => Status::Available(update.version),
+            Ok(None) => Status::Current,
+            Err(message) => Status::Failed(message),
+        },
+    );
 }
 
-/// Downloads and installs the available update, waits for any recording to
-/// finish, and restarts Conch. Blocks the calling thread.
+/// Downloads the available update, waits for any recording to finish, stops
+/// the workers, installs, and restarts Conch. Blocks the calling thread.
 pub fn install_now(app: &AppHandle) -> Result<(), String> {
     let phase = |app: &AppHandle| {
         app.state::<AppState>()
@@ -130,29 +155,44 @@ pub fn install_now(app: &AppHandle) -> Result<(), String> {
     if let Some(reason) = install_blocked(&phase(app)) {
         return Err(reason.into());
     }
-    if busy(app) {
+    if !begin(app, Status::Installing) {
         return Err("An update is already in progress".into());
     }
-    set_status(app, Status::Installing);
-    let installed = tauri::async_runtime::block_on(async {
-        let update = find(app).await?.ok_or("Conch is up to date")?;
-        update
-            .download_and_install(|_, _| {}, || {})
+    let downloaded = tauri::async_runtime::block_on(async {
+        let Some(update) = find(app).await? else {
+            return Ok(None);
+        };
+        let bytes = update
+            .download(|_, _| {}, || {})
             .await
-            .map_err(|_| "The update could not be installed".to_string())
+            .map_err(|error| format!("The update could not be downloaded: {error}"))?;
+        Ok::<_, String>(Some((update, bytes)))
     });
-    if let Err(message) = installed {
-        set_status(app, Status::Failed(message.clone()));
-        return Err(message);
-    }
-    // The new version is on disk. A dictation that began during the download
-    // finishes first.
+    let (update, bytes) = match downloaded {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            finish(app, Status::Current);
+            return Err("Conch is up to date".into());
+        }
+        Err(message) => {
+            finish(app, Status::Failed(message.clone()));
+            return Err(message);
+        }
+    };
+    // A dictation that began during the download finishes first.
     while install_blocked(&phase(app)).is_some() {
         std::thread::sleep(Duration::from_millis(200));
     }
-    // `restart` exits without delivering the exit event, so stop the workers here.
+    // Windows exits when its installer starts, and `restart` exits without the
+    // exit event, so stop the workers before either runs. They would otherwise
+    // hold the files the installer replaces.
     let _ = crate::app::cancel(app.clone());
     inference::shutdown(&app.state::<AppState>().workers);
+    if let Err(error) = update.install(bytes) {
+        let message = format!("The update could not be installed: {error}");
+        finish(app, Status::Failed(message.clone()));
+        return Err(message);
+    }
     app.restart()
 }
 
@@ -170,7 +210,7 @@ pub fn watch(app: &AppHandle) {
                 .unwrap()
                 .settings
                 .check_updates;
-            let due = app.state::<Tracker>().inner.lock().unwrap().1;
+            let due = app.state::<Tracker>().due();
             if check_due(enabled, due, Instant::now()) {
                 check_now(&app);
             }
@@ -253,6 +293,19 @@ mod tests {
             "Update to 0.3.0"
         );
         assert_eq!(menu_label(&Status::Installing), "Installing Update...");
+    }
+
+    #[test]
+    fn only_one_check_or_install_runs_at_a_time() {
+        let tracker = Tracker::new();
+        assert!(tracker.begin(Status::Checking));
+        assert!(!tracker.begin(Status::Checking));
+        assert!(!tracker.begin(Status::Installing));
+        tracker.set(Status::Available("0.3.0".into()));
+        assert!(tracker.begin(Status::Installing));
+        assert!(!tracker.begin(Status::Checking));
+        tracker.set(Status::Failed("offline".into()));
+        assert!(tracker.begin(Status::Checking));
     }
 
     #[test]
