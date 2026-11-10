@@ -49,3 +49,7 @@ Tests written before the update logic reproduce these failures.
 # License
 
 - The harness test for the MIT license fails because `LICENSE` does not exist and neither manifest has a `license` field.
+
+# One-line installer
+
+- The eight `tests/install.test.mjs` tests fail because `scripts/install.sh` does not exist.
