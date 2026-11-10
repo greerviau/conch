@@ -296,6 +296,50 @@ fn spoken(text: &str) -> String {
         .join(" ")
         .to_lowercase()
 }
+/// Adds suggestions for words the recognizer spelled differently from an
+/// indexed term. Where two spans overlap, the closer match wins, then the
+/// longer span, and an exact word-sequence match from `suggestions` wins over
+/// both.
+fn add_sound_alikes(
+    text: &str,
+    snapshot: &Snapshot,
+    protected: &[(usize, usize)],
+    groups: &mut std::collections::BTreeMap<(usize, usize, bool), Vec<Vocabulary>>,
+) {
+    let found = crate::spoken::find(text, &snapshot.vocabulary, protected);
+    let mut best = std::collections::BTreeMap::<(usize, usize), usize>::new();
+    for m in &found {
+        best.entry((m.start, m.end))
+            .and_modify(|d| *d = (*d).min(m.distance))
+            .or_insert(m.distance);
+    }
+    let mut order: Vec<_> = best.into_iter().collect();
+    order
+        .sort_by_key(|&((start, end), distance)| (distance, std::cmp::Reverse(end - start), start));
+    let mut kept: Vec<(usize, usize)> = vec![];
+    for ((start, end), distance) in order {
+        if distance > 0 && groups.contains_key(&(start, end, false)) {
+            continue;
+        }
+        let overlaps = |&(s, e): &(usize, usize)| start < e && s < end && (s, e) != (start, end);
+        if kept.iter().any(overlaps) || groups.keys().any(|&(s, e, _)| overlaps(&(s, e))) {
+            continue;
+        }
+        kept.push((start, end));
+        for m in found
+            .iter()
+            .filter(|m| (m.start, m.end) == (start, end) && m.distance == distance)
+        {
+            let term = &snapshot.vocabulary[m.term];
+            let candidates = groups.entry((start, end, false)).or_default();
+            if !candidates.iter().any(|c| {
+                c.text == term.text && c.repository == term.repository && c.file == term.file
+            }) {
+                candidates.push(term.clone());
+            }
+        }
+    }
+}
 pub fn suggestions(text: &str, snapshot: &Snapshot) -> Vec<Suggestion> {
     let mut groups = std::collections::BTreeMap::<(usize, usize, bool), Vec<Vocabulary>>::new();
     let mut protection = snapshot.clone();
@@ -337,6 +381,7 @@ pub fn suggestions(text: &str, snapshot: &Snapshot) -> Vec<Suggestion> {
             }
         }
     }
+    add_sound_alikes(text, snapshot, &protected.ranges, &mut groups);
     for m in snapshot
         .mappings
         .iter()
@@ -382,6 +427,50 @@ pub fn suggestions(text: &str, snapshot: &Snapshot) -> Vec<Suggestion> {
             conflict,
         })
         .collect()
+}
+/// Largest hint sent to the recognizer. whisper.cpp keeps at most 224 prompt
+/// tokens, and an identifier costs about three.
+pub const RECOGNITION_HINT_BYTES: usize = 400;
+/// Longest mapping replacement worth spending hint space on.
+const HINT_TERM_BYTES: usize = 40;
+/// Builds the recognizer's initial prompt from the context snapshot. Enabled
+/// mapping replacements come first, then indexed identifiers that more files
+/// declare, then the rest in alphabetical order. Plain words and file paths
+/// are left out because the recognizer already spells them correctly.
+pub fn recognition_hint(snapshot: &Snapshot) -> String {
+    const PREFIX: &str = "Vocabulary: ";
+    let mut terms: Vec<&str> = snapshot
+        .mappings
+        .iter()
+        .filter(|m| m.enabled)
+        .map(|m| m.replacement.trim())
+        .filter(|t| !t.is_empty() && t.len() <= HINT_TERM_BYTES && !t.contains('\n'))
+        .collect();
+    let mut declared = std::collections::BTreeMap::<&str, usize>::new();
+    for v in &snapshot.vocabulary {
+        if crate::spoken::is_identifier(&v.text) {
+            *declared.entry(v.text.as_str()).or_default() += 1;
+        }
+    }
+    let mut ranked: Vec<_> = declared.into_iter().collect();
+    ranked.sort_by_key(|&(text, count)| (std::cmp::Reverse(count), text));
+    terms.extend(ranked.into_iter().map(|(text, _)| text));
+    let mut chosen: Vec<&str> = vec![];
+    let mut seen = std::collections::HashSet::new();
+    // The prefix and the closing period.
+    let mut size = PREFIX.len() + 1;
+    for term in terms {
+        let separator = if chosen.is_empty() { 0 } else { 2 };
+        if size + separator + term.len() > RECOGNITION_HINT_BYTES || !seen.insert(term) {
+            continue;
+        }
+        size += separator + term.len();
+        chosen.push(term);
+    }
+    if chosen.is_empty() {
+        return String::new();
+    }
+    format!("{PREFIX}{}.", chosen.join(", "))
 }
 pub fn prepare(raw: &str, snapshot: &Snapshot) -> ResultText {
     let masked = mask(raw, snapshot);
@@ -500,6 +589,33 @@ pub fn accept_suggestion(
         replacement,
     });
     Ok(())
+}
+/// The explicit mapping that makes a repository suggestion apply by itself on
+/// later recordings: the phrase as heard, replaced by the chosen candidate.
+/// The mapping is scoped to the candidate's repository.
+pub fn mapping_for(result: &ResultText, index: usize, candidate: usize) -> Result<Mapping, String> {
+    let suggestion = result
+        .suggestions
+        .get(index)
+        .ok_or("Suggestion is unavailable")?;
+    if suggestion.conflict {
+        return Err("Resolve a mapping conflict in Settings".into());
+    }
+    let candidate = suggestion
+        .candidates
+        .get(candidate)
+        .ok_or("Candidate is unavailable")?;
+    Ok(Mapping {
+        phrase: suggestion
+            .original
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase(),
+        replacement: candidate.text.clone(),
+        repository: Some(candidate.repository.clone()).filter(|id| !id.is_empty()),
+        enabled: true,
+    })
 }
 pub fn undo_edit(result: &mut ResultText, index: usize) -> Result<(), String> {
     let edit = result
@@ -665,6 +781,130 @@ mod tests {
         assert_eq!(prepare("um uh", &s).text, "");
         s.cleanup.mode = "off".into();
         assert_eq!(prepare("um uh", &s).text, "um uh");
+    }
+    fn indexed(texts: &[&str]) -> Snapshot {
+        Snapshot {
+            vocabulary: texts
+                .iter()
+                .map(|text| Vocabulary {
+                    text: (*text).into(),
+                    repository: "r".into(),
+                    file: "a.ts".into(),
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+    fn suggested(transcript: &str, snapshot: &Snapshot) -> Vec<(String, String)> {
+        prepare(transcript, snapshot)
+            .suggestions
+            .into_iter()
+            .map(|s| (s.original, s.candidates[0].text.clone()))
+            .collect()
+    }
+    #[test]
+    fn spelled_out_acronym_letters_match_an_indexed_identifier() {
+        let s = indexed(&["podGC"]);
+        let pair = |original: &str| vec![(original.to_owned(), "podGC".to_owned())];
+        assert_eq!(
+            suggested("set pod gee see to true", &s),
+            pair("pod gee see")
+        );
+        assert_eq!(suggested("set pod G C to true", &s), pair("pod G C"));
+        assert_eq!(suggested("set pod GC to true", &s), pair("pod GC"));
+    }
+    #[test]
+    fn near_miss_of_a_multiword_identifier_is_suggested() {
+        let s = indexed(&["maxGroups"]);
+        assert_eq!(
+            suggested("raise max group to two", &s),
+            vec![("max group".to_owned(), "maxGroups".to_owned())]
+        );
+    }
+    #[test]
+    fn near_misses_of_plain_words_and_short_terms_are_not_suggested() {
+        assert!(suggested("the value is set", &indexed(&["values"])).is_empty());
+        assert!(suggested("the eye dee is set", &indexed(&["id"])).is_empty());
+        assert!(suggested("tax groups are due", &indexed(&["maxGroups"])).is_empty());
+    }
+    #[test]
+    fn fuzzy_matches_skip_quotes_and_do_not_duplicate_exact_matches() {
+        let s = indexed(&["maxGroups"]);
+        assert!(suggested("say 'max group' twice", &s).is_empty());
+        let result = prepare("raise max groups", &s);
+        assert_eq!(result.suggestions.len(), 1);
+        assert_eq!(result.suggestions[0].candidates.len(), 1);
+    }
+    #[test]
+    fn overlapping_fuzzy_matches_keep_only_the_longest_span() {
+        let s = indexed(&["podGC", "podGCInterval"]);
+        let got = suggested("set pod gee see to true", &s);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, "pod gee see");
+    }
+    #[test]
+    fn recognizer_hint_lists_mapped_text_then_common_identifiers() {
+        let mut s = indexed(&[
+            "maxGroups",
+            "runner",
+            "src/app.rs",
+            "readFile",
+            "maxGroups",
+            "podGC",
+        ]);
+        s.mappings.push(mapping("gee see", "podGC", None));
+        let mut off = mapping("old", "unused", None);
+        off.enabled = false;
+        s.mappings.push(off);
+        assert_eq!(
+            recognition_hint(&s),
+            "Vocabulary: podGC, maxGroups, readFile."
+        );
+        assert_eq!(recognition_hint(&Snapshot::default()), "");
+    }
+    #[test]
+    fn recognizer_hint_stays_within_its_budget_and_keeps_whole_terms() {
+        let names: Vec<_> = (0..300).map(|i| format!("someName{i:03}")).collect();
+        let s = indexed(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let hint = recognition_hint(&s);
+        assert!(hint.len() <= RECOGNITION_HINT_BYTES);
+        assert!(hint.ends_with('.'));
+        assert!(hint.contains("someName000, someName001"));
+        assert!(!hint.contains("someName299"));
+    }
+    #[test]
+    fn remembered_mapping_replaces_the_heard_phrase_on_the_next_recording() {
+        let s = indexed(&["maxGroups"]);
+        let result = prepare("raise max group to two", &s);
+        let m = mapping_for(&result, 0, 0).unwrap();
+        assert_eq!(m.phrase, "max group");
+        assert_eq!(m.replacement, "maxGroups");
+        assert_eq!(m.repository.as_deref(), Some("r"));
+        assert!(m.enabled);
+        let next = Snapshot {
+            mappings: vec![m],
+            ..Default::default()
+        };
+        assert_eq!(
+            prepare("lower max group to one", &next).text,
+            "lower maxGroups to one"
+        );
+    }
+    #[test]
+    fn mapping_conflicts_and_missing_choices_cannot_be_remembered() {
+        let mut s = Snapshot {
+            mappings: vec![
+                mapping("foo", "Repo", Some("a")),
+                mapping("foo", "Other", Some("b")),
+            ],
+            ..Default::default()
+        };
+        let result = prepare("foo", &s);
+        assert!(mapping_for(&result, 0, 0).is_err());
+        s = indexed(&["maxGroups"]);
+        let result = prepare("max group", &s);
+        assert!(mapping_for(&result, 1, 0).is_err());
+        assert!(mapping_for(&result, 0, 1).is_err());
     }
     #[test]
     fn repository_edits_are_only_suggestions() {

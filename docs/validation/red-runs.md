@@ -21,3 +21,14 @@ Independent review and subsequent regression tests also reproduce these failures
 - `quoted_occurrence_does_not_suppress_unquoted_suggestion` returns zero suggestions instead of one.
 - `pre_cancelled_external_cleanup_does_not_start_a_request` reports endpoint failure instead of `Cancelled`.
 - `repeated_accepted_replacements_keep_independent_undo` retains one undo entry instead of two.
+
+Sound-alike matching, recognition hint, and Always replace.
+
+- `spelled_out_acronym_letters_match_an_indexed_identifier` returns no suggestions instead of `("pod gee see", "podGC")`.
+- `near_miss_of_a_multiword_identifier_is_suggested` returns no suggestions instead of `("max group", "maxGroups")`.
+- `overlapping_fuzzy_matches_keep_only_the_longest_span` returns zero suggestions instead of one.
+- `recognizer_hint_lists_mapped_text_then_common_identifiers` returns an empty hint instead of `Vocabulary: podGC, maxGroups, readFile.`.
+- `recognizer_hint_stays_within_its_budget_and_keeps_whole_terms` fails `hint.ends_with('.')` on the empty hint.
+- `recognizer_receives_the_vocabulary_hint_as_its_initial_prompt` finds no `prompt` field in the recognizer request.
+- `remembered_mapping_replaces_the_heard_phrase_on_the_next_recording` panics because `mapping_for` returns an error.
+- `offers to remember an accepted repository suggestion as a mapping` finds no button named "Accept and always replace".

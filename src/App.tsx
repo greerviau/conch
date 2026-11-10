@@ -445,6 +445,19 @@ export default function App() {
                         >
                           Accept
                         </button>
+                        {!s.conflict && (
+                          <button
+                            disabled={dirty || view.phase !== "idle"}
+                            onClick={() =>
+                              void command("accept_always", {
+                                index: i,
+                                candidate: j,
+                              })
+                            }
+                          >
+                            Accept and always replace
+                          </button>
+                        )}
                       </div>
                     ))}
                     <button

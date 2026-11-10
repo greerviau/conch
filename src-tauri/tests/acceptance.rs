@@ -151,12 +151,25 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
         &workers,
         &data.join("ggml-tiny.en.bin"),
         wav,
+        "",
         &inference::new_worker(),
         true,
     )
     .unwrap();
     assert!(raw.to_lowercase().contains("do not change"));
     assert!(raw.contains("12"));
+    let hinted = inference::transcribe(
+        &workers,
+        &data.join("ggml-tiny.en.bin"),
+        std::fs::read(data.join("synthetic.wav")).unwrap(),
+        "Vocabulary: podGC, maxGroups.",
+        &inference::new_worker(),
+        true,
+    )
+    .unwrap();
+    assert!(hinted.to_lowercase().contains("do not change"));
+    assert!(!hinted.contains("Vocabulary"));
+    assert!(hinted.contains("podGC") && hinted.contains("maxGroups"));
     let mut snapshot = Snapshot::default();
     snapshot.cleanup.mode = "enhanced".into();
     let result = inference::enhanced(inference::CleanupRequest {

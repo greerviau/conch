@@ -23,6 +23,8 @@ Click Exclusions to add ignore patterns, one per line.
 Select the repositories that supply context on the Dictation page before recording.
 Define global or repository mappings for recurring transcription errors on Mappings.
 Each mapping has an enable switch, the spoken phrase, the replacement text, and a scope.
+Conch also sends the recognizer a short list of identifiers from the selected repositories and your mappings, so it spells them correctly.
+If a repository suggestion appears for a phrase you say often, choose Accept and always replace. Conch saves a mapping for that phrase and applies it from the next recording.
 The default shortcut is Command-or-Control + Shift + Space in push-to-talk mode.
 In Settings, click Change shortcut and press the desired combination.
 Conch pauses its registered shortcut during capture and ignores repeat events.
