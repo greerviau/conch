@@ -57,3 +57,10 @@ test('the signing check accepts an app signed with the stable local identity', {
  assert.equal(check.status, 0, check.stderr);
  assert.match(check.stdout, /stable requirement/);
 });
+test('the repository is MIT licensed under the copyright holder named in every manifest and the license file', () => {
+ const license = readFileSync('LICENSE', 'utf8');
+ assert.match(license, /^MIT License\n\nCopyright \(c\) 2026 Greer\n/);
+ assert.match(license, /Permission is hereby granted, free of charge/);
+ assert.equal(JSON.parse(readFileSync('package.json')).license, 'MIT');
+ assert.match(readFileSync('src-tauri/Cargo.toml', 'utf8').split(/^\[dependencies\]/m)[0], /^license = "MIT"$/m);
+});
