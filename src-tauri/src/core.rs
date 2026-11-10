@@ -41,6 +41,8 @@ pub struct Snapshot {
     pub mappings: Vec<Mapping>,
     pub vocabulary: Vec<Vocabulary>,
     pub cleanup: Cleanup,
+    /// Apply repository suggestions that have one candidate without review.
+    pub auto_accept: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Suggestion {
@@ -480,13 +482,33 @@ pub fn prepare(raw: &str, snapshot: &Snapshot) -> ResultText {
     let text = masked
         .restore(&basic(&masked.text, &snapshot.cleanup))
         .unwrap_or_else(|| raw.into());
-    ResultText {
+    let mut result = ResultText {
         raw: raw.into(),
         basic: text.clone(),
         suggestions: suggestions(&text, snapshot),
         text,
         edits: vec![],
         status: "Prepared locally".into(),
+    };
+    auto_accept(&mut result, snapshot);
+    result
+}
+/// Accepts every repository suggestion that has a single candidate when the
+/// snapshot opts in. Each acceptance is recorded as an edit, so Undo restores
+/// the heard words. Suggestions with several candidates and mapping conflicts
+/// stay for review.
+pub fn auto_accept(result: &mut ResultText, snapshot: &Snapshot) {
+    if !snapshot.auto_accept {
+        return;
+    }
+    while let Some(index) = result
+        .suggestions
+        .iter()
+        .position(|s| !s.conflict && s.candidates.len() == 1)
+    {
+        if accept_suggestion(result, index, 0).is_err() {
+            result.suggestions.remove(index);
+        }
     }
 }
 
@@ -746,6 +768,48 @@ mod tests {
             prepare("POD gee see and pod, tripod", &s).text,
             "podGC and POD, tripod"
         );
+    }
+    #[test]
+    fn auto_accept_applies_sound_alike_suggestions_as_undoable_edits() {
+        let mut s = indexed(&["maxGroups", "podGC"]);
+        assert_eq!(
+            prepare("raise max group and pod gee see", &s).text,
+            "raise max group and pod gee see"
+        );
+        s.auto_accept = true;
+        let mut result = prepare("raise max group and pod gee see", &s);
+        assert_eq!(result.text, "raise maxGroups and podGC");
+        assert!(result.suggestions.is_empty());
+        assert_eq!(result.edits.len(), 2);
+        assert_eq!(result.basic, "raise max group and pod gee see");
+        undo_edit(&mut result, 0).unwrap();
+        assert_eq!(result.text, "raise max group and podGC");
+    }
+    #[test]
+    fn auto_accept_leaves_ambiguous_and_conflicting_suggestions_for_review() {
+        let mut s = indexed(&["maxGroups"]);
+        s.vocabulary.push(Vocabulary {
+            text: "maxGroups".into(),
+            repository: "other".into(),
+            file: "b.ts".into(),
+        });
+        s.auto_accept = true;
+        let result = prepare("raise max groups", &s);
+        assert_eq!(result.text, "raise max groups");
+        assert_eq!(result.suggestions[0].candidates.len(), 2);
+        let mut s = Snapshot {
+            mappings: vec![
+                mapping("foo", "Repo", Some("a")),
+                mapping("foo", "Other", Some("b")),
+            ],
+            auto_accept: true,
+            ..Default::default()
+        };
+        let result = prepare("foo", &s);
+        assert_eq!(result.text, "foo");
+        assert!(result.suggestions[0].conflict);
+        s.mappings.clear();
+        assert!(prepare("foo", &s).edits.is_empty());
     }
     #[test]
     fn repository_override_and_conflicts_stay_reviewable() {

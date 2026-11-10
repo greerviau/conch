@@ -678,6 +678,25 @@ export default function App() {
                 </p>
               </div>
             </div>
+            <h3 className="group">Repository context</h3>
+            <div className="card rows">
+              <Row
+                title="Accept suggestions automatically"
+                note={
+                  draft.auto_accept_suggestions
+                    ? "Conch replaces a heard phrase with the identifier it sounds like when one indexed term matches. Each replacement is listed under Accepted edits, where Undo restores the heard words."
+                    : "Repository suggestions wait for you to accept them. Turn this on to apply a match that has a single candidate without review."
+                }
+              >
+                <Toggle
+                  label="Accept repository suggestions automatically"
+                  checked={draft.auto_accept_suggestions}
+                  onChange={(auto_accept_suggestions) =>
+                    setDraft({ ...draft, auto_accept_suggestions })
+                  }
+                />
+              </Row>
+            </div>
             <h3 className="group">Transcript cleanup</h3>
             <div className="card rows">
               <Row

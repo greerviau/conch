@@ -33,6 +33,7 @@ const fixture = () => ({
     activation: "push",
     recognizer: "tiny.en",
     auto_paste: true,
+    auto_accept_suggestions: false,
     microphone: "",
     show_overlay: true,
     check_updates: true,
@@ -469,6 +470,21 @@ it("saves the choice to stop checking for updates automatically", async () => {
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("save_settings", {
       settings: expect.objectContaining({ check_updates: false }),
+    }),
+  );
+});
+it("saves the choice to accept repository suggestions without review", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const toggle = await screen.findByRole("checkbox", {
+    name: "Accept repository suggestions automatically",
+  });
+  expect((toggle as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(toggle);
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({ auto_accept_suggestions: true }),
     }),
   );
 });
