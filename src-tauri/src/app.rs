@@ -56,6 +56,8 @@ pub struct View {
     microphone: String,
     can_retry: bool,
     shortcuts_available: bool,
+    version: &'static str,
+    update: crate::update::Status,
 }
 #[tauri::command]
 pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> {
@@ -84,6 +86,8 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
         shortcuts_available: app
             .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
             .is_some(),
+        version: env!("CARGO_PKG_VERSION"),
+        update: app.state::<crate::update::Tracker>().status(),
     })
 }
 #[tauri::command]
@@ -581,6 +585,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             indicator_notice: None,
         }),
     });
+    app.manage(crate::update::Tracker::new());
     if let Err(error) = crate::indicator::setup(app.handle()) {
         app.state::<AppState>().inner.lock().unwrap().error = error;
     }
@@ -608,6 +613,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if let Err(error) = crate::tray::setup(app.handle()) {
         app.state::<AppState>().inner.lock().unwrap().error = error;
     }
+    crate::update::watch(app.handle());
     let handle = app.handle().clone();
     std::thread::spawn(move || {
         use notify::Watcher;

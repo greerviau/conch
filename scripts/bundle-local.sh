@@ -37,9 +37,10 @@ done
 identity=$(scripts/setup-local-signing.sh)
 app="src-tauri/target/$profile/bundle/macos/Conch.app"
 
-# The command-line config overrides the "-" (ad-hoc) default in tauri.conf.json.
+# The command-line config overrides the "-" (ad-hoc) default in tauri.conf.json
+# and skips updater artifacts, which need the release signing key.
 npm run tauri -- build --bundles app ${extra[@]+"${extra[@]}"} \
-  --config "{\"bundle\":{\"macOS\":{\"signingIdentity\":\"$identity\"}}}"
+  --config "{\"bundle\":{\"createUpdaterArtifacts\":false,\"macOS\":{\"signingIdentity\":\"$identity\"}}}"
 
 for name in "${workers[@]}"; do
   if [ ! -x "$app/Contents/Resources/workers/$name" ]; then
@@ -48,18 +49,7 @@ for name in "${workers[@]}"; do
   fi
 done
 
-requirement=$(codesign -d -r- "$app" 2>&1 | sed -n 's/^designated => //p')
-expected="identifier \"app.conch.desktop\" and certificate leaf = H\"$(echo "$identity" | tr 'A-F' 'a-f')\""
-if [ "$requirement" != "$expected" ]; then
-  echo "error: $app has designated requirement:" >&2
-  echo "  $requirement" >&2
-  echo "expected:" >&2
-  echo "  $expected" >&2
-  echo "The Accessibility grant would not survive this build." >&2
-  exit 1
-fi
-codesign --verify --deep --strict "$app"
-echo "signed with stable requirement: $requirement"
+scripts/verify-signing.sh "$app" "$identity"
 
 if [ "$install" = 1 ]; then
   osascript -e 'tell application id "app.conch.desktop" to quit' 2>/dev/null || true

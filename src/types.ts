@@ -26,6 +26,7 @@ export type Settings = {
   hotkey: string;
   activation: string;
   show_overlay: boolean;
+  check_updates: boolean;
 };
 export type Candidate = { text: string; repository: string; file: string };
 export type ResultText = {
@@ -64,6 +65,9 @@ export type View = {
   microphone: string;
   can_retry: boolean;
   shortcuts_available: boolean;
+  version: string;
+  update: UpdateStatus;
 };
+export type UpdateStatus = { state: string; detail?: string };
 export const folderName = (root: string) =>
   root.split(/[\\/]/).filter(Boolean).pop() ?? root;

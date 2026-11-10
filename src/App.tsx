@@ -1,37 +1,17 @@
 import { PasteAccess } from "./PasteAccess";
 import { useCallback, useEffect, useState } from "react";
-import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Setup, ShortcutRecorder, shortcutLabel } from "./Setup";
 import { Mappings } from "./Mappings";
 import { Repositories } from "./Repositories";
 import { Mic, Stop } from "./icons";
-import { Toggle } from "./ui";
+import { Updates } from "./Updates";
+import { Row, Toggle } from "./ui";
 import { folderName } from "./types";
 import type { Cleanup, Settings, View } from "./types";
 
 const TABS = ["Dictation", "Repositories", "Mappings", "Settings"];
-
-function Row({
-  title,
-  note,
-  children,
-}: {
-  title: string;
-  note?: ReactNode;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="row">
-      <div className="row-text">
-        <b>{title}</b>
-        {note && <span>{note}</span>}
-      </div>
-      {children && <div className="row-control">{children}</div>}
-    </div>
-  );
-}
 
 export default function App() {
   const [view, setView] = useState<View>();
@@ -542,6 +522,28 @@ export default function App() {
                   }
                 />
               </Row>
+            </div>
+            <h3 className="group">Updates</h3>
+            <div className="card rows">
+              <Row
+                title="Automatic checks"
+                note="Look for a new release shortly after launch and then daily."
+              >
+                <Toggle
+                  label="Check for updates automatically"
+                  checked={draft.check_updates}
+                  onChange={(check_updates) =>
+                    setDraft({ ...draft, check_updates })
+                  }
+                />
+              </Row>
+              <Updates
+                version={view.version}
+                update={view.update}
+                busy={view.phase !== "idle"}
+                onCheck={() => void command("check_update")}
+                onInstall={() => void command("install_update")}
+              />
             </div>
             <h3 className="group">Access</h3>
             <div className="card rows">

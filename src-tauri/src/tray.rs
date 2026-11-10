@@ -40,9 +40,18 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     let failed = |_: tauri::Error| "Cannot create the menu bar icon".to_string();
     let status = MenuItem::with_id(app, "status", "Ready", false, None::<&str>).map_err(failed)?;
     let show = MenuItem::with_id(app, "show", "Show Conch", true, None::<&str>).map_err(failed)?;
+    let update = MenuItem::with_id(
+        app,
+        "update",
+        crate::update::menu_label(&crate::update::Status::Idle),
+        true,
+        None::<&str>,
+    )
+    .map_err(failed)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Conch", true, None::<&str>).map_err(failed)?;
     let separator = PredefinedMenuItem::separator(app).map_err(failed)?;
-    let menu = Menu::with_items(app, &[&status, &separator, &show, &quit]).map_err(failed)?;
+    let menu =
+        Menu::with_items(app, &[&status, &separator, &show, &update, &quit]).map_err(failed)?;
     let tray = TrayIconBuilder::with_id("conch")
         .icon(Image::from_bytes(include_bytes!("../icons/tray.png")).map_err(failed)?)
         .icon_as_template(true)
@@ -50,12 +59,14 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
+            "update" => crate::update::menu_selected(app),
             "quit" => app.exit(0),
             _ => (),
         })
         .build(app)
         .map_err(failed)?;
     app.manage(Active);
+    app.manage(crate::update::MenuEntry(update));
     let app = app.clone();
     std::thread::spawn(move || {
         let mut shown = None;

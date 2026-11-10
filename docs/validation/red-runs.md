@@ -32,3 +32,16 @@ Sound-alike matching, recognition hint, and Always replace.
 - `recognizer_receives_the_vocabulary_hint_as_its_initial_prompt` finds no `prompt` field in the recognizer request.
 - `remembered_mapping_replaces_the_heard_phrase_on_the_next_recording` panics because `mapping_for` returns an error.
 - `offers to remember an accepted repository suggestion as a mapping` finds no button named "Accept and always replace".
+
+# Update check and install
+
+Tests written before the update logic reproduce these failures.
+
+- `automatic_checks_run_at_launch_and_then_when_the_scheduled_time_arrives` returns false for a check that has never run.
+- `a_failed_check_is_retried_within_the_hour_and_a_successful_one_in_a_day` returns the current instant instead of one hour or one day later.
+- `installing_waits_until_no_recording_or_result_is_in_progress` returns no reason during a recording.
+- `the_menu_item_offers_the_next_action_for_each_status` returns an empty label.
+- `only_one_check_or_install_runs_at_a_time` fails to compile because `Tracker` has no `begin` or `set`; review found that checking for a running update and starting one were separate steps.
+- `automatic_update_checks_are_on_by_default_and_for_settings_saved_before_they_existed` fails to compile because `Settings` has no `check_updates` field.
+- The harness tests for `createUpdaterArtifacts`, the updater public key, `scripts/check-version.mjs`, and `scripts/verify-signing.sh` fail because the configuration keys and scripts do not exist.
+- The five interface tests in `src/App.test.tsx` for the update switch, version line, check button, install button, and failure message cannot find their controls.

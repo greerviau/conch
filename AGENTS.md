@@ -12,6 +12,7 @@ Use the glossary's terms verbatim and update the spec and glossary when a decisi
 - `src-tauri/src/chunk.rs`: splits a growing recording at pauses. `pipeline.rs`: recognizes chunks on a background thread. `audio.rs`: microphone capture and WAV encoding.
 - `src-tauri/src/core.rs`: mappings, masking, Basic cleanup, suggestions, recognition hint, result edits. `spoken.rs`: sound-alike matching of identifiers against recognizer output. `index.rs`, `storage.rs`: repository vocabulary and SQLite.
 - `src-tauri/src/platform.rs`, `macos.m`, `windows.rs`: focused-field detection, paste, permissions. `delivery.rs`: the copy-then-paste decision.
+- `src-tauri/src/update.rs`: update check, install, and restart with `tauri-plugin-updater`. `scripts/check-version.mjs`, `scripts/verify-signing.sh`, and `.github/workflows/release.yml` publish releases.
 - `src-tauri/src/tray.rs`: menu bar icon, state display, show and hide of the main window. `indicator.rs`: floating recording indicator.
 - `scripts/`: runtime build (`build-runtimes.py`), brand assets, `setup-local-signing.sh`, `bundle-local.sh`.
 - `docs/validation/`: evidence and measurements. Do not state a result there that was not observed.
@@ -43,6 +44,8 @@ Acceptance tests marked `#[ignore]` need `.runtime/` (models and a synthetic WAV
 ## Pitfalls
 
 - **Signing and Accessibility.** macOS keys the Accessibility grant to the code signature. Plain `tauri build` signs ad-hoc, so every rebuild loses the grant. Install local builds with `bundle:local`, which signs with the "Conch Local Signing" identity and fails if the requirement is not `identifier "app.conch.desktop" and certificate leaf = H"<hash>"`.
+- **Updater artifacts.** `createUpdaterArtifacts` is on, so a bundle build without `TAURI_SIGNING_PRIVATE_KEY` fails after it finishes. Local and check builds pass `--config '{"bundle":{"createUpdaterArtifacts":false}}'`. The updater private key and password never go in the repository.
+- **Restart.** `app.restart()` exits without the exit event, so `update::install_now` stops the workers itself before calling it.
 - **Electron apps.** Electron and Chromium expose no accessibility tree until `AXManualAccessibility` is set on the app element. `platform.rs` gets the frontmost pid from `NSWorkspace` and wakes that app, because the system-wide focused-application query fails before the wake.
 - **Agent shells have no Accessibility trust.** Focus detection and paste cannot be probed from an agent session, and a binary signed with Conch's identity does not inherit the grant when run from there. Ask the user to test the installed build. The grey status line under the result box names the reason for a clipboard fallback.
 - **Workers.** `whisper-server` needs `CONCH_WORKER_TOKEN` and bearer authentication when run by hand. Metal and loopback servers fail inside a restrictive sandbox. Workers are pooled per process: tests must scope `shutdown` and `reap_idle_within` to their own temp directory, or parallel tests kill each other's workers. A test process that exits without `shutdown` leaks workers (the llama worker holds about 1 GB).

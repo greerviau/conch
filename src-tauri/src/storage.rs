@@ -20,6 +20,7 @@ pub struct Settings {
     pub hotkey: String,
     pub activation: String,
     pub show_overlay: bool,
+    pub check_updates: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -30,6 +31,7 @@ impl Default for Settings {
             hotkey: "CommandOrControl+Shift+Space".into(),
             activation: "push".into(),
             show_overlay: true,
+            check_updates: true,
         }
     }
 }
@@ -277,6 +279,15 @@ mod tests {
         assert_eq!(status[0].0, "r");
         assert!(status[0].1.available && status[0].1.incomplete);
         assert_eq!(status[0].1.skipped, 3);
+    }
+    #[test]
+    fn automatic_update_checks_are_on_by_default_and_for_settings_saved_before_they_existed() {
+        assert!(Settings::default().check_updates);
+        let older = r#"{"hotkey":"Control+Space","activation":"push"}"#;
+        let loaded: Settings = serde_json::from_str(older).unwrap();
+        assert!(loaded.check_updates);
+        let off: Settings = serde_json::from_str(r#"{"check_updates":false}"#).unwrap();
+        assert!(!off.check_updates);
     }
 
     fn term(text: &str, file: &str) -> Vocabulary {

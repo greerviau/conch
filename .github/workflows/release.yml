@@ -1,0 +1,58 @@
+name: Release
+# Pushing a tag such as v0.3.0 builds signed installers on every platform and
+# attaches them, with the updater manifest latest.json, to a draft GitHub
+# release. Installed copies see the release only after it is published.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/check-version.mjs "$GITHUB_REF_NAME"
+  release:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev librsvg2-dev libayatana-appindicator3-dev libasound2-dev libxdo-dev libsecret-1-dev
+      - run: npm ci
+      - run: python scripts/build-runtimes.py
+      # Sign with the same certificate on every release. macOS keys the
+      # Accessibility grant to it, so a different one revokes the grant on update.
+      - if: runner.os == 'macOS'
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: echo "TAURI_CONFIG={\"bundle\":{\"macOS\":{\"signingIdentity\":\"$IDENTITY\"}}}" >> "$GITHUB_ENV"
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Conch ${{ github.ref_name }}
+          releaseDraft: true
+          includeUpdaterJson: true
+      - if: runner.os == 'macOS'
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: scripts/verify-signing.sh src-tauri/target/release/bundle/macos/Conch.app "$IDENTITY"

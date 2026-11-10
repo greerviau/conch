@@ -64,6 +64,16 @@ Clicking the Dock icon or choosing Show Conch brings the window back.
 If the menu bar icon cannot be created, closing the window quits Conch instead.
 Quit Conch cancels active work and stops the inference workers.
 
+## Updates
+
+Conch checks GitHub for a newer release shortly after launch and then every 24 hours.
+When one exists, the menu bar item reads Update to X.Y.Z and Settings offers an Install button.
+Installing downloads the release, waits for any recording to finish, stops the workers, installs, and restarts Conch.
+Settings has a switch for the automatic check, and Check for updates in Settings or the menu bar item looks on demand.
+macOS keys the Accessibility grant to the signing identity, so an update keeps it only when the release is signed with the same identity as the installed copy.
+A copy you built yourself switches to the official build on its first update.
+Only an AppImage updates itself on Linux.
+
 ## Delivery
 
 Conch copies each initial nonempty result once.
