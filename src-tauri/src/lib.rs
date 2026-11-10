@@ -12,6 +12,7 @@ pub fn run() {
     use tauri::Manager;
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(app::setup)
         .invoke_handler(tauri::generate_handler![
             app::view,
@@ -35,7 +36,9 @@ pub fn run() {
             app::reject,
             app::copy,
             app::download,
-            app::credential
+            app::credential,
+            update::check_update,
+            update::install_update
         ])
         .on_window_event(|window, event| {
             if window.label() == "main"
@@ -80,3 +83,5 @@ pub mod shortcuts;
 pub mod chunk;
 
 pub mod tray;
+
+pub mod update;

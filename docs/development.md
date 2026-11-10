@@ -11,8 +11,10 @@ npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
-npm run tauri -- build
+npm run tauri -- build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
+
+Updater artifacts are on in `tauri.conf.json`, so a bundle build fails without `TAURI_SIGNING_PRIVATE_KEY` unless it passes the override above. `bundle:local` and the check workflow already do.
 
 On macOS, install local builds with `npm run bundle:local -- --install` so the Accessibility grant survives rebuilds.
 
@@ -29,6 +31,26 @@ Windows targets NSIS/MSI, and Linux targets AppImage/deb/rpm through Tauri.
 Public distribution requires a Developer ID identity, notarization credentials, and platform validation.
 Model attribution and the S1-mini LICENSE and NOTICE ship in the app resources.
 The S1-mini license adds a naming condition to Apache 2.0.
+
+## Releasing
+
+Releases come from GitHub Actions, so no release needs a Mac or an Apple Developer account.
+
+One-time setup, as repository secrets:
+
+- `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the updater key from `npm run tauri -- signer generate`. Its public half is the `pubkey` in `tauri.conf.json`. Keep a copy outside GitHub: without it, installed copies can never update.
+- `APPLE_CERTIFICATE` (base64 of a `.p12`), `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_IDENTITY` (the certificate's SHA-1 hash): the "Conch Local Signing" identity. Export it from Keychain Access as a `.p12` and run `base64 -i conch.p12`. Every release must use this same certificate, because the Accessibility grant is keyed to it.
+
+To release:
+
+1. Set the same version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, and commit.
+2. Push a tag `vX.Y.Z`. The version job fails if the tag and manifests disagree, and the macOS job fails if the app is not signed with the stable identity.
+3. Open the draft release, check the installers and `latest.json`, and publish it. Installed copies see it only after this step.
+
+The first updater build must be installed by hand; earlier copies cannot update themselves.
+Forks replace `pubkey` and `endpoints` in `tauri.conf.json` and use their own keys.
+To build a copy that never updates, clear `endpoints` with `--config '{"plugins":{"updater":{"endpoints":[]}}}'`.
+Notarization and Windows signing are not set up, so first installs from a browser show Gatekeeper and SmartScreen warnings.
 
 Synthetic inference evaluation uses macOS `say` and FFmpeg to create disposable test audio.
 It requires the models under `.runtime` and writes the synthetic results to `docs/validation/synthetic-inference.json`.

@@ -19,5 +19,8 @@
 - Shortcut capture: the Settings control that records a pressed key combination while Conch pauses its registered recording shortcut.
 - Chunk: a span of a recording that ends at a pause and is recognized while recording continues. The audio after the last chunk is the tail.
 - Worker: a bundled inference process (recognizer or managed cleanup) that Conch starts when recording starts, reuses across recordings, and stops after an idle period or on exit.
-- Menu bar icon: the system tray icon that shows recording and processing state and offers Show Conch and Quit Conch. Closing the main window hides it and leaves Conch running behind this icon.
-- Stable local signing: signing a macOS build with the persistent self-signed "Conch Local Signing" identity so its Accessibility grant survives rebuilds.
+- Menu bar icon: the system tray icon that shows recording and processing state and offers Show Conch, an update action, and Quit Conch. Closing the main window hides it and leaves Conch running behind this icon.
+- Stable local signing: signing a macOS build with the persistent self-signed "Conch Local Signing" identity so its Accessibility grant survives rebuilds. Release builds sign with the same identity so the grant also survives updates.
+- Release: a version published on GitHub with installers for each platform and the update manifest `latest.json`. A tag `vX.Y.Z` builds it as a draft; publishing it makes it visible to installed copies.
+- Update check: Conch's request for `latest.json`, made shortly after launch and then daily unless Settings turns it off, or on demand from Settings or the menu bar icon.
+- Updater key: the minisign key pair that signs updater artifacts. Its public half is in `tauri.conf.json` and its private half is a repository secret. It is separate from macOS code signing.

@@ -17,6 +17,11 @@ API keys use the platform credential store and can be removed in Settings.
 Plain HTTP is accepted only for loopback local endpoints.
 Conch never falls back from a local provider to a remote provider.
 
+Conch asks GitHub for the newest release's manifest shortly after launch and then every 24 hours.
+The request carries no transcript, audio, setting, or identifier, and GitHub sees the device's IP address.
+Settings turns the automatic check off, and the manual check stays available.
+Conch installs an update only when you choose to, and only after verifying its signature against the public key built into the app.
+
 Settings and vocabulary indexes use a local SQLite database.
 Repository files supply paths and declared symbols without executing repository code.
 Conch keeps audio and the latest result in memory.

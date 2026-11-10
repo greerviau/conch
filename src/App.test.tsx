@@ -20,6 +20,7 @@ const fixture = () => ({
     hotkey: "Control+Space",
     activation: "push",
     show_overlay: true,
+    check_updates: true,
     cleanup: {
       mode: "basic",
       fillers: ["um", "uh"],
@@ -44,6 +45,8 @@ const fixture = () => ({
   downloading: false,
   can_retry: false,
   shortcuts_available: true,
+  version: "0.2.2",
+  update: { state: "idle" } as { state: string; detail?: string },
 });
 let view = fixture();
 beforeEach(() => {
@@ -183,4 +186,54 @@ it("activates a captured shortcut immediately without saving unrelated settings"
     }),
   );
   expect(ipc.mock.calls.some(([name]) => name === "save_settings")).toBe(false);
+});
+it("saves the choice to stop checking for updates automatically", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", {
+      name: "Check for updates automatically",
+    }),
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({ check_updates: false }),
+    }),
+  );
+});
+it("shows the installed version and checks for updates on request", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  expect(await screen.findByText("Conch 0.2.2")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("check_update", undefined),
+  );
+});
+it("offers an available update and installs it when idle", async () => {
+  view.update = { state: "available", detail: "0.3.0" };
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  expect(await screen.findByText("Version 0.3.0 is available.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Install 0.3.0" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("install_update", undefined),
+  );
+});
+it("keeps the install button disabled while a recording is in progress", async () => {
+  view.update = { state: "available", detail: "0.3.0" };
+  view.phase = "recording";
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const install = await screen.findByRole("button", { name: "Install 0.3.0" });
+  expect((install as HTMLButtonElement).disabled).toBe(true);
+});
+it("reports a failed update check", async () => {
+  view.update = { state: "failed", detail: "Cannot reach the update server" };
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  expect(
+    await screen.findByText("Cannot reach the update server"),
+  ).toBeTruthy();
 });

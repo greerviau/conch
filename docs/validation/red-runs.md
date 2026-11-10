@@ -21,3 +21,16 @@ Independent review and subsequent regression tests also reproduce these failures
 - `quoted_occurrence_does_not_suppress_unquoted_suggestion` returns zero suggestions instead of one.
 - `pre_cancelled_external_cleanup_does_not_start_a_request` reports endpoint failure instead of `Cancelled`.
 - `repeated_accepted_replacements_keep_independent_undo` retains one undo entry instead of two.
+
+# Update check and install
+
+Tests written before the update logic reproduce these failures.
+
+- `automatic_checks_run_at_launch_and_then_when_the_scheduled_time_arrives` returns false for a check that has never run.
+- `a_failed_check_is_retried_within_the_hour_and_a_successful_one_in_a_day` returns the current instant instead of one hour or one day later.
+- `installing_waits_until_no_recording_or_result_is_in_progress` returns no reason during a recording.
+- `the_menu_item_offers_the_next_action_for_each_status` returns an empty label.
+- `automatic_update_checks_are_on_by_default_and_for_settings_saved_before_they_existed` fails to compile because `Settings` has no `check_updates` field.
+- The harness tests for `createUpdaterArtifacts`, the updater public key, `scripts/check-version.mjs`, and `scripts/verify-signing.sh` fail because the configuration keys and scripts do not exist.
+- The five interface tests in `src/App.test.tsx` for the update switch, version line, check button, install button, and failure message cannot find their controls.
+

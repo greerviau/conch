@@ -1,4 +1,5 @@
 import { PasteAccess } from "./PasteAccess";
+import { Updates, type UpdateStatus } from "./Updates";
 import React, { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -32,6 +33,7 @@ type Settings = {
   hotkey: string;
   activation: string;
   show_overlay: boolean;
+  check_updates: boolean;
 };
 type Candidate = { text: string; repository: string; file: string };
 type ResultText = {
@@ -64,6 +66,8 @@ type View = {
   microphone: string;
   can_retry: boolean;
   shortcuts_available: boolean;
+  version: string;
+  update: UpdateStatus;
 };
 
 export default function App() {
@@ -715,6 +719,25 @@ export default function App() {
                 />
                 Show a floating recording indicator over other apps
               </label>
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={draft.check_updates}
+                  onChange={(e) =>
+                    setDraft({ ...draft, check_updates: e.target.checked })
+                  }
+                />
+                Check for updates automatically
+              </label>
+              <div className="permission-grid">
+                <Updates
+                  version={view.version}
+                  update={view.update}
+                  busy={view.phase !== "idle"}
+                  onCheck={() => void command("check_update")}
+                  onInstall={() => void command("install_update")}
+                />
+              </div>
               <div className="permission-grid">
                 <article>
                   <h3>Microphone</h3>
