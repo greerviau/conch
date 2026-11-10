@@ -7,7 +7,7 @@ import {
   VOICE_DETECTION_NOTE,
   recognizerInfo,
 } from "./ModelChoice";
-import { VAD, size } from "./models";
+import { DEFAULT_RECOGNIZER, VAD, size } from "./models";
 import { useEffect, useRef, useState } from "react";
 
 export function shortcutLabel(value: string, mac = false) {
@@ -21,7 +21,7 @@ export function shortcutLabel(value: string, mac = false) {
 }
 export function Setup({
   installed,
-  recognizer = "tiny.en",
+  recognizer = DEFAULT_RECOGNIZER,
   onRecognizer,
   ready,
   voiceOnly = false,

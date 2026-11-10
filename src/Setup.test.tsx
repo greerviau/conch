@@ -13,7 +13,9 @@ describe("first-run setup", () => {
     const download = vi.fn();
     render(<Setup installed={false} onDownload={download} />);
     fireEvent.click(
-      screen.getByRole("button", { name: "Download Tiny (English), 77.7 MB" }),
+      screen.getByRole("button", {
+        name: "Download Small (English), 487.6 MB",
+      }),
     );
     expect(download).toHaveBeenCalledOnce();
   });

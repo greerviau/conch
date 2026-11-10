@@ -3,7 +3,7 @@
 ## Setup
 
 The Dictation page shows the setup checklist. Its first step has a menu of the three recognition models and a button that names the selected one, for example Download Small (English), 487.6 MB.
-Tiny (Whisper tiny.en, 77.7 MB) is the default. Picking another model there saves it at once.
+Small (Whisper small.en, 487.6 MB) is the default for a new install. Picking another model there saves it at once.
 Once a model is installed the step names it and offers Change model.
 Enable microphone access and automatic paste from the same checklist.
 The paste step disappears while Automatic paste is off in Settings.
@@ -26,7 +26,7 @@ Retry recognizes the kept recording with the model selected when you retry.
 
 Every recognition model download also installs the 0.9 MB Silero voice detection model.
 The recognizer skips audio that voice detection classifies as silence or noise, so a pause or room noise after you stop speaking does not turn into words such as "Thank you."
-Copies that installed Tiny before this model existed show Download recognition model once more to fetch it.
+Copies that installed Tiny before this model existed keep Tiny and show Download Voice detection (Silero), 0.9 MB once to fetch it.
 
 ## Cleanup
 

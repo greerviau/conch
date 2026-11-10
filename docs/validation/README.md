@@ -5,7 +5,7 @@
 The experiment runs on Apple M1, 8 GiB RAM, macOS 26.6.2, Rust 1.95.0, and Node 26.8.1.
 The worker sources are pinned in `scripts/build-runtimes.py`.
 The model URLs, revisions, sizes, and SHA-256 values are pinned in the Rust model manifest.
-Whisper tiny.en supplies the default English recognizer; Settings also offers base.en and small.en, measured in `recognition-models.md`.
+Whisper small.en is the default English recognizer for a new install; Settings also offers tiny.en and base.en, measured in `recognition-models.md`.
 S1-mini q4_k_m by Superwhisper supplies optional Enhanced cleanup.
 The app sends the published S1-mini system prompt and semi-formal/prose/general controls, disables thinking, and uses greedy decoding.
 
