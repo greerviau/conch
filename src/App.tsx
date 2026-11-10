@@ -681,15 +681,15 @@ export default function App() {
             <h3 className="group">Repository context</h3>
             <div className="card rows">
               <Row
-                title="Accept suggestions automatically"
+                title="Auto-accept"
                 note={
                   draft.auto_accept_suggestions
-                    ? "Conch replaces a heard phrase with the identifier it sounds like when one indexed term matches. Each replacement is listed under Accepted edits, where Undo restores the heard words."
-                    : "Repository suggestions wait for you to accept them. Turn this on to apply a match that has a single candidate without review."
+                    ? "Conch replaces a heard phrase with the identifier it sounds like when no other suggestion competes for those words. Each replacement is listed under Accepted edits."
+                    : "Repository suggestions wait for you to accept them. Turn this on to apply an unambiguous match without review."
                 }
               >
                 <Toggle
-                  label="Accept repository suggestions automatically"
+                  label="Auto-accept repository suggestions"
                   checked={draft.auto_accept_suggestions}
                   onChange={(auto_accept_suggestions) =>
                     setDraft({ ...draft, auto_accept_suggestions })

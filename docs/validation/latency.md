@@ -13,7 +13,7 @@ The interface polled the `view` command every 700 ms, and each call parsed every
 - Workers stay running between recordings and stop after an idle period.
 - Chunks recognized during recording leave only the final chunk for after the stop.
 - `view` reads index status without parsing vocabulary entries and no longer holds the shared lock while reading the database.
-- Suggestions are computed once per result unless Enhanced cleanup changes the text.
+- Suggestions are computed once per result unless Enhanced cleanup changes the text. Auto-accept runs on the suggestions of the final text.
 
 ## Measurements
 

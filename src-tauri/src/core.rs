@@ -493,18 +493,31 @@ pub fn prepare(raw: &str, snapshot: &Snapshot) -> ResultText {
     auto_accept(&mut result, snapshot);
     result
 }
-/// Accepts every repository suggestion that has a single candidate when the
-/// snapshot opts in. Each acceptance is recorded as an edit, so Undo restores
-/// the heard words. Suggestions with several candidates and mapping conflicts
-/// stay for review.
+/// Accepts every repository suggestion whose candidates all spell the same
+/// replacement when the snapshot opts in. Each acceptance is recorded as an
+/// edit, so Undo restores the heard words. A suggestion that conflicts with
+/// mappings, names several different replacements, or overlaps another
+/// suggestion stays for review.
 pub fn auto_accept(result: &mut ResultText, snapshot: &Snapshot) {
     if !snapshot.auto_accept {
         return;
     }
+    let eligible = |at: usize, suggestion: &Suggestion, all: &[Suggestion]| {
+        !suggestion.conflict
+            && suggestion
+                .candidates
+                .windows(2)
+                .all(|pair| pair[0].text == pair[1].text)
+            && !suggestion.candidates.is_empty()
+            && !all.iter().enumerate().any(|(other, s)| {
+                other != at && suggestion.start < s.end && s.start < suggestion.end
+            })
+    };
     while let Some(index) = result
         .suggestions
         .iter()
-        .position(|s| !s.conflict && s.candidates.len() == 1)
+        .enumerate()
+        .position(|(at, s)| eligible(at, s, &result.suggestions))
     {
         if accept_suggestion(result, index, 0).is_err() {
             result.suggestions.remove(index);
@@ -787,12 +800,7 @@ mod tests {
     }
     #[test]
     fn auto_accept_leaves_ambiguous_and_conflicting_suggestions_for_review() {
-        let mut s = indexed(&["maxGroups"]);
-        s.vocabulary.push(Vocabulary {
-            text: "maxGroups".into(),
-            repository: "other".into(),
-            file: "b.ts".into(),
-        });
+        let mut s = indexed(&["maxGroups", "max_groups"]);
         s.auto_accept = true;
         let result = prepare("raise max groups", &s);
         assert_eq!(result.text, "raise max groups");
@@ -810,6 +818,36 @@ mod tests {
         assert!(result.suggestions[0].conflict);
         s.mappings.clear();
         assert!(prepare("foo", &s).edits.is_empty());
+    }
+    #[test]
+    fn auto_accept_applies_an_identifier_declared_in_several_files() {
+        let mut s = indexed(&["maxGroups"]);
+        s.vocabulary.push(Vocabulary {
+            text: "maxGroups".into(),
+            repository: "other".into(),
+            file: "b.ts".into(),
+        });
+        s.auto_accept = true;
+        let result = prepare("raise max groups", &s);
+        assert_eq!(result.text, "raise maxGroups");
+        assert_eq!(result.edits.len(), 1);
+    }
+    #[test]
+    fn auto_accept_leaves_overlapping_suggestions_for_review() {
+        let mut s = indexed(&["fooBar"]);
+        s.mappings = vec![
+            mapping("foo bar", "Repo", Some("a")),
+            mapping("foo bar", "Other", Some("b")),
+        ];
+        s.auto_accept = true;
+        let result = prepare("use foo bar", &s);
+        assert_eq!(result.text, "use foo bar");
+        assert!(result.suggestions.iter().any(|s| s.conflict));
+        let mut s = indexed(&["maxGroups", "maxGroupsLimit"]);
+        s.auto_accept = true;
+        let result = prepare("set max groups limit", &s);
+        assert_eq!(result.text, "set max groups limit");
+        assert_eq!(result.suggestions.len(), 2);
     }
     #[test]
     fn repository_override_and_conflicts_stay_reviewable() {

@@ -473,11 +473,11 @@ it("saves the choice to stop checking for updates automatically", async () => {
     }),
   );
 });
-it("saves the choice to accept repository suggestions without review", async () => {
+it("saves the Auto-accept choice", async () => {
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
   const toggle = await screen.findByRole("checkbox", {
-    name: "Accept repository suggestions automatically",
+    name: "Auto-accept repository suggestions",
   });
   expect((toggle as HTMLInputElement).checked).toBe(false);
   fireEvent.click(toggle);
