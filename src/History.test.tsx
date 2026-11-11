@@ -164,3 +164,35 @@ it("shows a failed load", async () => {
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(screen.getByText("Cannot read history")).toBeTruthy();
 });
+it("warns that Clear history also deletes entries a search hides", async () => {
+  open();
+  await screen.findByText("open main.rs");
+  fireEvent.change(screen.getByLabelText("Search history"), {
+    target: { value: "FETCH" },
+  });
+  await screen.findByText("1-1 of 1 matches");
+  fireEvent.click(screen.getByRole("button", { name: "Clear history" }));
+  expect(
+    screen.getByText(
+      "Delete all entries, including those that do not match this search?",
+    ),
+  ).toBeTruthy();
+  expect(screen.queryByText("Delete all 1 entries?")).toBeNull();
+});
+it("retries a page that failed to load when Next is clicked again", async () => {
+  items = Array.from({ length: 60 }, (_, i) =>
+    entry(60 - i, `entry ${60 - i}`),
+  );
+  open({ revision: 60 });
+  await screen.findByText("1-50 of 60 entries");
+  let failures = 1;
+  ipc.mockImplementation(async (name: string, args?: never) => {
+    if (failures-- > 0) throw "Cannot read history";
+    return respond(name, args);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(await screen.findByText("51-60 of 60 entries")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+});

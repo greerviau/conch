@@ -80,6 +80,11 @@ export function History({
     }
   }
   const filtered = query !== "";
+  // Asking for the offset that already failed has to fetch again.
+  const go = (next: number) => {
+    if (next === offset) setReload((n) => n + 1);
+    else setOffset(next);
+  };
   const total = page?.total ?? 0;
   const shown = page?.offset ?? 0;
   const from = total ? shown + 1 : 0;
@@ -127,7 +132,11 @@ export function History({
             </label>
             {confirming ? (
               <span className="actions">
-                <span>{`Delete all ${total} entries?`}</span>
+                <span>
+                  {filtered
+                    ? "Delete all entries, including those that do not match this search?"
+                    : `Delete all ${total} entries?`}
+                </span>
                 <button onClick={() => setConfirming(false)}>Cancel</button>
                 <button className="danger" onClick={() => void clear()}>
                   Delete all
@@ -179,13 +188,13 @@ export function History({
               <span className="actions">
                 <button
                   disabled={shown === 0}
-                  onClick={() => setOffset(Math.max(0, shown - PAGE_SIZE))}
+                  onClick={() => go(Math.max(0, shown - PAGE_SIZE))}
                 >
                   Previous
                 </button>
                 <button
                   disabled={shown + PAGE_SIZE >= total}
-                  onClick={() => setOffset(shown + PAGE_SIZE)}
+                  onClick={() => go(shown + PAGE_SIZE)}
                 >
                   Next
                 </button>
