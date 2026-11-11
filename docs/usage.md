@@ -60,6 +60,7 @@ Define global or repository mappings for recurring transcription errors on Mappi
 Each mapping has an enable switch, the spoken phrase, the replacement text, and a scope.
 Conch also sends the recognizer a short list of identifiers from the selected repositories and your mappings, so it spells them correctly.
 If a repository suggestion appears for a phrase you say often, choose Accept and always replace. Conch saves a mapping for that phrase and applies it from the next recording.
+To skip the review step, turn on Auto-accept under Repository context in Settings. Conch then replaces a heard phrase with the identifier it sounds like whenever the words match one indexed spelling, so the pasted text contains the symbol name. A phrase that matches several different spellings, overlaps another suggestion, or conflicts with mappings still waits for review. Each replacement is listed under Accepted edits with an Undo button; Undo changes the result in Conch only, so copy it again to replace text that was already pasted. Auto-accept is off by default, and a wrong match is possible because the matching is by sound.
 The default shortcut is Command-or-Control + Shift + Space in push-to-talk mode.
 In Settings, click Change shortcut and press the desired combination.
 Conch pauses its registered shortcut during capture and ignores repeat events.

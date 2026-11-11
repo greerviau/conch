@@ -420,7 +420,9 @@ fn process(
         }) {
             Ok(text) => {
                 result.text = text;
+                result.edits.clear();
                 result.suggestions = core::suggestions(&result.text, &snapshot);
+                core::auto_accept(&mut result, &snapshot);
                 result.status =
                     "Enhanced cleanup completed; semantic equivalence is unverified".into();
             }

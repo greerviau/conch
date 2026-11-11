@@ -49,7 +49,8 @@ Index status reports incomplete scans and skipped symbol extraction.
 
 - Exact mappings, longest-span matching, nonrecursive replacement, repository override, and retained conflicts.
 - Basic and Off cleanup, quoted hesitation tokens, exact mapping output, repository literals, negation, numbers, and repetition.
-- Repository suggestions that leave delivered text unchanged, accepted edits, and undo after manual changes elsewhere.
+- Repository suggestions that leave delivered text unchanged by default, accepted edits, and undo after manual changes elsewhere.
+- Auto-accept applying unambiguous suggestions as undoable edits and leaving ambiguous, conflicting, and overlapping ones for review.
 - Ignore rules, extra exclusions, binary files, Python/TypeScript declarations, source attribution, refresh, and external symlinks.
 - Immutable mapping snapshots, repository selection isolation, removal, and SQLite persistence without transcript/audio files.
 - Push-to-talk, toggle, repeat suppression, processing exclusion, cancellation, and stale-result rejection.

@@ -21,6 +21,8 @@ pub struct Settings {
     pub activation: String,
     /// Whether to paste into the focused field. Off copies the result only.
     pub auto_paste: bool,
+    /// Whether a repository suggestion with one candidate is applied without review.
+    pub auto_accept_suggestions: bool,
     /// Name of the input device. Empty follows the system input.
     pub microphone: String,
     /// Id of the recognition model, from `inference::RECOGNIZERS`.
@@ -43,6 +45,7 @@ impl Default for Settings {
             hotkey: "CommandOrControl+Shift+Space".into(),
             activation: "push".into(),
             auto_paste: true,
+            auto_accept_suggestions: false,
             microphone: String::new(),
             recognizer: "small.en".into(),
             show_overlay: true,
@@ -160,6 +163,7 @@ pub fn snapshot(dir: &Path, settings: &Settings) -> Result<Snapshot, String> {
         mappings,
         vocabulary,
         cleanup: settings.cleanup.clone(),
+        auto_accept: settings.auto_accept_suggestions,
     })
 }
 /// What the interface shows for a repository index. Deserializing this skips
@@ -311,6 +315,16 @@ mod tests {
         assert!(!off.check_updates);
     }
 
+    #[test]
+    fn auto_accepting_repository_suggestions_is_opt_in_and_captured_in_the_snapshot() {
+        assert!(!Settings::default().auto_accept_suggestions);
+        let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
+        assert!(!older.auto_accept_suggestions);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!snapshot(dir.path(), &older).unwrap().auto_accept);
+        let on: Settings = serde_json::from_str(r#"{"auto_accept_suggestions":true}"#).unwrap();
+        assert!(snapshot(dir.path(), &on).unwrap().auto_accept);
+    }
     #[test]
     fn a_new_install_defaults_to_small_en_and_settings_saved_before_the_choice_keep_tiny_en() {
         assert_eq!(Settings::default().recognizer, "small.en");

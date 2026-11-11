@@ -6,7 +6,8 @@
 - Explicit mapping: a user-defined spoken phrase or transcription-error phrase paired with exact replacement text, scoped globally or to a repository.
 - Vocabulary index: locally extracted filenames, relative paths, and declared symbols with their repository and file origins.
 - Raw transcript: the speech recognizer's output before explicit mappings or repository corrections.
-- Repository suggestion: a proposed transcript edit derived from indexed vocabulary that requires user acceptance. It matches the exact words of an identifier, a spelled-out acronym, or a close misspelling of a multi-word identifier.
+- Repository suggestion: a proposed transcript edit derived from indexed vocabulary that requires user acceptance unless Auto-accept is on. It matches the exact words of an identifier, a spelled-out acronym, or a close misspelling of a multi-word identifier.
+- Auto-accept: the opt-in Settings choice, off by default, that accepts every repository suggestion whose candidates share one spelling, with no mapping conflict and no overlapping suggestion, before delivery. Each acceptance is an accepted edit that Undo reverses, and none saves an explicit mapping. It is captured in the context snapshot.
 - Recognition hint: the short list of mapping replacements and identifiers that Conch sends the local recognizer as its initial prompt so it spells them correctly. It is not sent to cleanup endpoints.
 - Always replace: accepting a repository suggestion and saving an explicit mapping from the heard phrase to the candidate, so later recordings apply it without review.
 - Result: the editable transcript after mappings and configured cleanup, with optional accepted suggestions and manual edits. Initial delivery copies it automatically and, while Automatic paste is on, pastes it into an eligible focused input; subsequent review edits require explicit copying.

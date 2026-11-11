@@ -41,6 +41,8 @@ pub struct Snapshot {
     pub mappings: Vec<Mapping>,
     pub vocabulary: Vec<Vocabulary>,
     pub cleanup: Cleanup,
+    /// Apply repository suggestions that have one candidate without review.
+    pub auto_accept: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Suggestion {
@@ -480,13 +482,46 @@ pub fn prepare(raw: &str, snapshot: &Snapshot) -> ResultText {
     let text = masked
         .restore(&basic(&masked.text, &snapshot.cleanup))
         .unwrap_or_else(|| raw.into());
-    ResultText {
+    let mut result = ResultText {
         raw: raw.into(),
         basic: text.clone(),
         suggestions: suggestions(&text, snapshot),
         text,
         edits: vec![],
         status: "Prepared locally".into(),
+    };
+    auto_accept(&mut result, snapshot);
+    result
+}
+/// Accepts every repository suggestion whose candidates all spell the same
+/// replacement when the snapshot opts in. Each acceptance is recorded as an
+/// edit, so Undo restores the heard words. A suggestion that conflicts with
+/// mappings, names several different replacements, or overlaps another
+/// suggestion stays for review.
+pub fn auto_accept(result: &mut ResultText, snapshot: &Snapshot) {
+    if !snapshot.auto_accept {
+        return;
+    }
+    let eligible = |at: usize, suggestion: &Suggestion, all: &[Suggestion]| {
+        !suggestion.conflict
+            && suggestion
+                .candidates
+                .windows(2)
+                .all(|pair| pair[0].text == pair[1].text)
+            && !suggestion.candidates.is_empty()
+            && !all.iter().enumerate().any(|(other, s)| {
+                other != at && suggestion.start < s.end && s.start < suggestion.end
+            })
+    };
+    while let Some(index) = result
+        .suggestions
+        .iter()
+        .enumerate()
+        .position(|(at, s)| eligible(at, s, &result.suggestions))
+    {
+        if accept_suggestion(result, index, 0).is_err() {
+            result.suggestions.remove(index);
+        }
     }
 }
 
@@ -746,6 +781,73 @@ mod tests {
             prepare("POD gee see and pod, tripod", &s).text,
             "podGC and POD, tripod"
         );
+    }
+    #[test]
+    fn auto_accept_applies_sound_alike_suggestions_as_undoable_edits() {
+        let mut s = indexed(&["maxGroups", "podGC"]);
+        assert_eq!(
+            prepare("raise max group and pod gee see", &s).text,
+            "raise max group and pod gee see"
+        );
+        s.auto_accept = true;
+        let mut result = prepare("raise max group and pod gee see", &s);
+        assert_eq!(result.text, "raise maxGroups and podGC");
+        assert!(result.suggestions.is_empty());
+        assert_eq!(result.edits.len(), 2);
+        assert_eq!(result.basic, "raise max group and pod gee see");
+        undo_edit(&mut result, 0).unwrap();
+        assert_eq!(result.text, "raise max group and podGC");
+    }
+    #[test]
+    fn auto_accept_leaves_ambiguous_and_conflicting_suggestions_for_review() {
+        let mut s = indexed(&["maxGroups", "max_groups"]);
+        s.auto_accept = true;
+        let result = prepare("raise max groups", &s);
+        assert_eq!(result.text, "raise max groups");
+        assert_eq!(result.suggestions[0].candidates.len(), 2);
+        let mut s = Snapshot {
+            mappings: vec![
+                mapping("foo", "Repo", Some("a")),
+                mapping("foo", "Other", Some("b")),
+            ],
+            auto_accept: true,
+            ..Default::default()
+        };
+        let result = prepare("foo", &s);
+        assert_eq!(result.text, "foo");
+        assert!(result.suggestions[0].conflict);
+        s.mappings.clear();
+        assert!(prepare("foo", &s).edits.is_empty());
+    }
+    #[test]
+    fn auto_accept_applies_an_identifier_declared_in_several_files() {
+        let mut s = indexed(&["maxGroups"]);
+        s.vocabulary.push(Vocabulary {
+            text: "maxGroups".into(),
+            repository: "other".into(),
+            file: "b.ts".into(),
+        });
+        s.auto_accept = true;
+        let result = prepare("raise max groups", &s);
+        assert_eq!(result.text, "raise maxGroups");
+        assert_eq!(result.edits.len(), 1);
+    }
+    #[test]
+    fn auto_accept_leaves_overlapping_suggestions_for_review() {
+        let mut s = indexed(&["fooBar"]);
+        s.mappings = vec![
+            mapping("foo bar", "Repo", Some("a")),
+            mapping("foo bar", "Other", Some("b")),
+        ];
+        s.auto_accept = true;
+        let result = prepare("use foo bar", &s);
+        assert_eq!(result.text, "use foo bar");
+        assert!(result.suggestions.iter().any(|s| s.conflict));
+        let mut s = indexed(&["maxGroups", "maxGroupsLimit"]);
+        s.auto_accept = true;
+        let result = prepare("set max groups limit", &s);
+        assert_eq!(result.text, "set max groups limit");
+        assert_eq!(result.suggestions.len(), 2);
     }
     #[test]
     fn repository_override_and_conflicts_stay_reviewable() {

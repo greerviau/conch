@@ -26,6 +26,7 @@ export type Settings = {
   hotkey: string;
   activation: string;
   auto_paste: boolean;
+  auto_accept_suggestions: boolean;
   /** Input device name. Empty follows the system input. */
   microphone: string;
   recognizer: string;

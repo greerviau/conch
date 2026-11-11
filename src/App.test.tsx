@@ -33,6 +33,7 @@ const fixture = () => ({
     activation: "push",
     recognizer: "tiny.en",
     auto_paste: true,
+    auto_accept_suggestions: false,
     microphone: "",
     show_overlay: true,
     check_updates: true,
@@ -472,6 +473,21 @@ it("saves the choice to stop checking for updates automatically", async () => {
     }),
   );
 });
+it("saves the Auto-accept choice", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const toggle = await screen.findByRole("checkbox", {
+    name: "Auto-accept repository suggestions",
+  });
+  expect((toggle as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(toggle);
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({ auto_accept_suggestions: true }),
+    }),
+  );
+});
 it("shows the installed version and checks for updates on request", async () => {
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
@@ -622,6 +638,34 @@ it("offers to remember an accepted repository suggestion as a mapping", async ()
       candidate: 0,
     }),
   );
+});
+it("lists a mapping saved by Accept and always replace without leaving a change to save", async () => {
+  view.result = suggestionResult(false);
+  ipc.mockImplementation(async (name: string) => {
+    if (name === "view") return structuredClone(view);
+    if (name === "accept_always")
+      (view.settings.mappings as unknown[]).push({
+        phrase: "max group",
+        replacement: "maxGroups",
+        repository: "r",
+        enabled: true,
+      });
+    return;
+  });
+  render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Accept and always replace" }),
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("accept_always", {
+      index: 0,
+      candidate: 0,
+    }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Mappings" }));
+  const phrase = await screen.findByLabelText("Spoken phrase");
+  expect((phrase as HTMLInputElement).value).toBe("max group");
+  expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
 });
 it("does not offer to remember a mapping conflict", async () => {
   view.result = suggestionResult(true);
