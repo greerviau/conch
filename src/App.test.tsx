@@ -34,6 +34,7 @@ const fixture = () => ({
     recognizer: "tiny.en",
     auto_paste: true,
     auto_accept_suggestions: false,
+    keep_history: false,
     microphone: "",
     show_overlay: true,
     check_updates: true,
@@ -50,6 +51,7 @@ const fixture = () => ({
   result: null as null | ReturnType<typeof suggestionResult>,
   error: "",
   indexes: [],
+  history_revision: 0,
   models: [
     ["tiny.en", false],
     ["base.en", false],
@@ -487,6 +489,30 @@ it("saves the Auto-accept choice", async () => {
       settings: expect.objectContaining({ auto_accept_suggestions: true }),
     }),
   );
+});
+it("saves the Keep history choice", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const toggle = await screen.findByRole("checkbox", {
+    name: "Keep history of results",
+  });
+  expect((toggle as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(toggle);
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({ keep_history: true }),
+    }),
+  );
+});
+it("opens the History page, which links to Settings while history is off", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "History" }));
+  expect(await screen.findByText(/History is off/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+  expect(
+    await screen.findByRole("checkbox", { name: "Keep history of results" }),
+  ).toBeTruthy();
 });
 it("shows the installed version and checks for updates on request", async () => {
   render(<App />);

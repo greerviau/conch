@@ -16,6 +16,8 @@
 - Eligible focused input: the currently focused text-editable element that the app can identify with sufficient certainty and that is not a secure/password field.
 - Automatic paste: the Settings choice, on by default, to paste the delivered result into an eligible focused input. Off copies the result only and needs no paste permission.
 - Clipboard fallback: delivery that retains the result on the clipboard when automatic paste cannot be performed.
+- Keep history: the opt-in Settings choice, off by default, that saves each delivered result and its raw transcript to the local database. Turning it off stops saving and keeps existing entries.
+- History: the saved entries that Keep history produces, newest first, on the History page. Each entry holds the result text, the raw transcript, and the delivery time, and Conch keeps the newest 500. Copying an entry never pastes it.
 - Basic cleanup: local deterministic removal of configured hesitation tokens with limited whitespace/punctuation repair. It always runs, and blank tokens leave the transcript unchanged.
 - Enhanced cleanup: optional model-assisted transcript cleanup using managed local S1-mini or a configured local/remote endpoint, with Basic fallback on failure. It is disabled by default.
 - Microphone: the input device Conch records from. System default follows the system input, and a chosen device that is not connected falls back to it.

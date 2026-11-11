@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Setup, ShortcutRecorder, shortcutLabel } from "./Setup";
+import { History } from "./History";
 import { Mappings } from "./Mappings";
 import { Repositories } from "./Repositories";
 import { Mic, Stop } from "./icons";
@@ -19,7 +20,7 @@ import {
 import { CLEANUP, VAD, size } from "./models";
 import type { Cleanup, Mapping, Settings, View } from "./types";
 
-const TABS = ["Dictation", "Repositories", "Mappings", "Settings"];
+const TABS = ["Dictation", "History", "Repositories", "Mappings", "Settings"];
 
 export default function App() {
   const [view, setView] = useState<View>();
@@ -513,6 +514,13 @@ export default function App() {
             )}
           </>
         )}
+        {tab === "History" && (
+          <History
+            enabled={view.settings.keep_history}
+            revision={view.history_revision}
+            onSettings={() => setTab("Settings")}
+          />
+        )}
         {tab === "Repositories" && (
           <Repositories
             repositories={draft.repositories}
@@ -712,6 +720,25 @@ export default function App() {
                   checked={draft.auto_accept_suggestions}
                   onChange={(auto_accept_suggestions) =>
                     setDraft({ ...draft, auto_accept_suggestions })
+                  }
+                />
+              </Row>
+            </div>
+            <h3 className="group">History</h3>
+            <div className="card rows">
+              <Row
+                title="Keep history"
+                note={
+                  draft.keep_history
+                    ? "Conch saves each delivered result and its raw transcript on this device, up to 500. The History page lists them."
+                    : "Conch keeps only the latest result, in memory. Turn this on to save each delivered result on this device."
+                }
+              >
+                <Toggle
+                  label="Keep history of results"
+                  checked={draft.keep_history}
+                  onChange={(keep_history) =>
+                    setDraft({ ...draft, keep_history })
                   }
                 />
               </Row>

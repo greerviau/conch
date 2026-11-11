@@ -3,7 +3,7 @@ use crate::{
     chunk::Chunker,
     core::{self, ResultText, Snapshot},
     delivery::{self, Desktop},
-    index,
+    history, index,
     inference::{self, Kind, Worker},
     pipeline::Transcriber,
     platform,
@@ -28,6 +28,8 @@ pub struct Inner {
     pub settings: Settings,
     pub session: Session,
     pub result: Option<ResultText>,
+    /// The history entry that holds `result`, when it was saved.
+    pub history_id: Option<i64>,
     pub error: String,
     pub stop: Option<mpsc::Sender<bool>>,
     pub worker: Worker,
@@ -48,6 +50,7 @@ pub struct View {
     result: Option<ResultText>,
     error: String,
     indexes: Vec<(String, storage::IndexStatus, i64)>,
+    history_revision: i64,
     models: Vec<(String, bool)>,
     accessibility: bool,
     installation_path: Option<String>,
@@ -64,6 +67,7 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
     // The interface polls this command. Read the database and ask the system
     // for permissions before taking the lock that recording and delivery need.
     let indexes = storage::index_status(&state.data)?;
+    let history_revision = history::revision(&state.data)?;
     let accessibility = platform::permission();
     let microphone = platform::microphone_status().into();
     let inner = state.inner.lock().unwrap();
@@ -73,6 +77,7 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
         result: inner.result.clone(),
         error: inner.error.clone(),
         indexes,
+        history_revision,
         models: inference::MODELS
             .iter()
             .map(|m| (m.id.into(), state.data.join(m.name).is_file()))
@@ -443,6 +448,15 @@ fn process(
         }
         Err(error) => inner.error = error,
     }
+    match history::record(&state.data, inner.settings.keep_history, &result) {
+        Ok(id) => inner.history_id = id,
+        Err(error) => {
+            inner.history_id = None;
+            if inner.error.is_empty() {
+                inner.error = error;
+            }
+        }
+    }
     inner.result = Some(result);
     inner.retry = None;
 }
@@ -479,13 +493,21 @@ pub fn edit(state: State<'_, AppState>, text: String) -> Result<(), String> {
     }
     let result = inner.result.as_mut().ok_or("No result")?;
     core::edit_result(result, text);
-    Ok(())
+    sync_history(&state.data, &inner)
+}
+/// Saves the current result's text to its history entry after the result changed.
+fn sync_history(data: &std::path::Path, inner: &Inner) -> Result<(), String> {
+    match (inner.history_id, &inner.result) {
+        (Some(id), Some(result)) => history::set_text(data, id, &result.text),
+        _ => Ok(()),
+    }
 }
 #[tauri::command]
 pub fn accept(state: State<'_, AppState>, index: usize, candidate: usize) -> Result<(), String> {
     let mut inner = state.inner.lock().unwrap();
     let result = inner.result.as_mut().ok_or("No result")?;
-    core::accept_suggestion(result, index, candidate)
+    core::accept_suggestion(result, index, candidate)?;
+    sync_history(&state.data, &inner)
 }
 /// Accepts a suggestion and saves a mapping so the same phrase is replaced
 /// automatically from the next recording on.
@@ -511,12 +533,13 @@ pub fn accept_always(
         storage::save(&state.data, &settings)?;
         inner.settings = settings;
     }
-    Ok(())
+    sync_history(&state.data, inner)
 }
 #[tauri::command]
 pub fn undo(state: State<'_, AppState>, index: usize) -> Result<(), String> {
     let mut inner = state.inner.lock().unwrap();
-    core::undo_edit(inner.result.as_mut().ok_or("No result")?, index)
+    core::undo_edit(inner.result.as_mut().ok_or("No result")?, index)?;
+    sync_history(&state.data, &inner)
 }
 #[tauri::command]
 pub fn reject(state: State<'_, AppState>, index: usize) -> Result<(), String> {
@@ -533,6 +556,34 @@ pub fn copy(state: State<'_, AppState>, raw: bool) -> Result<(), String> {
     let inner = state.inner.lock().unwrap();
     let result = inner.result.as_ref().ok_or("No result")?;
     platform::NativeDesktop::default().copy(if raw { &result.raw } else { &result.text })
+}
+/// One page of the history, newest first, for the History page.
+#[tauri::command]
+pub async fn history_page(
+    app: AppHandle,
+    query: String,
+    offset: usize,
+    limit: usize,
+) -> Result<history::Page, String> {
+    let dir = app.state::<AppState>().data.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        history::page(&dir, &query, offset, limit.min(200))
+    })
+    .await
+    .map_err(|_| "History worker failed")?
+}
+#[tauri::command]
+pub fn history_copy(state: State<'_, AppState>, id: i64, raw: bool) -> Result<(), String> {
+    let entry = history::get(&state.data, id)?;
+    platform::NativeDesktop::default().copy(if raw { &entry.raw } else { &entry.text })
+}
+#[tauri::command]
+pub fn history_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    history::delete(&state.data, id)
+}
+#[tauri::command]
+pub fn history_clear(state: State<'_, AppState>) -> Result<(), String> {
+    history::clear(&state.data)
 }
 #[tauri::command]
 pub async fn download(app: AppHandle, id: String) -> Result<(), String> {
@@ -607,6 +658,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             settings: settings.clone(),
             session: Session::default(),
             result: None,
+            history_id: None,
             error: String::new(),
             stop: None,
             worker: inference::new_worker(),

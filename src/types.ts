@@ -27,6 +27,7 @@ export type Settings = {
   activation: string;
   auto_paste: boolean;
   auto_accept_suggestions: boolean;
+  keep_history: boolean;
   /** Input device name. Empty follows the system input. */
   microphone: string;
   recognizer: string;
@@ -56,12 +57,22 @@ export type IndexStatus = {
 export type IndexRow = [string, IndexStatus, number];
 export type Term = { text: string; repository: string; file: string };
 export type TermPage = { items: Term[]; total: number };
+export type HistoryEntry = {
+  id: number;
+  /** Unix time the result was delivered. */
+  created: number;
+  text: string;
+  raw: string;
+};
+export type HistoryPage = { items: HistoryEntry[]; total: number };
 export type View = {
   settings: Settings;
   phase: string;
   result: ResultText | null;
   error: string;
   indexes: IndexRow[];
+  /** The id of the newest history entry, or 0. */
+  history_revision: number;
   models: [string, boolean][];
   accessibility: boolean;
   installation_path?: string | null;

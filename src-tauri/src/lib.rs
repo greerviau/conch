@@ -39,6 +39,10 @@ pub fn run() {
             app::undo,
             app::reject,
             app::copy,
+            app::history_page,
+            app::history_copy,
+            app::history_delete,
+            app::history_clear,
             app::download,
             app::credential,
             update::check_update,
@@ -89,3 +93,5 @@ pub mod chunk;
 pub mod tray;
 
 pub mod update;
+
+pub mod history;

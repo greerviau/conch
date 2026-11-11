@@ -47,7 +47,7 @@ With Automatic paste off, Conch does not ask for the Accessibility permission.
 
 ## Repositories, mappings, and the shortcut
 
-The top bar switches between Dictation, Repositories, Mappings, and Settings.
+The top bar switches between Dictation, History, Repositories, Mappings, and Settings.
 On Repositories, click Add repository to choose a folder, or Enter a path instead to type one.
 Changes to repositories, mappings, and settings stay in a draft until you click Save changes in the bar that appears at the bottom.
 After saving, click Refresh indexes.
@@ -109,6 +109,17 @@ Settings has a switch for the automatic check, and Check for updates in Settings
 macOS keys the Accessibility grant to the signing identity, so an update keeps it only when the release is signed with the same identity as the installed copy.
 A copy you built yourself switches to the official build on its first update.
 Only an AppImage updates itself on Linux.
+
+## History
+
+Conch keeps only the latest result unless you turn on Keep history under History in Settings and click Save changes. It is off by default.
+With it on, Conch saves each delivered result with its raw transcript and the time, up to 500 entries; the oldest goes first.
+Edits and accepted suggestions on the Dictation page update the saved text.
+The History page lists entries newest first, 50 at a time. Search matches the result or the raw transcript.
+Copy puts an entry's result on the clipboard, Copy raw puts the raw transcript there when it differs, and neither pastes.
+Delete removes one entry. Clear history asks for confirmation and removes all of them.
+Turning Keep history off stops saving but keeps what is already there until you delete it.
+Entries are stored unencrypted in Conch's local database; see [privacy](privacy.md).
 
 ## Delivery
 
