@@ -5,8 +5,10 @@
 //! sound keys, the lowercase words joined without spaces. All-uppercase words
 //! also get a second key with each letter spelled by its name. Every run of
 //! up to `MAX_WORDS` transcript words is compared with the keys that start with
-//! the same three letters and have a similar length. Terms made of several words allow a small edit distance.
-//! A term of one word must match exactly.
+//! the same three letters and have a similar length. A term of several words allows a small edit
+//! distance when its key has at least eight letters and the run has as many words as the term.
+//! Shorter keys and shorter runs must match exactly, because one wrong letter in a short key
+//! usually spells another word. A term of one word must match exactly.
 use crate::core::Vocabulary;
 use std::collections::HashMap;
 
@@ -56,6 +58,10 @@ struct Entry {
     key: Vec<char>,
     term: usize,
     tolerance: usize,
+    /// Words of the identifier. A run that is off by a letter must cover this many transcript
+    /// words, because a single word one letter away from a short identifier is usually another
+    /// word ("appear" for `AppBar`).
+    words: usize,
 }
 
 struct Token {
@@ -136,8 +142,8 @@ const MAX_TOLERANCE: usize = 2;
 
 fn tolerance(length: usize) -> usize {
     match length {
-        0..=5 => 0,
-        6..=11 => 1,
+        0..=7 => 0,
+        8..=11 => 1,
         _ => MAX_TOLERANCE,
     }
 }
@@ -214,6 +220,7 @@ pub fn find(text: &str, vocabulary: &[Vocabulary], blocked: &[(usize, usize)]) -
                     key,
                     term,
                     tolerance,
+                    words: words.len(),
                 });
         }
     }
@@ -242,6 +249,9 @@ pub fn find(text: &str, vocabulary: &[Vocabulary], blocked: &[(usize, usize)]) -
                 let Some(distance) = within(&key, &entry.key, entry.tolerance) else {
                     continue;
                 };
+                if distance > 0 && size < entry.words {
+                    continue;
+                }
                 if text[start..end].eq_ignore_ascii_case(&vocabulary[entry.term].text) {
                     continue;
                 }
@@ -283,6 +293,20 @@ mod tests {
         assert_eq!(within(&chars("maxgroup"), &chars("maxgroups"), 1), Some(1));
         assert_eq!(within(&chars("maxgrou"), &chars("maxgroups"), 1), None);
         assert_eq!(within(&chars("same"), &chars("same"), 0), Some(0));
+    }
+    #[test]
+    fn an_ordinary_word_one_letter_from_a_short_identifier_is_not_matched() {
+        let vocabulary = [term("AppBar")];
+        assert!(find("the buttons appear here", &vocabulary, &[]).is_empty());
+        assert!(find("an app bear", &vocabulary, &[]).is_empty());
+        assert_eq!(find("an app bar", &vocabulary, &[]).len(), 1);
+    }
+    #[test]
+    fn a_misspelling_must_cover_as_many_words_as_the_identifier_has() {
+        let vocabulary = [term("maxGroups")];
+        assert!(find("raise maxgroup now", &vocabulary, &[]).is_empty());
+        assert_eq!(find("raise max group now", &vocabulary, &[]).len(), 1);
+        assert_eq!(find("raise max groups now", &vocabulary, &[]).len(), 1);
     }
     #[test]
     fn runs_covering_other_text_are_not_matched() {
