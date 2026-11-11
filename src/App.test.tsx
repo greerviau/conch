@@ -639,6 +639,34 @@ it("offers to remember an accepted repository suggestion as a mapping", async ()
     }),
   );
 });
+it("lists a mapping saved by Accept and always replace without leaving a change to save", async () => {
+  view.result = suggestionResult(false);
+  ipc.mockImplementation(async (name: string) => {
+    if (name === "view") return structuredClone(view);
+    if (name === "accept_always")
+      (view.settings.mappings as unknown[]).push({
+        phrase: "max group",
+        replacement: "maxGroups",
+        repository: "r",
+        enabled: true,
+      });
+    return;
+  });
+  render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Accept and always replace" }),
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("accept_always", {
+      index: 0,
+      candidate: 0,
+    }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Mappings" }));
+  const phrase = await screen.findByLabelText("Spoken phrase");
+  expect((phrase as HTMLInputElement).value).toBe("max group");
+  expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
+});
 it("does not offer to remember a mapping conflict", async () => {
   view.result = suggestionResult(true);
   render(<App />);

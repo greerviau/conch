@@ -17,7 +17,7 @@ import {
   recognizerInfo,
 } from "./ModelChoice";
 import { CLEANUP, VAD, size } from "./models";
-import type { Cleanup, Settings, View } from "./types";
+import type { Cleanup, Mapping, Settings, View } from "./types";
 
 const TABS = ["Dictation", "Repositories", "Mappings", "Settings"];
 
@@ -73,12 +73,31 @@ export default function App() {
       void unlisten.then((f) => f());
     };
   }, []);
+  /** Adds mappings the backend saved on its own, so the draft neither hides them nor deletes them on the next save. */
+  async function adoptSavedMappings() {
+    const saved = (await invoke<View>("view")).settings.mappings;
+    const same = (a: Mapping, b: Mapping) =>
+      a.phrase === b.phrase &&
+      a.replacement === b.replacement &&
+      a.repository === b.repository;
+    setDraft(
+      (d) =>
+        d && {
+          ...d,
+          mappings: [
+            ...d.mappings,
+            ...saved.filter((m) => !d.mappings.some((x) => same(x, m))),
+          ],
+        },
+    );
+  }
   async function command(name: string, args?: Record<string, unknown>) {
     setError("");
     setNotice("");
     try {
       await invoke(name, args);
       await reload();
+      if (name === "accept_always") await adoptSavedMappings();
       if (name === "repair_accessibility")
         setNotice(
           "Conch's old Accessibility entry was removed. Enable the installed copy in System Settings, then return here.",
