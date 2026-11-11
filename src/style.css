@@ -138,6 +138,11 @@ button.ghost:hover:not(:disabled) {
   background: var(--soft);
   color: var(--text);
 }
+button.danger {
+  background: var(--danger-soft);
+  border-color: transparent;
+  color: var(--danger);
+}
 button.icon {
   width: 30px;
   height: 30px;
@@ -1020,6 +1025,27 @@ mark {
   color: inherit;
   border-radius: 3px;
   padding: 0 1px;
+}
+.history .actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.entry {
+  padding: 12px 0;
+}
+.entry-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.entry-text {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .pager {
   display: flex;

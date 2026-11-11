@@ -23,6 +23,8 @@ pub struct Settings {
     pub auto_paste: bool,
     /// Whether a repository suggestion with one candidate is applied without review.
     pub auto_accept_suggestions: bool,
+    /// Whether delivered results are saved to the history on disk.
+    pub keep_history: bool,
     /// Name of the input device. Empty follows the system input.
     pub microphone: String,
     /// Id of the recognition model, from `inference::RECOGNIZERS`.
@@ -46,6 +48,7 @@ impl Default for Settings {
             activation: "push".into(),
             auto_paste: true,
             auto_accept_suggestions: false,
+            keep_history: false,
             microphone: String::new(),
             recognizer: "small.en".into(),
             show_overlay: true,
@@ -57,7 +60,7 @@ pub fn open(dir: &Path) -> Result<rusqlite::Connection, String> {
     std::fs::create_dir_all(dir).map_err(|_| "Cannot create local data directory")?;
     let db = rusqlite::Connection::open(dir.join("conch.sqlite3"))
         .map_err(|_| "Cannot open local database")?;
-    db.execute_batch("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS indexes (repository TEXT PRIMARY KEY, value TEXT NOT NULL, refreshed INTEGER NOT NULL);").map_err(|_| "Cannot initialize database")?;
+    db.execute_batch("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS indexes (repository TEXT PRIMARY KEY, value TEXT NOT NULL, refreshed INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, raw TEXT NOT NULL, text TEXT NOT NULL);").map_err(|_| "Cannot initialize database")?;
     Ok(db)
 }
 pub fn load(dir: &Path) -> Result<Settings, String> {
@@ -324,6 +327,14 @@ mod tests {
         assert!(!snapshot(dir.path(), &older).unwrap().auto_accept);
         let on: Settings = serde_json::from_str(r#"{"auto_accept_suggestions":true}"#).unwrap();
         assert!(snapshot(dir.path(), &on).unwrap().auto_accept);
+    }
+    #[test]
+    fn keeping_history_is_opt_in() {
+        assert!(!Settings::default().keep_history);
+        let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
+        assert!(!older.keep_history);
+        let on: Settings = serde_json::from_str(r#"{"keep_history":true}"#).unwrap();
+        assert!(on.keep_history);
     }
     #[test]
     fn a_new_install_defaults_to_small_en_and_settings_saved_before_the_choice_keep_tiny_en() {

@@ -27,6 +27,11 @@ Repository files supply paths and declared symbols without executing repository 
 Conch keeps audio and the latest result in memory.
 Conch discards audio after success or cancellation.
 Failed recognition retains bounded audio in memory for Retry until another recording, cancellation, or exit.
-Conch writes no transcript history or audio files.
+Conch writes no audio files.
+Conch writes no transcript history unless you turn on Keep history in Settings, which is off by default.
+With it on, Conch saves each delivered result and its raw transcript, with the delivery time, in the same local database, and keeps the newest 500.
+The History page copies, searches, and deletes entries, and Clear history deletes all of them.
+Turning Keep history off stops saving but leaves existing entries until you delete them.
+Transcripts can contain confidential information, and the database file is not encrypted.
 Inference workers use authenticated loopback HTTP.
 They stay running between recordings, stop after an idle period or on exit, and cancellation stops the ones the cancelled recording used.
