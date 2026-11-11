@@ -9,6 +9,7 @@ pub mod platform;
 pub mod session;
 pub mod spoken;
 pub mod storage;
+pub mod timing;
 pub fn run() {
     use tauri::Manager;
     tauri::Builder::default()

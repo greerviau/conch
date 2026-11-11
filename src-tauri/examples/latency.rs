@@ -1,6 +1,8 @@
-//! Measures stop-to-text latency for a long recording: one request after the
-//! recording ends versus chunks recognized while it is still running.
-//! Usage: cargo run --release --example latency -- <workers dir> <model> <wav> <seconds>
+//! Measures stop-to-text latency. A long recording compares one request after
+//! the recording ends with chunks recognized while it is still running. A short
+//! dictation (`<wav>` alone, then `<gap>` seconds of silence before the stop)
+//! compares recognizing the audio after the stop with speculative recognition.
+//! Usage: cargo run --release --example latency -- <workers dir> <model> <wav> <seconds> [gap seconds, default 0.5]
 //! The voice detection model `ggml-silero-v5.1.2.bin` must sit next to `<model>`.
 use conch_lib::{chunk::Chunker, inference, pipeline::Transcriber};
 use std::{
@@ -43,7 +45,7 @@ fn main() {
 
     let transcriber = Transcriber::start(|| (), {
         let (workers, model, worker) = (workers.clone(), model.clone(), worker.clone());
-        move |wav| inference::transcribe(&workers, &model, wav, "", &worker, false)
+        move |wav, _| inference::transcribe(&workers, &model, wav, "", &worker, false)
     });
     let mut chunker = Chunker::default();
     let step = rate / 10;
@@ -57,10 +59,10 @@ fn main() {
     }
     let stopped = Instant::now();
     if let Some(range) = chunker.tail(&samples) {
-        transcriber.push(samples[range].to_vec());
+        transcriber.push_tail(samples[range].to_vec(), None);
         chunks += 1;
     }
-    let text = transcriber.finish().unwrap();
+    let text = transcriber.finish().unwrap().text;
     println!(
         "chunked: {chunks} chunks, stop-to-text {:.2}s ({} chars)",
         stopped.elapsed().as_secs_f32(),
@@ -69,5 +71,50 @@ fn main() {
     if let Ok(dir) = std::env::var("CONCH_LATENCY_DUMP") {
         std::fs::write(format!("{dir}/chunked.txt"), &text).unwrap();
     }
+    let gap: f32 = args.get(5).map_or(0.5, |gap| gap.parse().unwrap());
+    let mut short = clip.clone();
+    short.extend(std::iter::repeat_n(0.0, (gap * rate as f32) as usize));
+    let start = |recognize_worker: &inference::Worker| {
+        let (workers, model, worker) = (workers.clone(), model.clone(), recognize_worker.clone());
+        Transcriber::start(
+            || (),
+            move |wav, _| inference::transcribe(&workers, &model, wav, "", &worker, false),
+        )
+    };
+    let transcriber = start(&worker);
+    let stopped = Instant::now();
+    transcriber.push_tail(short.clone(), None);
+    let text = transcriber.finish().unwrap().text;
+    println!(
+        "short dictation, recognized after the stop: {:.2}s ({} chars)",
+        stopped.elapsed().as_secs_f32(),
+        text.len()
+    );
+    let transcriber = start(&worker);
+    let mut chunker = Chunker::default();
+    let mut settled_at = None;
+    for end in (step..=short.len()).step_by(step) {
+        if let Some(range) = chunker.settle(&short[..end]) {
+            transcriber.speculate(range.clone(), short[range].to_vec());
+            settled_at = Some(end);
+        }
+    }
+    let settled_at = settled_at.expect("the gap must be at least 0.3 s so the speech settles");
+    // The user keeps the key down until `gap` has passed since the speech ended.
+    let waited = Duration::from_secs_f32((short.len() - settled_at) as f32 / rate as f32);
+    std::thread::sleep(waited);
+    let stopped = Instant::now();
+    let reuse = chunker.settled(&short);
+    if let Some(range) = chunker.tail(&short) {
+        transcriber.push_tail(short[range].to_vec(), reuse);
+    }
+    let outcome = transcriber.finish().unwrap();
+    println!(
+        "short dictation, speculative (settled {:.2}s before the stop): {:.2}s ({} chars, reused: {})",
+        waited.as_secs_f32(),
+        stopped.elapsed().as_secs_f32(),
+        outcome.text.len(),
+        outcome.speculative
+    );
     inference::shutdown(&workers);
 }

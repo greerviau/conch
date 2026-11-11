@@ -9,6 +9,7 @@ use crate::{
     platform,
     session::{Phase, Session},
     storage::{self, Settings},
+    timing::Stopwatch,
 };
 use serde::Serialize;
 use std::{
@@ -40,6 +41,8 @@ pub struct Inner {
     pub audio_ready: bool,
     pub level: Arc<AtomicU32>,
     pub recording_since: Option<Instant>,
+    /// When the recording ended, for timing the wait for the result.
+    pub stopped: Option<Instant>,
     pub recorded_seconds: u64,
     pub indicator_notice: Option<(Instant, String)>,
 }
@@ -236,6 +239,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     inner.worker = inference::new_worker();
     inner.audio_ready = false;
     inner.recording_since = None;
+    inner.stopped = None;
     inner.indicator_notice = None;
     let microphone = inner.settings.microphone.clone();
     let level = inner.level.clone();
@@ -254,7 +258,9 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         {
             let workers = state.workers.clone();
             let hint = core::recognition_hint(&snapshot);
-            move |wav| inference::transcribe(&workers, &model, wav, &hint, &worker, false)
+            move |wav, _speculative| {
+                inference::transcribe(&workers, &model, wav, &hint, &worker, false)
+            }
         },
     );
     if snapshot.cleanup.enhanced == "managed" {
@@ -282,14 +288,17 @@ pub fn start(app: AppHandle) -> Result<(), String> {
             |samples| {
                 if let Some(range) = chunker.poll(samples) {
                     transcriber.push(samples[range].to_vec());
+                } else if let Some(range) = chunker.settle(samples) {
+                    transcriber.speculate(range.clone(), samples[range].to_vec());
                 }
             },
         );
         let state = handle.state::<AppState>();
         match captured {
             Ok(Some(audio::Captured { wav, samples })) => {
+                let reuse = chunker.settled(&samples);
                 if let Some(range) = chunker.tail(&samples) {
-                    transcriber.push(samples[range].to_vec());
+                    transcriber.push_tail(samples[range].to_vec(), reuse);
                 }
                 {
                     let mut inner = state.inner.lock().unwrap();
@@ -302,6 +311,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                         .unwrap_or(0);
                     if inner.session.phase == Phase::Recording {
                         inner.session.finish();
+                        inner.stopped = Some(Instant::now());
                     }
                     inner.stop = None;
                     inner.retry = Some((wav.clone(), snapshot.clone()));
@@ -332,6 +342,7 @@ pub fn finish(state: State<'_, AppState>) -> Result<(), String> {
     if inner.session.finish()
         && let Some(stop) = inner.stop.take()
     {
+        inner.stopped = Some(Instant::now());
         let _ = stop.send(true);
     }
     Ok(())
@@ -370,20 +381,29 @@ fn process(
     chunked: Option<Transcriber>,
 ) {
     let state = app.state::<AppState>();
-    let (worker, model) = {
-        let inner = state.inner.lock().unwrap();
+    let (worker, model, stopped) = {
+        let mut inner = state.inner.lock().unwrap();
         if inner.session.generation != generation {
             return;
         }
         (
             inner.worker.clone(),
             recognition_model(&state.data, &inner.settings),
+            inner.stopped.take(),
         )
     };
+    let mut watch = Stopwatch::start(stopped.unwrap_or_else(Instant::now));
+    if stopped.is_some() {
+        watch.lap("capture");
+    }
+    let mut speculative = false;
     // Chunks were recognized during the recording. If that failed, recognize
     // the whole recording once, as Retry does.
     let recognition = match chunked.map(Transcriber::finish) {
-        Some(Ok(text)) => Ok(text),
+        Some(Ok(done)) => {
+            speculative = done.speculative;
+            Ok(done.text)
+        }
         _ => model.and_then(|model| {
             inference::transcribe(
                 &state.workers,
@@ -395,6 +415,11 @@ fn process(
             )
         }),
     };
+    watch.lap(if speculative {
+        "recognition (speculative)"
+    } else {
+        "recognition"
+    });
     let raw = match recognition {
         Ok(raw) if !raw.trim().is_empty() => raw,
         Ok(_) => {
@@ -414,6 +439,7 @@ fn process(
         return;
     }
     let mut result = core::prepare(&raw, &snapshot);
+    watch.lap("preparation");
     if snapshot.cleanup.enhanced != "disabled" {
         match inference::enhanced(inference::CleanupRequest {
             workers: &state.workers,
@@ -433,13 +459,18 @@ fn process(
             }
             Err(error) => result.status = error,
         }
+        watch.lap("cleanup");
     }
     let mut inner = state.inner.lock().unwrap();
     if !inner.session.complete(generation) {
         return;
     }
     let paste = inner.settings.auto_paste;
-    match delivery::deliver(&mut platform::NativeDesktop::default(), &result.text, paste) {
+    let delivered = delivery::deliver(&mut platform::NativeDesktop::default(), &result.text, paste);
+    watch.lap("delivery");
+    let summary = watch.summary();
+    eprintln!("{summary}");
+    match delivered {
         Ok(status) => {
             inner.indicator_notice =
                 crate::indicator::delivery_notice(&status, result.text.is_empty())
@@ -448,6 +479,7 @@ fn process(
         }
         Err(error) => inner.error = error,
     }
+    result.status.push_str(&format!(". {summary}"));
     match history::record(&state.data, inner.settings.keep_history, &result) {
         Ok(id) => inner.history_id = id,
         Err(error) => {
@@ -669,6 +701,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             audio_ready: false,
             level: Arc::new(AtomicU32::new(0)),
             recording_since: None,
+            stopped: None,
             recorded_seconds: 0,
             indicator_notice: None,
         }),

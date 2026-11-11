@@ -26,6 +26,8 @@
 - Indexed term: one entry of the vocabulary index. A file term is a relative path or file name; every other term is a declared symbol. The Repositories page lists a repository's indexed terms in pages of 100.
 - Shortcut capture: the Settings control that records a pressed key combination while Conch pauses its registered recording shortcut.
 - Chunk: a span of a recording that ends at a pause and is recognized while recording continues. The recognizer ends every chunk with terminal punctuation, so a cut inside a sentence adds a false sentence end. The audio after the last chunk is the tail.
+- Speculative recognition: recognizing the audio since the last chunk once speech is followed by 0.3 seconds of silence, before the recording stops. If no further speech follows when the recording stops, its text is the tail's text; otherwise it is discarded. It never commits a chunk.
+- Stop-to-text time: the time from the end of a recording (hotkey release or Finish) to the delivered result. The status line under the result reports it with the time of each stage.
 - Recognition model: the Whisper model that turns audio into the raw transcript, chosen in Settings from Tiny (`tiny.en`), Base (`base.en`), and Small (`small.en`). Larger models make fewer errors and take longer per chunk.
 - Voice detection: the Silero model that `whisper-server` runs before recognition so only speech reaches the recognizer. A chunk with no speech yields no text. Every recognition model download includes it.
 - Worker: a bundled inference process (recognizer or managed cleanup) that Conch starts when recording starts, reuses across recordings, and stops after an idle period or on exit.
