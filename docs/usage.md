@@ -157,7 +157,7 @@ Entries are stored unencrypted in Conch's local database; see [privacy](privacy.
 The Logs page shows what Conch did and why, newest first, 50 entries at a time.
 Each entry has a time, a level (Info, Warning, or Error), a source, and a message, and some have details behind a Details link.
 The sources are `app`, `cleanup`, `delivery`, `dictation`, `download`, `index`, `permissions`, `recognizer`, `ui`, and `update`.
-Conch logs each dictation's stop-to-text time with its stages, how each result was delivered and why a clipboard fallback happened, cleanup and recognition failures, inference worker starts, stops with the reason, and failures with the recognizer's last diagnostic lines, errors that the Dictation page showed for a failed command (source `ui`), model downloads, update checks, permission changes, and repository indexing.
+Conch logs each dictation's stop-to-text time with its stages, how each result was delivered and why a clipboard fallback happened, cleanup and recognition failures, inference worker starts, stops with the reason, and failures with the recognizer's last diagnostic lines, errors that the Dictation page showed for a failed command (source `ui`, cut at 500 characters, with a repeat within a minute and more than 20 a minute dropped), model downloads, update checks, permission changes, and repository indexing.
 The buttons above the list narrow it to warnings (warnings and errors) or to errors, and to one source. Search matches the message, the details, and the source.
 Copy shown entries puts the entries on the page on the clipboard as text with UTC times, which suits a bug report.
 Show log file opens the file manager at `conch.log` in Conch's data directory.

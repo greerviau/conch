@@ -852,7 +852,55 @@ pub async fn logs_page(
 /// holds what the error banner reported.
 #[tauri::command]
 pub fn logs_note(message: String) {
-    log::warn("ui", &message);
+    let text = bounded_note(&message);
+    if NOTES.lock().unwrap().allow(&text, Instant::now()) {
+        log::warn("ui", &text);
+    }
+}
+const NOTE_CHARS: usize = 500;
+const NOTE_REPEAT: Duration = Duration::from_secs(60);
+const NOTE_PER_MINUTE: usize = 20;
+static NOTES: Mutex<NoteLimiter> = Mutex::new(NoteLimiter::new());
+/// The first characters of a note, cut before anything else processes it.
+fn bounded_note(message: &str) -> String {
+    message.chars().take(NOTE_CHARS).collect()
+}
+/// Keeps the interface from flooding the log: a message repeated within a
+/// minute and more than 20 messages in a minute are dropped.
+struct NoteLimiter {
+    window: Option<Instant>,
+    count: usize,
+    last: Option<(String, Instant)>,
+}
+impl NoteLimiter {
+    const fn new() -> Self {
+        Self {
+            window: None,
+            count: 0,
+            last: None,
+        }
+    }
+    fn allow(&mut self, message: &str, now: Instant) -> bool {
+        if let Some((last, at)) = &self.last
+            && last == message
+            && now.saturating_duration_since(*at) < NOTE_REPEAT
+        {
+            return false;
+        }
+        if self
+            .window
+            .is_none_or(|start| now.saturating_duration_since(start) >= NOTE_REPEAT)
+        {
+            self.window = Some(now);
+            self.count = 0;
+        }
+        if self.count >= NOTE_PER_MINUTE {
+            return false;
+        }
+        self.count += 1;
+        self.last = Some((message.to_owned(), now));
+        true
+    }
 }
 #[tauri::command]
 pub fn logs_clear() -> Result<(), String> {
@@ -1466,5 +1514,25 @@ mod tests {
             index_message("conch", Some(&stored(4212, 38)), &index(4213, 38)).as_deref(),
             Some("Indexed conch: 4,213 terms, 38 symbol extractions skipped")
         );
+    }
+    #[test]
+    fn a_note_is_cut_to_its_first_500_characters() {
+        assert_eq!(bounded_note("short"), "short");
+        let cut = bounded_note(&"é".repeat(5_000));
+        assert_eq!(cut.chars().count(), NOTE_CHARS);
+    }
+    #[test]
+    fn a_repeated_note_is_dropped_for_a_minute_and_a_flood_is_capped() {
+        let start = Instant::now();
+        let mut limiter = NoteLimiter::new();
+        assert!(limiter.allow("Cannot read indexes", start));
+        assert!(!limiter.allow("Cannot read indexes", start + Duration::from_secs(30)));
+        assert!(limiter.allow("Cannot read indexes", start + Duration::from_secs(61)));
+        let mut limiter = NoteLimiter::new();
+        let allowed = (0..50)
+            .filter(|n| limiter.allow(&format!("error {n}"), start + Duration::from_secs(1)))
+            .count();
+        assert_eq!(allowed, NOTE_PER_MINUTE);
+        assert!(limiter.allow("error again", start + Duration::from_secs(62)));
     }
 }

@@ -116,7 +116,7 @@ struct Tail {
 /// never is.
 fn loggable(kind: Kind, line: &str) -> bool {
     static LIBRARY: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"^(?:ggml_|GGML_|whisper_|error:|ERROR|fatal|terminate called)").unwrap()
+        regex::Regex::new(r"^(?:ggml_|GGML_|whisper_init|whisper_model_load|whisper_backend|whisper_vad|error:|ERROR|fatal|terminate called)").unwrap()
     });
     kind == Kind::Whisper && LIBRARY.is_match(line.trim_start())
 }
@@ -148,6 +148,8 @@ pub struct Server {
     kind: Kind,
     /// The executable's file name, for the log.
     name: String,
+    /// The model's file name, for the log.
+    model: String,
     child: Mutex<Child>,
     /// The last lines the worker wrote to stderr.
     tail: Arc<Mutex<Tail>>,
@@ -183,7 +185,10 @@ impl Server {
         let first = !self.killed.swap(true, Ordering::SeqCst);
         self.kill();
         if first {
-            log::info(self.source(), &format!("Stopped {}: {reason}", self.name));
+            log::info(
+                self.source(),
+                &format!("Stopped {} (model {}): {reason}", self.name, self.model),
+            );
         }
     }
     fn kill(&self) {
@@ -442,9 +447,13 @@ fn launch(
     } else {
         drained.store(true, Ordering::SeqCst);
     }
+    let model_name = model
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     let server = Server {
         kind,
         name,
+        model: model_name,
         child: Mutex::new(child),
         tail,
         killed,
@@ -465,7 +474,7 @@ fn launch(
         if cancelled || !server.alive() {
             let reason = "Inference worker stopped or was cancelled";
             if cancelled {
-                server.kill();
+                server.stop_for("the recording was cancelled");
             } else {
                 launch_failed(&server, "it exited");
             }
@@ -483,7 +492,7 @@ fn launch(
                 &format!(
                     "Worker started: {}, model {}, ready in {} ms",
                     server.name,
-                    model.file_name().unwrap_or_default().to_string_lossy(),
+                    server.model,
                     start.elapsed().as_millis()
                 ),
             );
@@ -1156,6 +1165,23 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             std::fs::write(&exe, script).unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::write(dir.join("model.bin"), b"model").unwrap();
+            std::fs::write(dir.join(super::VAD.name), b"vad").unwrap();
+        }
+        /// A model file next to the fake worker under a name no other test uses,
+        /// so a test finds only its own entries in the shared log.
+        pub fn model(dir: &Path, name: &str) -> std::path::PathBuf {
+            std::fs::write(dir.join(name), b"model").unwrap();
+            dir.join(name)
+        }
+        /// A recognizer that takes three seconds to answer its health check.
+        pub fn install_slow(dir: &Path) {
+            let exe = dir.join("whisper-server");
+            let script = SCRIPT.replace(
+                "http.server.ThreadingHTTPServer",
+                "import time\ntime.sleep(3)\nhttp.server.ThreadingHTTPServer",
+            );
+            std::fs::write(&exe, script).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::write(dir.join(super::VAD.name), b"vad").unwrap();
         }
         pub fn install(dir: &Path) {
@@ -2156,22 +2182,17 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         logged();
         let dir = tempfile::tempdir().unwrap();
         fake::install(dir.path());
-        preload(
-            dir.path(),
-            &dir.path().join("model.bin"),
-            Kind::Whisper,
-            &new_worker(),
-            true,
-        )
-        .unwrap();
-        let started = entries("recognizer", "Worker started");
+        let model = fake::model(dir.path(), "started-1b7e.bin");
+        preload(dir.path(), &model, Kind::Whisper, &new_worker(), true).unwrap();
+        let started = entries("recognizer", "started-1b7e.bin");
+        assert_eq!(started.len(), 1, "{started:?}");
+        assert_eq!(started[0].level, crate::log::Level::Info);
         assert!(
-            started.iter().any(|e| e.level == crate::log::Level::Info
-                && e.message
-                    .starts_with("Worker started: whisper-server, model model.bin, ready in ")
-                && e.message.ends_with(" ms")),
-            "{started:?}"
+            started[0]
+                .message
+                .starts_with("Worker started: whisper-server, model started-1b7e.bin, ready in ")
         );
+        assert!(started[0].message.ends_with(" ms"));
         shutdown(dir.path());
     }
     #[cfg(unix)]
@@ -2227,6 +2248,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         for line in [
             "ggml_metal_init: failed to allocate buffer",
             "whisper_init_from_file_with_params_no_state: loading model from 'm.bin'",
+            "whisper_model_load: n_vocab = 51864",
             "GGML_ASSERT(ctx != NULL) failed",
             "error: failed to load model",
             "terminate called after throwing an instance of 'std::bad_alloc'",
@@ -2235,6 +2257,8 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             assert!(!loggable(Kind::Llama, line), "the cleanup worker: {line}");
         }
         for line in [
+            "whisper_full_with_state: prompt[0] = 'maxGroups podGC'",
+            "whisper_full_with_state: decoder  0: token  1234 'helper'",
             "[00:00:00.000 --> 00:00:02.000]  rename the helper to fetchUser",
             "Parsed message: {\"role\":\"user\",\"content\":\"hello there\"}",
             "srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 200",
@@ -2270,39 +2294,58 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     }
     #[cfg(unix)]
     #[test]
-    fn stopping_a_worker_logs_why() {
+    fn stopping_a_worker_logs_its_model_and_why() {
         logged();
-        // Other tests stop workers too, so each reason is checked for an increase.
-        let stopped = |reason: &str| {
-            entries("recognizer", &format!("Stopped whisper-server: {reason}")).len()
-        };
         let quit = tempfile::tempdir().unwrap();
         fake::install(quit.path());
-        let before = stopped("Conch is exiting");
-        preload(
-            quit.path(),
-            &quit.path().join("model.bin"),
-            Kind::Whisper,
-            &new_worker(),
-            true,
-        )
-        .unwrap();
+        let model = fake::model(quit.path(), "quit-3c9d.bin");
+        preload(quit.path(), &model, Kind::Whisper, &new_worker(), true).unwrap();
         shutdown(quit.path());
-        assert!(stopped("Conch is exiting") > before);
+        let found = entries("recognizer", "quit-3c9d.bin");
+        assert!(
+            found.iter().any(|e| e.message
+                == "Stopped whisper-server (model quit-3c9d.bin): Conch is exiting or installing an update"),
+            "{found:?}"
+        );
         let cancelled = tempfile::tempdir().unwrap();
         fake::install(cancelled.path());
+        let model = fake::model(cancelled.path(), "cancel-8e2a.bin");
         let worker = new_worker();
-        let before = stopped("the recording was cancelled");
-        preload(
-            cancelled.path(),
-            &cancelled.path().join("model.bin"),
-            Kind::Whisper,
-            &worker,
-            true,
-        )
-        .unwrap();
+        preload(cancelled.path(), &model, Kind::Whisper, &worker, true).unwrap();
         stop(&worker);
-        assert!(stopped("the recording was cancelled") > before);
+        stop(&worker);
         shutdown(cancelled.path());
+        let found = entries(
+            "recognizer",
+            "Stopped whisper-server (model cancel-8e2a.bin)",
+        );
+        assert_eq!(
+            found.len(),
+            1,
+            "logged once, for the first reason: {found:?}"
+        );
+        assert!(found[0].message.ends_with("the recording was cancelled"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_while_a_worker_starts_logs_the_stop() {
+        logged();
+        let dir = tempfile::tempdir().unwrap();
+        fake::install_slow(dir.path());
+        let model = fake::model(dir.path(), "slow-6f40.bin");
+        let worker = new_worker();
+        let starting = {
+            let (workers, model, worker) = (dir.path().to_owned(), model.clone(), worker.clone());
+            std::thread::spawn(move || preload(&workers, &model, Kind::Whisper, &worker, true))
+        };
+        std::thread::sleep(Duration::from_millis(600));
+        stop(&worker);
+        assert!(starting.join().unwrap().is_err());
+        let found = entries("recognizer", "slow-6f40.bin");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].message,
+            "Stopped whisper-server (model slow-6f40.bin): the recording was cancelled"
+        );
     }
 }

@@ -36,14 +36,27 @@ pub struct Page {
     pub bytes: u64,
 }
 
-/// An absolute Unix path with at least one directory, after a space, quote,
-/// bracket, `=`, or `,` (or at the start). That boundary keeps `http://host/a`
-/// and a lone `/inference` out. Group 2 is the file name.
+/// A quoted absolute path. Quotes delimit it, so it may contain spaces. Group 2
+/// is the file name.
+static QUOTED_PATH: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"(['"])(?:/|[A-Za-z]:[\\/]|\\\\)[^'"]*[\\/]([^'"\\/]*)['"]"#).unwrap()
+});
+/// A `file://` URL. Group 1 is the file name.
+static FILE_URL: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"file://[^\s'"]*/([^\s'"/]*)"#).unwrap());
+/// An absolute Unix path with at least one directory, after the start or any
+/// character that cannot continue a word or path. That keeps `http://host/a`,
+/// `~/a/b`, and a lone `/inference` out. Group 2 is the file name.
 static UNIX_PATH: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r#"(^|[\s'"(\[=,])/(?:[\w.@+-]+/)+([\w.@+-]*)"#).unwrap());
-/// An absolute Windows path with at least one directory. Group 1 is the file name.
+    LazyLock::new(|| regex::Regex::new(r#"(^|[^\w.~/+@%-])/(?:[\w.@+-]+/)+([\w.@+-]*)"#).unwrap());
+/// An absolute Windows path with at least one directory; a directory name may
+/// contain spaces. Group 1 is the file name.
 static WINDOWS_PATH: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r#"[A-Za-z]:\\(?:[^\\\s'"]+\\)+([^\\\s'"]*)"#).unwrap());
+    LazyLock::new(|| regex::Regex::new(r#"[A-Za-z]:\\(?:[^\\'"<>|]+\\)+([^\\\s'"<>|]*)"#).unwrap());
+/// A UNC path. Group 1 is the file name.
+static UNC_PATH: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"\\\\[^\\\s'"]+\\(?:[^\\'"<>|]+\\)*([^\\\s'"<>|]*)"#).unwrap()
+});
 
 /// Size at which `conch.log` rolls over to `conch.log.1`, which replaces the
 /// previous `conch.log.1`. The two files hold about 4 MB.
@@ -107,8 +120,11 @@ impl Log {
             }
             None => text.to_owned(),
         };
+        let text = QUOTED_PATH.replace_all(&text, "${1}.../${2}${1}");
+        let text = FILE_URL.replace_all(&text, "file:///.../${1}");
         let text = UNIX_PATH.replace_all(&text, "${1}.../${2}");
-        WINDOWS_PATH.replace_all(&text, ".../${1}").into_owned()
+        let text = WINDOWS_PATH.replace_all(&text, ".../${1}");
+        UNC_PATH.replace_all(&text, ".../${1}").into_owned()
     }
     /// Appends an entry. A failure to write is reported on stderr and never
     /// reaches the caller, because logging must not break dictation.
@@ -479,39 +495,73 @@ mod tests {
         log.clear().unwrap();
         assert_ne!(log.revision(), added);
     }
+    fn scrubbed(text: &str) -> String {
+        let (_dir, log) = log(1 << 20);
+        log.record(Level::Info, "app", text, None);
+        list(&log).items[0].message.clone()
+    }
+
     #[test]
     fn a_path_outside_the_home_directory_is_reduced_to_its_file_name() {
-        let (_dir, log) = log(1 << 20);
-        log.record(
-            Level::Warn,
-            "recognizer",
-            "loading '/mnt/data/models/small.en.bin' failed and C:\\Users\\bob\\Data\\x.bin too",
-            Some("see /opt/app/bin/tool, /Users/alex/Projects/app/main.rs, and (/var/log/conch/a.log)"),
-        );
-        let entry = &list(&log).items[0];
+        for (text, want) in [
+            (
+                "loading '/mnt/data/models/small.en.bin' failed",
+                "loading '.../small.en.bin' failed",
+            ),
+            (
+                "see /opt/app/bin/tool, then (/var/log/conch/a.log)",
+                "see .../tool, then (.../a.log)",
+            ),
+            ("error:/mnt/private/model.bin", "error:.../model.bin"),
+            (
+                "opening /Users/alex/Projects/app/main.rs",
+                "opening ~/Projects/app/main.rs",
+            ),
+        ] {
+            assert_eq!(scrubbed(text), want);
+        }
+    }
+
+    #[test]
+    fn a_quoted_path_is_reduced_even_when_it_contains_spaces() {
         assert_eq!(
-            entry.message,
-            "loading '.../small.en.bin' failed and .../x.bin too"
+            scrubbed("loading model from '/Private Data/client/model.bin'"),
+            "loading model from '.../model.bin'"
         );
         assert_eq!(
-            entry.detail.as_deref(),
-            Some("see .../tool, ~/Projects/app/main.rs, and (.../a.log)")
+            scrubbed(r#"cannot open "C:\Private Data\client\model.bin" now"#),
+            r#"cannot open ".../model.bin" now"#
         );
     }
 
     #[test]
-    fn a_url_or_a_single_slash_word_is_not_taken_for_a_path() {
-        let (_dir, log) = log(1 << 20);
-        log.record(
-            Level::Info,
-            "update",
-            "GET http://127.0.0.1:8765/v1/models failed; POST /inference returned 500 for /tmp",
-            None,
-        );
+    fn windows_unc_and_file_url_paths_are_reduced() {
+        for (text, want) in [
+            (r"C:\Users\bob\Data\x.bin failed", ".../x.bin failed"),
+            (
+                r"C:\Private Data\client\model.bin failed",
+                ".../model.bin failed",
+            ),
+            (
+                r"\\server\share\private\model.bin failed",
+                ".../model.bin failed",
+            ),
+            (
+                "file:///mnt/private/model.bin failed",
+                "file:///.../model.bin failed",
+            ),
+        ] {
+            assert_eq!(scrubbed(text), want);
+        }
+    }
+
+    #[test]
+    fn a_url_host_and_a_single_slash_word_are_left_alone() {
         assert_eq!(
-            list(&log).items[0].message,
-            "GET http://127.0.0.1:8765/v1/models failed; POST /inference returned 500 for /tmp"
+            scrubbed("GET http://127.0.0.1:8765/inference returned 500 for /tmp"),
+            "GET http://127.0.0.1:8765/inference returned 500 for /tmp"
         );
+        assert_eq!(scrubbed("path ~/a/b stays"), "path ~/a/b stays");
     }
 
     #[test]

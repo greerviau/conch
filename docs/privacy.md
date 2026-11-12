@@ -34,8 +34,8 @@ The History page copies, searches, and deletes entries, and Clear history delete
 Turning Keep history off stops saving but leaves existing entries until you delete them.
 Transcripts can contain confidential information, and the database file is not encrypted.
 Conch keeps a diagnostic log, `conch.log`, in the same directory, whether or not Keep history is on. It holds about 4 MB of timestamped entries: stage times, delivery outcomes, failures, worker starts and exits, downloads, update checks, permission changes, and repository index sizes.
-Entries never contain audio, transcripts, result text, or source text. They show your home directory as `~` and any other absolute path as `.../file name`; a path that contains a space may leave a directory name behind.
-When the recognizer fails to start or exits unexpectedly, Conch saves its last 20 lines that begin with a library prefix (`ggml_`, `whisper_`, `error:`, and a few others) and drops the rest, because a worker can print the text it processes. Conch never saves the cleanup worker's output.
+Entries never contain audio, transcripts, result text, or source text. They show your home directory as `~` and any other absolute path as `.../file name`; an unquoted path that contains a space may leave a directory name behind.
+When the recognizer fails to start or exits unexpectedly, Conch saves its last 20 lines that begin with a library prefix (`ggml_`, `whisper_init`, `whisper_model_load`, `error:`, and a few others) and drops the rest, because a worker can print the text it processes. Conch never saves the cleanup worker's output.
 The Logs page copies, searches, and deletes entries, and Clear logs deletes all of them. The file is not encrypted.
 Inference workers use authenticated loopback HTTP.
 They stay running between recordings, stop after an idle period or on exit, and cancellation stops the ones the cancelled recording used.

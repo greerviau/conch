@@ -1,5 +1,5 @@
 import { PasteAccess } from "./PasteAccess";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Setup, ShortcutRecorder, shortcutLabel } from "./Setup";
@@ -64,13 +64,17 @@ export default function App() {
       throw error;
     }
   }, []);
+  // Whether the last refresh failed, so a failure that repeats on every poll is logged once.
+  const refreshFailed = useRef(false);
   const reload = useCallback(async () => {
     try {
       const v = await invoke<View>("view");
+      refreshFailed.current = false;
       setView(v);
       setDraft((d) => d ?? v.settings);
     } catch (e) {
-      setError(String(e));
+      setError(refreshFailed.current ? String(e) : noted(e));
+      refreshFailed.current = true;
     }
   }, []);
   useEffect(() => {

@@ -578,6 +578,30 @@ it("logs a failed command and links its error banner to the Logs page", async ()
     await screen.findByText(/never contain audio, transcripts, result text/),
   ).toBeTruthy();
 });
+it("logs a failed refresh once while it keeps failing, and again after it recovers", async () => {
+  let broken = false;
+  const base = ipc.getMockImplementation()!;
+  ipc.mockImplementation(
+    async (name: string, args?: Record<string, unknown>) => {
+      if (name === "view" && broken) throw "Cannot read indexes";
+      return base(name, args);
+    },
+  );
+  render(<App />);
+  await screen.findByRole("button", { name: "Settings" });
+  const notes = () =>
+    ipc.mock.calls.filter(
+      (c) => c[0] === "logs_note" && c[1].message === "Cannot read indexes",
+    ).length;
+  broken = true;
+  await screen.findByRole("alert");
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  expect(notes()).toBe(1);
+  broken = false;
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  broken = true;
+  await waitFor(() => expect(notes()).toBe(2), { timeout: 3000 });
+});
 it("shows the installed version and checks for updates on request", async () => {
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
