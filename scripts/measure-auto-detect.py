@@ -235,8 +235,11 @@ def measure(args):
             finally:
                 server.stop()
             print(f"{name}: {settings} hint={hinted} done", file=sys.stderr)
+    # One result per line keeps the committed file short and its diffs readable.
     with open(args.output, "w", encoding="utf-8") as handle:
-        json.dump(rows, handle, ensure_ascii=False, indent=1)
+        handle.write("[\n")
+        handle.write(",\n".join(json.dumps(row, ensure_ascii=False) for row in rows))
+        handle.write("\n]\n")
     summarize(rows)
 
 
