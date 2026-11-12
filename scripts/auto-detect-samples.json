@@ -1,0 +1,96 @@
+{
+  "voices": {
+    "en": "Samantha",
+    "fr": "Thomas",
+    "de": "Anna",
+    "es": "Mónica",
+    "pt": "Luciana",
+    "it": "Alice",
+    "ru": "Milena",
+    "ja": "Kyoko"
+  },
+  "sentences": {
+    "en": [
+      "Please open the settings file and change the timeout value.",
+      "I think we should merge this branch before lunch.",
+      "The tests are failing because the cache is stale.",
+      "Add a comment above the function.",
+      "Send the report to the whole team tomorrow morning.",
+      "Rename the variable and run the build again."
+    ],
+    "fr": [
+      "Ouvre le fichier de configuration et change la valeur du délai.",
+      "Je pense que nous devrions fusionner cette branche avant le déjeuner.",
+      "Les tests échouent parce que le cache est périmé.",
+      "Ajoute un commentaire au-dessus de la fonction.",
+      "Envoie le rapport à toute l'équipe demain matin.",
+      "Renomme la variable et relance la compilation."
+    ],
+    "de": [
+      "Öffne die Konfigurationsdatei und ändere den Wert für das Zeitlimit.",
+      "Ich denke, wir sollten diesen Zweig vor dem Mittagessen zusammenführen.",
+      "Die Tests schlagen fehl, weil der Zwischenspeicher veraltet ist.",
+      "Füge einen Kommentar über der Funktion hinzu.",
+      "Schicke den Bericht morgen früh an das ganze Team.",
+      "Benenne die Variable um und starte den Build noch einmal."
+    ],
+    "es": [
+      "Abre el archivo de configuración y cambia el valor del tiempo de espera.",
+      "Creo que deberíamos fusionar esta rama antes del almuerzo.",
+      "Las pruebas fallan porque la caché está obsoleta.",
+      "Añade un comentario encima de la función.",
+      "Envía el informe a todo el equipo mañana por la mañana.",
+      "Cambia el nombre de la variable y vuelve a compilar."
+    ],
+    "pt": [
+      "Abra o arquivo de configuração e altere o valor do tempo limite.",
+      "Acho que deveríamos mesclar este ramo antes do almoço.",
+      "Os testes estão falhando porque o cache está desatualizado.",
+      "Adicione um comentário acima da função.",
+      "Envie o relatório para toda a equipe amanhã de manhã.",
+      "Renomeie a variável e execute a compilação novamente."
+    ],
+    "it": [
+      "Apri il file di configurazione e cambia il valore del tempo limite.",
+      "Penso che dovremmo unire questo ramo prima di pranzo.",
+      "I test falliscono perché la cache è obsoleta.",
+      "Aggiungi un commento sopra la funzione.",
+      "Invia il rapporto a tutta la squadra domani mattina.",
+      "Rinomina la variabile ed esegui di nuovo la compilazione."
+    ],
+    "ru": [
+      "Открой файл настроек и измени значение таймаута.",
+      "Я думаю, нам следует объединить эту ветку до обеда.",
+      "Тесты падают, потому что кэш устарел.",
+      "Добавь комментарий над функцией.",
+      "Отправь отчёт всей команде завтра утром.",
+      "Переименуй переменную и запусти сборку ещё раз."
+    ],
+    "ja": [
+      "設定ファイルを開いて、タイムアウトの値を変更してください。",
+      "ランチの前にこのブランチをマージした方がいいと思います。",
+      "キャッシュが古いため、テストが失敗しています。",
+      "関数の上にコメントを追加してください。",
+      "明日の朝、チーム全員にレポートを送ってください。",
+      "変数名を変更して、もう一度ビルドを実行してください。"
+    ]
+  },
+  "phrases": {
+    "en": ["run the tests", "sounds good", "open the file", "thank you", "go ahead", "that works"],
+    "fr": ["lance les tests", "ça marche", "ouvre le fichier", "merci beaucoup", "vas-y", "c'est bon"],
+    "de": ["starte die Tests", "klingt gut", "öffne die Datei", "vielen Dank", "mach weiter", "das passt"],
+    "es": ["ejecuta las pruebas", "suena bien", "abre el archivo", "muchas gracias", "adelante", "eso funciona"],
+    "pt": ["execute os testes", "parece bom", "abra o arquivo", "muito obrigado", "pode continuar", "isso funciona"],
+    "it": ["esegui i test", "va bene", "apri il file", "grazie mille", "vai pure", "funziona"],
+    "ru": ["запусти тесты", "звучит хорошо", "открой файл", "большое спасибо", "продолжай", "это работает"],
+    "ja": ["テストを実行して", "いいですね", "ファイルを開いて", "ありがとうございます", "続けてください", "それで大丈夫です"]
+  },
+  "mixed": {
+    "fr": ["Ouvre le fichier podGC et change la valeur de maxGroups."],
+    "de": ["Öffne die Datei podGC und ändere den Wert von maxGroups."],
+    "es": ["Abre el archivo podGC y cambia el valor de maxGroups."],
+    "pt": ["Abra o arquivo podGC e altere o valor de maxGroups."],
+    "it": ["Apri il file podGC e cambia il valore di maxGroups."]
+  },
+  "hint": "Vocabulary: podGC, maxGroups."
+}

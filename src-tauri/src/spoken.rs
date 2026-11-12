@@ -9,7 +9,10 @@
 //! distance when its key has at least eight letters and the run has as many words as the term.
 //! Shorter keys and shorter runs must match exactly, because one wrong letter in a short key
 //! usually spells another word. A term of one word must match exactly.
-use crate::core::Vocabulary;
+use crate::{
+    core::Vocabulary,
+    fold::{fold, is_mark},
+};
 use std::collections::HashMap;
 
 const LETTER_NAMES: [&str; 26] = [
@@ -40,6 +43,16 @@ const LETTER_NAMES: [&str; 26] = [
     "why",
     "zee",
 ];
+/// How English names the letters. Only English has a table; the sound of a letter in
+/// another language is not known.
+fn letter_names(language: &str) -> Option<&'static [&'static str; 26]> {
+    (language == "en").then_some(&LETTER_NAMES)
+}
+/// The form two spellings are compared in: lower case, `ss` for the German sharp s, and
+/// every case variant of a letter folded together (all three Greek sigmas, for one).
+fn sound_key(text: &str) -> String {
+    fold(&text.to_lowercase().replace('\u{DF}', "ss"))
+}
 /// Keys shorter than this match too many ordinary words.
 const MIN_KEY: usize = 4;
 /// Longest run of transcript words compared with one key.
@@ -77,15 +90,15 @@ fn words(term: &str) -> Vec<String> {
     let mut word = String::new();
     let mut previous = None::<char>;
     for c in term.chars() {
-        if !c.is_alphanumeric() {
+        if !(c.is_alphanumeric() || is_mark(c)) {
             if !word.is_empty() {
                 words.push(std::mem::take(&mut word));
             }
             previous = None;
             continue;
         }
-        let lower_to_upper = c.is_ascii_uppercase()
-            && previous.is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit());
+        let lower_to_upper = c.is_uppercase()
+            && previous.is_some_and(|p| p.is_lowercase() || p.is_numeric() || is_mark(p));
         if lower_to_upper && !word.is_empty() {
             words.push(std::mem::take(&mut word));
         }
@@ -99,7 +112,7 @@ fn words(term: &str) -> Vec<String> {
 }
 
 fn is_acronym(word: &str) -> bool {
-    word.len() >= 2 && word.bytes().all(|b| b.is_ascii_uppercase())
+    word.chars().count() >= 2 && word.chars().all(|c| c.is_uppercase())
 }
 
 /// Whether `term` is written as a multi-word identifier or an acronym, the
@@ -107,7 +120,7 @@ fn is_acronym(word: &str) -> bool {
 pub fn is_identifier(term: &str) -> bool {
     if term
         .chars()
-        .any(|c| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .any(|c| !(c.is_alphanumeric() || is_mark(c) || c == '_' || c == '-'))
     {
         return false;
     }
@@ -115,18 +128,15 @@ pub fn is_identifier(term: &str) -> bool {
     words.len() >= 2 || (words.len() == 1 && is_acronym(&words[0]))
 }
 
-fn keys(words: &[String]) -> Vec<String> {
-    let plain: String = words.iter().map(|w| w.to_lowercase()).collect();
+fn keys(words: &[String], letters: Option<&[&str; 26]>) -> Vec<String> {
+    let plain: String = words.iter().map(|w| sound_key(w)).collect();
     let named: String = words
         .iter()
-        .map(|w| {
-            if is_acronym(w) {
-                w.bytes()
-                    .map(|b| LETTER_NAMES[(b - b'A') as usize])
-                    .collect()
-            } else {
-                w.to_lowercase()
+        .map(|w| match letters {
+            Some(names) if is_acronym(w) && w.bytes().all(|b| b.is_ascii_uppercase()) => {
+                w.bytes().map(|b| names[(b - b'A') as usize]).collect()
             }
+            _ => sound_key(w),
         })
         .collect();
     let mut keys = vec![plain];
@@ -152,13 +162,13 @@ fn tokens(text: &str) -> Vec<Token> {
     let mut tokens = vec![];
     let mut open: Option<usize> = None;
     for (at, c) in text.char_indices() {
-        match (c.is_alphanumeric(), open) {
+        match (c.is_alphanumeric() || is_mark(c), open) {
             (true, None) => open = Some(at),
             (false, Some(start)) => {
                 tokens.push(Token {
                     start,
                     end: at,
-                    lower: text[start..at].to_lowercase(),
+                    lower: sound_key(&text[start..at]),
                 });
                 open = None;
             }
@@ -169,7 +179,7 @@ fn tokens(text: &str) -> Vec<Token> {
         tokens.push(Token {
             start,
             end: text.len(),
-            lower: text[start..].to_lowercase(),
+            lower: sound_key(&text[start..]),
         });
     }
     tokens
@@ -198,7 +208,13 @@ fn within(a: &[char], b: &[char], max: usize) -> Option<usize> {
 
 /// Finds runs of transcript words that sound like an indexed term but are not
 /// written like it. Runs that overlap a range in `blocked` are skipped.
-pub fn find(text: &str, vocabulary: &[Vocabulary], blocked: &[(usize, usize)]) -> Vec<Match> {
+pub fn find(
+    text: &str,
+    vocabulary: &[Vocabulary],
+    blocked: &[(usize, usize)],
+    language: &str,
+) -> Vec<Match> {
+    let letters = letter_names(language);
     let tokens = tokens(text);
     if tokens.is_empty() {
         return vec![];
@@ -210,7 +226,7 @@ pub fn find(text: &str, vocabulary: &[Vocabulary], blocked: &[(usize, usize)]) -
             continue;
         }
         let structured = words.len() >= 2;
-        for key in keys(&words) {
+        for key in keys(&words, letters) {
             let key: Vec<char> = key.chars().collect();
             let tolerance = if structured { tolerance(key.len()) } else { 0 };
             index
@@ -252,7 +268,7 @@ pub fn find(text: &str, vocabulary: &[Vocabulary], blocked: &[(usize, usize)]) -
                 if distance > 0 && size < entry.words {
                     continue;
                 }
-                if text[start..end].eq_ignore_ascii_case(&vocabulary[entry.term].text) {
+                if fold(&text[start..end]) == fold(&vocabulary[entry.term].text) {
                     continue;
                 }
                 found.push(Match {
@@ -281,11 +297,14 @@ mod tests {
     #[test]
     fn keys_spell_out_uppercase_words_and_drop_short_keys() {
         assert_eq!(
-            keys(&words("podGC")),
+            keys(&words("podGC"), Some(&LETTER_NAMES)),
             vec!["podgc".to_owned(), "podgeesee".to_owned()]
         );
-        assert_eq!(keys(&words("max_groups")), vec!["maxgroups".to_owned()]);
-        assert!(keys(&words("id")).is_empty());
+        assert_eq!(
+            keys(&words("max_groups"), Some(&LETTER_NAMES)),
+            vec!["maxgroups".to_owned()]
+        );
+        assert!(keys(&words("id"), Some(&LETTER_NAMES)).is_empty());
     }
     #[test]
     fn edit_distance_stops_above_the_limit() {
@@ -297,21 +316,116 @@ mod tests {
     #[test]
     fn an_ordinary_word_one_letter_from_a_short_identifier_is_not_matched() {
         let vocabulary = [term("AppBar")];
-        assert!(find("the buttons appear here", &vocabulary, &[]).is_empty());
-        assert!(find("an app bear", &vocabulary, &[]).is_empty());
-        assert_eq!(find("an app bar", &vocabulary, &[]).len(), 1);
+        assert!(find("the buttons appear here", &vocabulary, &[], "en").is_empty());
+        assert!(find("an app bear", &vocabulary, &[], "en").is_empty());
+        assert_eq!(find("an app bar", &vocabulary, &[], "en").len(), 1);
     }
     #[test]
     fn a_misspelling_must_cover_as_many_words_as_the_identifier_has() {
         let vocabulary = [term("maxGroups")];
-        assert!(find("raise maxgroup now", &vocabulary, &[]).is_empty());
-        assert_eq!(find("raise max group now", &vocabulary, &[]).len(), 1);
-        assert_eq!(find("raise max groups now", &vocabulary, &[]).len(), 1);
+        assert!(find("raise maxgroup now", &vocabulary, &[], "en").is_empty());
+        assert_eq!(find("raise max group now", &vocabulary, &[], "en").len(), 1);
+        assert_eq!(
+            find("raise max groups now", &vocabulary, &[], "en").len(),
+            1
+        );
     }
     #[test]
     fn runs_covering_other_text_are_not_matched() {
         let vocabulary = [term("podGC")];
-        assert!(find("so pod gee see to", &vocabulary, &[(0, 2)]).len() == 1);
-        assert!(find("so pod gee see to", &vocabulary, &[(3, 6)]).is_empty());
+        assert!(find("so pod gee see to", &vocabulary, &[(0, 2)], "en").len() == 1);
+        assert!(find("so pod gee see to", &vocabulary, &[(3, 6)], "en").is_empty());
+    }
+    #[test]
+    fn spelled_letters_match_an_acronym_in_english_only() {
+        let vocabulary = [term("podGC")];
+        assert_eq!(find("so pod gee see to", &vocabulary, &[], "en").len(), 1);
+        for language in ["de", "fr", "pt", "auto"] {
+            assert!(
+                find("so pod gee see to", &vocabulary, &[], language).is_empty(),
+                "{language}"
+            );
+        }
+        // Letters written as capitals need no letter-name table.
+        for language in ["en", "de", "auto"] {
+            assert_eq!(
+                find("so pod G C to", &vocabulary, &[], language).len(),
+                1,
+                "{language}"
+            );
+        }
+    }
+    #[test]
+    fn identifier_words_split_before_any_uppercase_letter_that_follows_a_lowercase_one() {
+        assert_eq!(words("grünÄpfel"), ["grün", "Äpfel"]);
+        assert_eq!(words("straßeÖl2Ärger"), ["straße", "Öl2", "Ärger"]);
+        assert_eq!(words("podGC"), ["pod", "GC"]);
+    }
+    #[test]
+    fn an_all_uppercase_word_of_any_script_is_an_acronym() {
+        assert!(is_identifier("ÖPNV"));
+        assert!(is_identifier("GC"));
+        assert!(!is_identifier("Öpnv"));
+        assert!(!is_identifier("Ö"));
+    }
+    #[test]
+    fn a_word_that_differs_from_the_identifier_only_in_case_is_not_a_sound_alike() {
+        let vocabulary = [term("\u{DC}berGr\u{F6}\u{DF}e")];
+        assert!(find("die \u{FC}bergr\u{F6}\u{DF}e hier", &vocabulary, &[], "de").is_empty());
+        assert!(
+            find(
+                "die \u{DC}BERGR\u{D6}\u{1E9E}E hier",
+                &vocabulary,
+                &[],
+                "de"
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            find("die \u{FC}ber gr\u{F6}\u{DF}e hier", &vocabulary, &[], "de").len(),
+            1
+        );
+    }
+    #[test]
+    fn sound_alike_keys_treat_sharp_s_as_ss_and_all_sigmas_as_one_letter() {
+        let vocabulary = [term("Stra\u{DF}e\u{D6}l")];
+        assert_eq!(
+            find("die STRASSE \u{D6}L hier", &vocabulary, &[], "de").len(),
+            1
+        );
+        assert_eq!(
+            find("die strasse \u{F6}l hier", &vocabulary, &[], "auto").len(),
+            1
+        );
+        let greek = [term(
+            "\u{3BF}\u{3B4}\u{3CC}\u{3C2}\u{3A0}\u{3AF}\u{3BD}\u{3B1}\u{3BA}\u{3B1}\u{3C2}",
+        )];
+        assert_eq!(
+            find(
+                "\u{3BF}\u{3B4}\u{3CC}\u{3A3} \u{3C0}\u{3AF}\u{3BD}\u{3B1}\u{3BA}\u{3B1}\u{3A3}",
+                &greek,
+                &[],
+                "auto"
+            )
+            .len(),
+            1
+        );
+    }
+    #[test]
+    fn a_combining_mark_stays_with_the_letter_it_follows() {
+        // "\u{130}" lower-cases to "i" and a combining dot, which a recognizer may write as two characters.
+        let vocabulary = [term("\u{130}Value")];
+        assert_eq!(
+            find("an i\u{307} value here", &vocabulary, &[], "tr").len(),
+            1
+        );
+        assert_eq!(words("cafe\u{301}Latte"), ["cafe\u{301}", "Latte"]);
+        assert!(is_identifier("cafe\u{301}Latte"));
+        let tokens = tokens("a cafe\u{301} b");
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(
+            &"a cafe\u{301} b"[tokens[1].start..tokens[1].end],
+            "cafe\u{301}"
+        );
     }
 }

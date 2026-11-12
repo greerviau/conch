@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/greerviau/conch/main/scripts/instal
 
 Windows, and other formats (`.dmg`, `.deb`, `.rpm`): download from the [latest release](https://github.com/greerviau/conch/releases/latest).
 
-On first launch, choose a recognition model, then grant microphone and paste access. Dictate with Command/Control + Shift + Space.
+On first launch, choose a recognition language (English by default) and a recognition model, then grant microphone and paste access. Dictate with Command/Control + Shift + Space.
 
 ## Build from source
 

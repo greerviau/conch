@@ -2,8 +2,8 @@
 
 ## Setup
 
-The Dictation page shows the setup checklist. Its first step has a menu of the three recognition models and a button that names the selected one, for example Download Small (English), 487.6 MB.
-Small (Whisper small.en, 487.6 MB) is the default for a new install. Picking another model there saves it at once.
+The Dictation page shows the setup checklist. Its first step has a Language menu, a menu of the recognition models that support that language, and a button that names the selected model, for example Download Small (English), 487.6 MB.
+English and Small (Whisper small.en, 487.6 MB) are the defaults for a new install. Picking another language or model there saves it at once.
 Once a model is installed the step names it and offers Change model.
 Enable microphone access and automatic paste from the same checklist.
 The paste step disappears while Automatic paste is off in Settings.
@@ -12,17 +12,36 @@ The optional S1-mini by Superwhisper download enables managed Enhanced cleanup.
 Conch verifies model size and SHA-256 before installation.
 Model files remain in Conch's local application data directory.
 
+## Choosing a recognition language
+
+Settings has a Language menu with English first and then every language in the Whisper language table (100 entries including English), sorted by name.
+English is the default, and settings saved before the menu existed load as English.
+Auto-detect is the first entry of the menu. It lets the recognizer detect the language, and Settings offers it while a multilingual model exists. Choosing it keeps a multilingual model, and otherwise selects Small.
+With Auto-detect, the first chunk of a recording that has speech is recognized with detection, and the rest of that recording reuses the language it found, because short chunks are often misdetected. The next recording detects again.
+Auto-detect is less reliable for recordings under a few seconds. On synthetic speech in eight languages, Small identified the language of 48 of 48 sentences of 1.6 s or longer but only 38 of 48 phrases under 1.6 s, and a misdetected chunk comes back in the wrong language. Choose a language in Settings when you can. `docs/validation/recognition-languages.md` has the measurements.
+Auto-detect also turns off hesitation-token removal, spelled-letter matching, and managed Enhanced cleanup, each of which needs a known language.
+The recognition hint still goes to the recognizer with Auto-detect. It does not affect which language is detected, because the recognizer detects from the audio before it reads the hint.
+The Recognition model menu lists only the models that support the chosen language.
+Changing the language keeps the current model when it supports the new language, and otherwise selects Small, or Small (English) for English.
+Settings saved with a model that does not support the saved language load with the smallest model that does, and Dictation asks for its download.
+Conch sends the language with each recognition request, so a change takes effect on the next recording without restarting the recognizer.
+A recording keeps the language and model it started with, and Retry recognizes the kept recording the same way.
+The interface stays in English.
+Conch makes no accuracy claim per language: Whisper's error rates differ widely between languages.
+Mixed speech, such as prose in one language with English identifiers, was measured on five synthetic sentences only, and human code-switching was not measured.
+
 ## Choosing a recognition model
 
-Settings has a Recognition model menu with three English models: Tiny (77.7 MB), Base (148.0 MB), and Small (487.6 MB).
+Settings has a Recognition model menu with the English models Tiny (77.7 MB), Base (148.0 MB), and Small (487.6 MB), and the multilingual models Tiny (77.7 MB), Base (148.0 MB), Small (487.6 MB), and Large Turbo (574.0 MB, quantized q5_0).
+English-only models recognize English alone. Multilingual Tiny, Base, and Small recognize 99 languages, every one in the table but Cantonese. Large Turbo recognizes all 100, so choosing Cantonese selects it.
 Larger models make fewer errors and take longer to finish after you stop speaking.
 `docs/validation/recognition-models.md` has the measurements.
 The menu shows Installed in place of the size for a model on disk.
 Under the menu, the selected model shows Installed, a Download button, or a progress bar. Settings has no separate list of models.
 Enhanced cleanup shows the same status for S1-mini once Managed S1-mini is chosen.
 Dictation asks for the download until the saved model is installed.
-Saving a different model stops the idle recognizer, and the next recording starts the new one.
-Retry recognizes the kept recording with the model selected when you retry.
+Saving a different model, or a language setting that moves to or from Auto-detect, stops the idle recognizer, and the next recording starts a fresh one.
+Retry recognizes the kept recording with the model the recording started with.
 
 Every recognition model download also installs the 0.9 MB Silero voice detection model.
 The recognizer skips audio that voice detection classifies as silence or noise, so a pause or room noise after you stop speaking does not turn into words such as "Thank you."
@@ -30,11 +49,15 @@ Copies that installed Tiny before this model existed keep Tiny and show Download
 
 ## Cleanup
 
-Basic cleanup always runs. It removes the hesitation tokens in Settings, `um` and `uh` at first, and repairs the spacing and punctuation around them.
+Basic cleanup always runs. It removes the hesitation tokens in Settings and repairs the spacing and punctuation around them.
+Each recognition language has its own list. English starts with `um` and `uh`, and every other language starts empty, because a shared list would delete real words: `um` is a Portuguese article and a German preposition. Edit the list for the language shown in the Language menu.
+A hesitation list saved before languages existed loads as the English list.
+Auto-detect removes no hesitation tokens, and Settings disables the row and says why.
 Leave Hesitation tokens blank and Basic cleanup leaves the transcript exactly as recognized.
 Excluded literal terms stay as dictated.
 Enhanced cleanup is Disabled until you choose Managed S1-mini, Local endpoint, or Remote endpoint.
 Managed S1-mini asks for the 484 MB download; until it is installed, Conch uses Basic cleanup.
+Managed S1-mini supports English only. For any other language and for Auto-detect, Conch uses Basic cleanup, the result status says so, and Settings shows the reason. A local or remote endpoint works in every language.
 Settings saved by an earlier version start with Enhanced cleanup Disabled.
 With Enhanced cleanup on, Conch cleans each finished chunk while you keep speaking, one at a time.
 After you stop, it recognizes and cleans the audio after the last chunk, behind any chunk whose cleaning is still running; a slow endpoint can leave a backlog.
@@ -65,6 +88,7 @@ Select the repositories that supply context on the Dictation page before recordi
 Define global or repository mappings for recurring transcription errors on Mappings.
 Each mapping has an enable switch, the spoken phrase, the replacement text, and a scope.
 Conch also sends the recognizer a short list of identifiers from the selected repositories and your mappings, so it spells them correctly.
+Spelled-letter matching, which turns "pod gee see" into `podGC`, uses English letter names and works for English only. In other languages and in Auto-detect, a recognizer that writes the capitals ("pod GC") still matches, and mapping and identifier matching ignore case for every script by Unicode simple case folding, the same rule the mapping patterns use. Sound-alike matching also reads the German sharp s (U+00DF) as `ss` and treats the Greek capital sigma (U+03A3), small sigma (U+03C3), and final sigma (U+03C2) as one letter. A combining mark stays with its letter. Conch does not normalize text, so a precomposed letter and a letter followed by a separate combining mark count as different spellings.
 If a repository suggestion appears for a phrase you say often, choose Accept and always replace. Conch saves a mapping for that phrase and applies it from the next recording.
 To skip the review step, turn on Auto-accept under Repository context in Settings. Conch then replaces a heard phrase with the identifier it sounds like whenever the words match one indexed spelling, so the pasted text contains the symbol name. A phrase that matches several different spellings, overlaps another suggestion, or conflicts with mappings still waits for review. Each replacement is listed under Accepted edits with an Undo button; Undo changes the result in Conch only, so copy it again to replace text that was already pasted. Auto-accept is off by default, and a wrong match is possible because the matching is by sound.
 The default shortcut is Command-or-Control + Shift + Space in push-to-talk mode.

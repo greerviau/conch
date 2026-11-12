@@ -7,11 +7,25 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { Setup, ShortcutRecorder } from "./Setup";
+import { LANGUAGES, catalog } from "./testModels";
+import type { ComponentProps } from "react";
+type Defaults = "models" | "languages" | "language" | "recognizer";
+type Props = Omit<ComponentProps<typeof Setup>, Defaults> &
+  Partial<Pick<ComponentProps<typeof Setup>, Defaults>>;
+const Subject = (props: Props) => (
+  <Setup
+    models={catalog()}
+    languages={LANGUAGES}
+    language="en"
+    recognizer="small.en"
+    {...props}
+  />
+);
 afterEach(cleanup);
 describe("first-run setup", () => {
   it("offers the required download where dictation starts", () => {
     const download = vi.fn();
-    render(<Setup installed={false} onDownload={download} />);
+    render(<Subject installed={false} onDownload={download} />);
     fireEvent.click(
       screen.getByRole("button", {
         name: "Download Small (English), 487.6 MB",
@@ -20,8 +34,87 @@ describe("first-run setup", () => {
     expect(download).toHaveBeenCalledOnce();
   });
   it("does not ask users to install optional cleanup to dictate", () => {
-    render(<Setup installed onDownload={vi.fn()} />);
+    render(<Subject installed onDownload={vi.fn()} />);
     expect(screen.queryByRole("button", { name: /^download/i })).toBeNull();
+  });
+});
+describe("recognition language", () => {
+  const menu = (name: string) =>
+    screen.getByRole("combobox", { name }) as HTMLSelectElement;
+  it("names the step for speech recognition instead of English", () => {
+    render(<Subject installed={false} onDownload={vi.fn()} />);
+    expect(
+      screen.getByRole("heading", { name: "Speech recognition" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("English recognition")).toBeNull();
+  });
+  it("offers a Language menu, English first, and reports the choice", () => {
+    const choose = vi.fn();
+    render(
+      <Subject installed={false} onLanguage={choose} onDownload={vi.fn()} />,
+    );
+    expect(menu("Language").value).toBe("en");
+    expect(
+      Array.from(menu("Language").options).map((option) => option.textContent),
+    ).toEqual([
+      "Auto-detect",
+      "English",
+      "Cantonese",
+      "Chinese",
+      "French",
+      "German",
+    ]);
+    fireEvent.change(menu("Language"), { target: { value: "fr" } });
+    expect(choose).toHaveBeenCalledWith("fr");
+  });
+  it("reports Auto-detect like any other choice", () => {
+    const choose = vi.fn();
+    render(
+      <Subject installed={false} onLanguage={choose} onDownload={vi.fn()} />,
+    );
+    fireEvent.change(menu("Language"), { target: { value: "auto" } });
+    expect(choose).toHaveBeenCalledWith("auto");
+  });
+  it("offers no Auto-detect without a multilingual model", () => {
+    const english = catalog().filter(
+      (model) => model.engine !== "whisper" || model.languages.length === 1,
+    );
+    render(<Subject installed={false} models={english} onDownload={vi.fn()} />);
+    expect(
+      Array.from(menu("Language").options).map((option) => option.value),
+    ).not.toContain("auto");
+  });
+  it("shows Auto-detect when that is the saved language", () => {
+    render(
+      <Subject
+        installed={false}
+        language="auto"
+        recognizer="small"
+        onDownload={vi.fn()}
+      />,
+    );
+    expect(menu("Language").value).toBe("auto");
+    expect(menu("Language").selectedOptions[0].textContent).toBe("Auto-detect");
+  });
+  it("lists only the models that support the saved language", () => {
+    render(
+      <Subject
+        installed={false}
+        language="fr"
+        recognizer="small"
+        onDownload={vi.fn()}
+      />,
+    );
+    expect(
+      Array.from(menu("Recognition model").options).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["tiny", "base", "small", "large-v3-turbo"]);
+    expect(
+      screen.getByRole("button", {
+        name: "Download Small (multilingual), 487.6 MB",
+      }),
+    ).toBeTruthy();
   });
 });
 describe("recognition model step", () => {
@@ -37,7 +130,7 @@ describe("recognition model step", () => {
     const choose = vi.fn();
     const download = vi.fn();
     render(
-      <Setup
+      <Subject
         installed={false}
         recognizer="small.en"
         onRecognizer={choose}
@@ -52,6 +145,10 @@ describe("recognition model step", () => {
       "tiny.en",
       "base.en",
       "small.en",
+      "tiny",
+      "base",
+      "small",
+      "large-v3-turbo",
     ]);
     fireEvent.click(
       screen.getByRole("button", {
@@ -64,7 +161,7 @@ describe("recognition model step", () => {
   });
   it("shows Installed in the menu instead of a size for a model that is on disk", () => {
     render(
-      <Setup
+      <Subject
         installed={false}
         recognizer="small.en"
         ready={(id) => id === "tiny.en"}
@@ -75,10 +172,36 @@ describe("recognition model step", () => {
       "Tiny (English) - Installed - Fastest",
       "Base (English) - 148.0 MB - Balanced",
       "Small (English) - 487.6 MB - Most accurate",
+      "Tiny (multilingual) - 77.7 MB - Fastest",
+      "Base (multilingual) - 148.0 MB - Balanced",
+      "Small (multilingual) - 487.6 MB - Accurate",
+      "Large Turbo (multilingual) - 574.0 MB - Most accurate",
     ]);
   });
+  it("lists the models it is given and sizes the voice detection note from them", () => {
+    const models = catalog().map((model) =>
+      model.id === "silero-vad"
+        ? { ...model, size: 1_500_000 }
+        : model.id === "tiny.en"
+          ? { ...model, label: "Tiny (catalog)" }
+          : model,
+    );
+    render(<Subject installed={false} models={models} onDownload={vi.fn()} />);
+    expect(options().map((option) => option.textContent)).toEqual([
+      "Tiny (catalog) - 77.7 MB - Fastest",
+      "Base (English) - 148.0 MB - Balanced",
+      "Small (English) - 487.6 MB - Most accurate",
+      "Tiny (multilingual) - 77.7 MB - Fastest",
+      "Base (multilingual) - 148.0 MB - Balanced",
+      "Small (multilingual) - 487.6 MB - Accurate",
+      "Large Turbo (multilingual) - 574.0 MB - Most accurate",
+    ]);
+    expect(
+      screen.getByText(/also installs the 1\.5 MB voice detection/i),
+    ).toBeTruthy();
+  });
   it("says what else the download installs and why the models differ", () => {
-    render(<Setup installed={false} onDownload={vi.fn()} />);
+    render(<Subject installed={false} onDownload={vi.fn()} />);
     expect(
       screen.getByText(/also installs the 0\.9 MB voice detection/i),
     ).toBeTruthy();
@@ -88,7 +211,7 @@ describe("recognition model step", () => {
   });
   it("replaces the button with a progress bar that names the model", () => {
     const { rerender } = render(
-      <Setup
+      <Subject
         installed={false}
         recognizer="small.en"
         downloading
@@ -111,7 +234,7 @@ describe("recognition model step", () => {
       ).disabled,
     ).toBe(true);
     rerender(
-      <Setup
+      <Subject
         installed={false}
         recognizer="small.en"
         downloading
@@ -127,7 +250,7 @@ describe("recognition model step", () => {
     expect(screen.getByText(/^Downloading Small \(English\)/)).toBeTruthy();
   });
   it("names the installed model and reopens the menu from Change model", () => {
-    render(<Setup installed recognizer="base.en" onDownload={vi.fn()} />);
+    render(<Subject installed recognizer="base.en" onDownload={vi.fn()} />);
     expect(screen.getByText(/Base \(English\) is installed/)).toBeTruthy();
     expect(screen.queryByRole("combobox")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Change model" }));
@@ -138,7 +261,7 @@ describe("recognition model step", () => {
   it("closes the menu again once the user picks a model that is installed", () => {
     const choose = vi.fn();
     render(
-      <Setup
+      <Subject
         installed
         recognizer="tiny.en"
         ready={() => true}
@@ -147,16 +270,17 @@ describe("recognition model step", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Change model" }));
-    fireEvent.change(screen.getByRole("combobox"), {
-      target: { value: "base.en" },
-    });
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Recognition model" }),
+      { target: { value: "base.en" } },
+    );
     expect(choose).toHaveBeenCalledWith("base.en");
     expect(screen.queryByRole("combobox")).toBeNull();
   });
   it("asks only for the small voice detection file when the recognizer is already installed", () => {
     const download = vi.fn();
     render(
-      <Setup
+      <Subject
         installed={false}
         voiceOnly
         recognizer="tiny.en"
@@ -175,7 +299,7 @@ describe("recognition model step", () => {
 describe("paste step", () => {
   it("asks for the paste permission only while automatic paste is on", () => {
     const { rerender } = render(
-      <Setup
+      <Subject
         installed
         onDownload={vi.fn()}
         accessibility={false}
@@ -186,7 +310,7 @@ describe("paste step", () => {
       screen.getByRole("button", { name: "Enable automatic paste" }),
     ).toBeTruthy();
     rerender(
-      <Setup
+      <Subject
         installed
         onDownload={vi.fn()}
         accessibility={false}
@@ -292,7 +416,7 @@ it("keeps the recording shortcut paused until the captured keys are released", a
 
 it("shows Command for the default shortcut on macOS setup", () => {
   render(
-    <Setup
+    <Subject
       installed
       onDownload={vi.fn()}
       hotkey="CommandOrControl+Shift+Space"
@@ -303,7 +427,7 @@ it("shows Command for the default shortcut on macOS setup", () => {
 });
 it("does not offer a no-op microphone permission button on system-managed platforms", () => {
   render(
-    <Setup
+    <Subject
       installed
       onDownload={vi.fn()}
       microphone="system"

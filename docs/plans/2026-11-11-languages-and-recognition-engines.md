@@ -14,7 +14,7 @@ This spec supersedes the English-only and Whisper-only statements in `2026-11-09
 ## Requirements
 
 - Settings has a Language menu. It lists Auto-detect, then English, then every other language in the pinned whisper.cpp language table (100 entries including English), sorted by name. New installs use English. Settings saved before the field existed load as English.
-- The Recognition model menu lists only models that support the chosen language. Auto-detect lists only models that support more than one language.
+- The Recognition model menu lists only models that support the chosen language. Auto-detect lists only models that support more than one language. Cantonese lists only Large Turbo.
 - A recording uses the language and model chosen when it starts, as part of the context snapshot.
 - Whisper models offered: the existing `tiny.en`, `base.en`, `small.en`, plus multilingual Tiny, Base, Small, and Large Turbo (q5_0). Parakeet TDT v2 (Q8_0) is offered for English.
 - Core dictation still works offline after a model download. Each new model is pinned by revision and SHA-256 and downloaded on request, as the current models are.
@@ -71,7 +71,7 @@ classDiagram
     Model --> "1..*" Language
 ```
 
-- `languages` is a list of codes from one shared table. `.en` models and Parakeet v2 list only `en`. Multilingual Whisper models list all 100 entries.
+- `languages` is a list of codes from one shared table. `.en` models and Parakeet v2 list only `en`. Multilingual Tiny, Base, and Small list 99 entries: every language but Cantonese (`yue`, the last entry). Large Turbo lists all 100. The ggml header decides this: `n_vocab` is 51865 for Tiny, Base, and Small (99 language tokens) and 51866 for Large Turbo (100). On a 99-language model, language id 99 resolves to the translate token, so Cantonese cannot be selected. Verified by reading `n_vocab` from each pinned file and `num_languages()` in `src/whisper.cpp` at the pinned revision; the first review of item 2 found the error in the earlier statement that every multilingual model lists 100 entries.
 - A model supports `auto` when it lists more than one language.
 - `missing()` keeps adding the Silero model for every recognizer. The VAD model is shared by both engines.
 
@@ -108,7 +108,7 @@ The existing `.en` rows are unchanged; their listed sizes and hashes match this 
 
 - `Cleanup.fillers` becomes a map from language code to token list. A saved list loads as the English list, because a type change would otherwise fail `storage::load` with "Settings are invalid". The Hesitation tokens row edits the list for the selected language.
 - A shared default list would delete real words in some languages ("um" is a Portuguese article and a German preposition), so no list is shared.
-- `spoken.rs` takes its letter-name table from the language. Only English has one. The camelCase split uses Unicode case checks and `to_lowercase` comparisons replace `eq_ignore_ascii_case` in `core.rs` and `spoken.rs`.
+- `spoken.rs` takes its letter-name table from the language. Only English has one. The camelCase split uses Unicode case checks, and one folding rule in `fold.rs` replaces `eq_ignore_ascii_case` and `to_lowercase` comparisons in `core.rs`, `spoken.rs`, and `app.rs`. The rule is Unicode simple case folding taken from the regex crate's own tables, because `phrase_regex` matches with `(?i)` and any other rule lets two mappings conflict without being reported (`to_lowercase` splits the Greek capital sigma U+03A3, small sigma U+03C3, and final sigma U+03C2, which `(?i)` treats as one letter). Sound-alike keys also read the German sharp s (U+00DF) as `ss`. A saved "Always replace" phrase uses the same folding, because lower-casing U+0130 gives a letter plus a combining dot that does not match what was heard. A combining mark counts as part of the word it follows, except that a mark right after a closing single quote does not keep the quote open. Text is not normalized, so a precomposed letter and a letter with a separate mark are different spellings. The two review rounds of item 3 found these cases.
 - The recognition hint stays an identifier list in any language. Whether it biases Whisper toward English output in Auto-detect is measured (see Risks).
 
 ### Parakeet worker
@@ -139,7 +139,7 @@ sequenceDiagram
 - **Separate worker process.** Rejected: linking transcribe.cpp into the Tauri process. A native inference crash would end the app, which the original spec's worker isolation requirement forbids.
 - **Whisper stays on `whisper-server`.** Rejected: moving Whisper to transcribe.cpp now. It would remove the patched server, but it changes a working path and mixes two risks. It is a follow-up once the new worker has shipped.
 - **One shared language table.** Rejected: a curated subset (the user chose the full list) and per-model hand-written lists.
-- **Explicit language with Auto-detect added last.** Auto-detect runs per chunk, and the tail after the last pause can be one or two seconds long. If measurement shows language flips, the first chunk's detected language is reused for the rest of the recording. That change belongs to the Auto-detect work item.
+- **Explicit language with Auto-detect added last.** Auto-detect runs per chunk, and the tail after the last pause can be one or two seconds long. If measurement shows language flips, the first chunk's detected language is reused for the rest of the recording. That change belongs to the Auto-detect work item. Result: the measurement (`docs/validation/recognition-languages.md`) found flips in 10 to 23 of 48 synthetic recordings in every model and request variant, mostly with the first chunk right and the tail wrong, so `ChunkRecognizer` reuses the language of the first final chunk that has text. With Small it raised the mean word overlap of short tails from 0.778 to 0.920. The worker only reports the detected language when the request uses `response_format=verbose_json`, so an `auto` request sets that format and `no_language_probabilities`.
 - **Parakeet v2 only.** Rejected for now: v3. It covers 25 European languages with automatic detection, and its model card does not say whether a language can be forced. It is a later catalog row.
 
 ## Work items
@@ -168,7 +168,7 @@ Items 3 and 5 can proceed in parallel after their dependencies.
 
 ## Testing strategy
 
-- Catalog: unique ids, 64-character hashes, pinned (not `main`) revisions, nonempty `languages`, 100 unique language codes, `auto` valid only for models with more than one language.
+- Catalog: unique ids, 64-character hashes, pinned (not `main`) revisions, nonempty `languages`, 100 unique language codes, `auto` valid only for models with more than one language, and `yue` only on Large Turbo.
 - Settings: legacy settings load as English; an unknown code resets; a model that does not support the language is replaced; a saved filler list loads as the English list.
 - Fake worker (Unix): the request carries the `language` field; the launch has no `--language`; changing language reuses the same process; the Parakeet fake receives no language field.
 - Behavior table, one test per cell: Portuguese or German text keeps "um" with tokens empty; mapping and identifier matching fold non-ASCII case; letter names produce no suggestion outside English; managed cleanup reports Basic fallback for non-English and Auto.
@@ -183,7 +183,7 @@ Items 3 and 5 can proceed in parallel after their dependencies.
 - I read only part of `transcribe.h`. The load, run, and in-memory input signatures are unconfirmed, which is why work item 5 starts with a prototype (confidence: low until then).
 - Parakeet vocabulary or prompt support is unknown. A summary of the header names `vocabulary` and `prompt` options gated by per-model features (confidence: low). Without it, Parakeet loses the recognition hint that Whisper uses for repository identifiers.
 - Parakeet's behavior on silence-only chunks is unchecked. The worker returns empty text for chunks the Silero model marks as no speech.
-- Multilingual Whisper models hallucinate on silence more than `.en` models, and the existing voice detection mitigates it (confidence: moderate; the tiny `.en` case is documented in the original spec). The English identifier hint may bias Auto-detect output toward English (confidence: low). Both are measured in item 4.
+- Multilingual Whisper models hallucinate on silence more than `.en` models, and the existing voice detection mitigates it (confidence: moderate; the tiny `.en` case is documented in the original spec). The English identifier hint may bias Auto-detect output toward English (confidence: low). Item 4 measured both on synthetic speech (`docs/validation/recognition-languages.md`): voice detection returned empty text for silence and noise on multilingual Tiny, Base, and Small, and the hint cannot push detection toward English, because whisper.cpp detects the language before it applies the prompt (0 of 909 clips changed language with the hint). The same measurement found that the short-audio request settings (`audio_ctx`) lower detection on Tiny and Base, so the app must send no such settings on any request while the configured language is Auto-detect. Because the pooled worker keeps the last request's window, saving a language setting that moves to or from Auto-detect stops the idle recognizer.
 - Mixed speech, such as prose in one language with English identifiers, is the likely common use and is the hardest case. Accuracy is unknown and may be poor. Item 4 reports it for the synthetic samples only.
 - Multilingual accuracy depends on the language. Whisper's published per-language error rates vary widely, and Conch makes no per-language accuracy claim.
 - Disk and memory: `large-v3-turbo` (q5_0) is 574 MB and Parakeet Q8_0 is 730 MB on disk. Runtime memory is unmeasured. Download size does not establish it.

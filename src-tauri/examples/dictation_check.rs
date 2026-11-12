@@ -72,7 +72,7 @@ fn main() {
             }
             let transcriber = Transcriber::start(|| (), {
                 let (workers, model, worker) = (workers.clone(), model.clone(), worker.clone());
-                move |wav, _| inference::transcribe(&workers, &model, wav, "", &worker, false)
+                move |wav, _| inference::transcribe(&workers, &model, wav, "", "en", &worker, false)
             });
             let mut chunker = Chunker::default();
             let step = rate / 10;

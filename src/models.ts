@@ -1,26 +1,60 @@
-export type ModelInfo = { id: string; label: string; mb: number };
-/** The recognizer a new install starts with. The saved setting comes from Rust, which owns the default. */
-export const DEFAULT_RECOGNIZER = "small.en";
-/** English recognizers from smallest to most accurate. Ids match the Rust manifest. */
-export const RECOGNIZERS: (ModelInfo & { note: string })[] = [
-  { id: "tiny.en", label: "Tiny (English)", mb: 77.7, note: "Fastest" },
-  { id: "base.en", label: "Base (English)", mb: 148.0, note: "Balanced" },
-  {
-    id: "small.en",
-    label: "Small (English)",
-    mb: 487.6,
-    note: "Most accurate",
-  },
+import type { Language, ModelView } from "./types";
+
+/** Download size as shown beside a model. */
+export const size = (model: Pick<ModelView, "size">) =>
+  `${(model.size / 1e6).toFixed(1)} MB`;
+/** Models that turn audio into text, in the order Rust lists them (smallest first). */
+export const recognizers = (models: ModelView[]) =>
+  models.filter(
+    (model) => model.engine === "whisper" || model.engine === "transcribe",
+  );
+const required = (model: ModelView | undefined) => {
+  if (!model) throw new Error("The model catalog is incomplete");
+  return model;
+};
+/** The Silero model every recognizer loads. It has no engine of its own. */
+export const voiceDetection = (models: ModelView[]) =>
+  required(models.find((model) => model.engine === null));
+/** The managed Enhanced cleanup model. */
+export const cleanupModel = (models: ModelView[]) =>
+  required(models.find((model) => model.engine === "llama"));
+/** The recognition model with this id, or the first one when the id is unknown. */
+export const recognizerInfo = (models: ModelView[], id: string) => {
+  const all = recognizers(models);
+  return required(all.find((model) => model.id === id) ?? all[0]);
+};
+/** Whether the model recognizes the language. Auto-detect needs more than one. */
+export const supports = (
+  model: Pick<ModelView, "languages">,
+  language: string,
+) =>
+  language === "auto"
+    ? model.languages.length > 1
+    : model.languages.includes(language);
+/** The recognition models that support the language, in catalog order. */
+export const recognizersFor = (models: ModelView[], language: string) =>
+  recognizers(models).filter((model) => supports(model, language));
+/** English first, then the other languages by name. */
+export const languageMenu = (languages: Language[]) => [
+  ...languages.filter((language) => language.code === "en"),
+  ...languages
+    .filter((language) => language.code !== "en")
+    .sort((a, b) => a.name.localeCompare(b.name, "en")),
 ];
-export const VAD: ModelInfo = {
-  id: "silero-vad",
-  label: "Voice detection (Silero)",
-  mb: 0.9,
-};
-export const CLEANUP: ModelInfo = {
-  id: "s1-mini",
-  label: "S1-mini by Superwhisper",
-  mb: 484.2,
-};
-export const MODELS: ModelInfo[] = [...RECOGNIZERS, VAD, CLEANUP];
-export const size = (model: ModelInfo) => `${model.mb.toFixed(1)} MB`;
+/**
+ * The model to use after the language changes: the current one if it supports
+ * the language, otherwise Small (Small (English) for English).
+ */
+export function modelForLanguage(
+  models: ModelView[],
+  language: string,
+  current: string,
+) {
+  const options = recognizersFor(models, language);
+  if (options.some((model) => model.id === current)) return current;
+  const preferred = language === "en" ? "small.en" : "small";
+  return (
+    (options.find((model) => model.id === preferred) ?? options[0])?.id ??
+    current
+  );
+}

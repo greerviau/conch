@@ -1,4 +1,7 @@
-use crate::core::{self, Snapshot};
+use crate::{
+    core::{self, Snapshot},
+    languages::{CODES, CODES_99, ENGLISH},
+};
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
 use std::{
@@ -11,7 +14,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     Whisper,
     Llama,
@@ -75,6 +79,10 @@ pub const S1_SYSTEM: &str = "You are a text normalizer for speech-to-text transc
 /// The first line of every managed cleanup prompt.
 const CONTROL_LINE: &str = "[Styling: semi-formal] [Structure: prose] [Context: general]";
 pub const CLEANUP_SYSTEM: &str = "Clean this dictated transcript. Preserve all CONCHPROTECTED placeholders exactly once in their original order. Preserve identifiers, negation, numbers, constraints and instruction order. Do not answer, expand or summarize the request. Output only the cleaned transcript.";
+/// Whether managed S1-mini cleanup can handle `language`.
+pub fn managed_cleanup_supported(language: &str) -> bool {
+    CLEANUP.supports(language)
+}
 pub fn endpoint_allowed(endpoint: &str, remote: bool) -> bool {
     let Ok(url) = reqwest::Url::parse(endpoint) else {
         return false;
@@ -290,7 +298,7 @@ fn launch(
         .args(["--threads", "4"]);
     if kind == Kind::Whisper {
         command.env("CONCH_WORKER_TOKEN", &token);
-        command.args(["--language", "en", "--suppress-nst", "--vad", "--vad-model"]);
+        command.args(["--suppress-nst", "--vad", "--vad-model"]);
         command.arg(vad_path(model));
         if cpu {
             command.arg("--no-gpu");
@@ -359,9 +367,28 @@ pub fn transcribe(
     model: &Path,
     wav: Vec<u8>,
     hint: &str,
+    language: &str,
     worker: &Worker,
     cpu: bool,
 ) -> Result<String, String> {
+    recognize(workers, model, wav, hint, language, worker, cpu).map(|r| r.text)
+}
+/// What one recognizer request returned.
+pub struct Recognition {
+    pub text: String,
+    /// The language the recognizer detected, only when the request asked for `auto`.
+    pub language: Option<String>,
+}
+pub fn recognize(
+    workers: &Path,
+    model: &Path,
+    wav: Vec<u8>,
+    hint: &str,
+    language: &str,
+    worker: &Worker,
+    cpu: bool,
+) -> Result<Recognition, String> {
+    let detecting = language == crate::languages::AUTO;
     let lease = acquire(workers, model, Kind::Whisper, worker, cpu)?;
     let (url, token) = (&lease.server.endpoint, &lease.server.token);
     let client = Client::builder()
@@ -374,8 +401,17 @@ pub fn transcribe(
             "file",
             reqwest::blocking::multipart::Part::bytes(wav).file_name("recording.wav"),
         )
-        .text("response_format", "json")
-        .text("temperature", "0");
+        .text(
+            "response_format",
+            // Only the verbose format names the language the recognizer used.
+            if detecting { "verbose_json" } else { "json" },
+        )
+        .text("temperature", "0")
+        .text("language", language.to_owned());
+    if detecting {
+        // The probabilities cost a second pass over the audio, and only the language is needed.
+        form = form.text("no_language_probabilities", "true");
+    }
     if !hint.is_empty() {
         form = form.text("prompt", hint.to_owned());
     }
@@ -387,10 +423,82 @@ pub fn transcribe(
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.json())
         .map_err(|_| "Local recognition failed or timed out")?;
-    value["text"]
+    let text = value["text"]
         .as_str()
         .map(flatten_segments)
-        .ok_or_else(|| "Recognizer returned invalid output".into())
+        .ok_or("Recognizer returned invalid output")?;
+    let language = value["language"]
+        .as_str()
+        .and_then(crate::languages::code_for_name)
+        .filter(|_| detecting)
+        .map(String::from);
+    Ok(Recognition { text, language })
+}
+/// The recognizer of one recording. With Auto-detect, the first chunk that has speech is
+/// recognized with detection and every later chunk of the recording reuses the language it
+/// found, because a short chunk is often misdetected. A speculative call recognizes only the
+/// start of a chunk still being spoken, so it uses the language but never sets it.
+pub struct ChunkRecognizer {
+    workers: PathBuf,
+    model: PathBuf,
+    hint: String,
+    worker: Worker,
+    cpu: bool,
+    configured: String,
+    locked: Mutex<Option<String>>,
+}
+impl ChunkRecognizer {
+    pub fn new(
+        language: &str,
+        workers: &Path,
+        model: &Path,
+        hint: &str,
+        worker: &Worker,
+        cpu: bool,
+    ) -> Self {
+        Self {
+            workers: workers.into(),
+            model: model.into(),
+            hint: hint.into(),
+            worker: worker.clone(),
+            cpu,
+            configured: language.into(),
+            locked: Mutex::new(None),
+        }
+    }
+    /// Recognizes a chunk that is final. The first one with text fixes the language.
+    pub fn transcribe(&self, wav: Vec<u8>) -> Result<String, String> {
+        self.run(wav, false)
+    }
+    /// Recognizes audio that may be extended or replaced, so it never fixes the language.
+    pub fn transcribe_speculative(&self, wav: Vec<u8>) -> Result<String, String> {
+        self.run(wav, true)
+    }
+    fn run(&self, wav: Vec<u8>, speculative: bool) -> Result<String, String> {
+        let language = self
+            .locked
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| self.configured.clone());
+        let recognition = recognize(
+            &self.workers,
+            &self.model,
+            wav,
+            &self.hint,
+            &language,
+            &self.worker,
+            self.cpu,
+        )?;
+        if self.configured == crate::languages::AUTO
+            && !speculative
+            && !recognition.text.trim().is_empty()
+            && let Some(found) = recognition.language
+        {
+            self.locked.lock().unwrap().get_or_insert(found);
+        }
+        Ok(recognition.text)
+    }
 }
 /// The recognizer puts each segment of a long recording on its own line.
 /// Dictated prose has no line breaks, so join the segments with one space.
@@ -414,7 +522,10 @@ pub fn enhanced_part(request: CleanupRequest<'_>) -> Result<String, String> {
     let cleanup = &request.snapshot.cleanup;
     if cleanup.enhanced != "disabled" && !request.raw.contains("CONCHPROTECTED") {
         let masked = core::mask(request.raw, request.snapshot);
-        if core::basic(&masked.text, cleanup).trim().is_empty() {
+        if core::basic(&masked.text, cleanup, &request.snapshot.language)
+            .trim()
+            .is_empty()
+        {
             return Ok(String::new());
         }
     }
@@ -433,6 +544,9 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
     if cleanup.enhanced == "disabled" {
         return Err("Enhanced cleanup is disabled".into());
     }
+    if cleanup.enhanced == "managed" && !managed_cleanup_supported(&snapshot.language) {
+        return Err("Managed cleanup supports English only; using Basic".into());
+    }
     if worker.lock().unwrap().cancelled {
         return Err("Cancelled".into());
     }
@@ -440,7 +554,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         return Err("Reserved placeholder in transcript; using Basic".into());
     }
     let masked = core::mask(raw, snapshot);
-    let basic = core::basic(&masked.text, cleanup);
+    let basic = core::basic(&masked.text, cleanup, &snapshot.language);
     if basic.trim().is_empty() {
         return Err("Nothing remains after Basic cleanup".into());
     }
@@ -522,16 +636,63 @@ pub struct Model {
     pub url: &'static str,
     pub sha256: &'static str,
     pub size: u64,
+    /// Shown in the interface.
+    pub label: &'static str,
+    pub note: &'static str,
+    /// The worker that runs the model. Voice detection has none: the recognizer loads it.
+    pub engine: Option<Kind>,
+    /// ISO codes of the languages the model recognizes.
+    pub languages: &'static [&'static str],
 }
-/// English recognizers the user can choose between, smallest first. Larger
-/// models make fewer errors and take longer to recognize a chunk.
-pub const RECOGNIZERS: [Model; 3] = [
+impl Model {
+    /// Whether the model recognizes `language`, an ISO code or `auto`. Only a
+    /// model with more than one language can detect the language.
+    pub fn supports(&self, language: &str) -> bool {
+        if language == crate::languages::AUTO {
+            return self.languages.len() > 1;
+        }
+        self.languages.contains(&language)
+    }
+}
+/// What the interface shows for a model, with whether it is on disk.
+#[derive(serde::Serialize)]
+pub struct ModelView {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub note: &'static str,
+    pub size: u64,
+    pub engine: Option<Kind>,
+    pub languages: &'static [&'static str],
+    pub ready: bool,
+}
+pub fn catalog(data: &Path) -> Vec<ModelView> {
+    MODELS
+        .iter()
+        .map(|m| ModelView {
+            id: m.id,
+            label: m.label,
+            note: m.note,
+            size: m.size,
+            engine: m.engine,
+            languages: m.languages,
+            ready: data.join(m.name).is_file(),
+        })
+        .collect()
+}
+/// Recognizers the user can choose between: the English-only Whisper models,
+/// then the multilingual ones, each smallest first. Larger models make fewer
+/// errors and take longer to recognize a chunk.
+pub const RECOGNIZERS: [Model; 7] = [
     Model {
         id: "tiny.en",
         name: "ggml-tiny.en.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin",
         sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
         size: 77704715,
+        label: "Tiny (English)",
+        note: "Fastest",
+        engine: Some(Kind::Whisper),
+        languages: ENGLISH,
     },
     Model {
         id: "base.en",
@@ -539,6 +700,10 @@ pub const RECOGNIZERS: [Model; 3] = [
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin",
         sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
         size: 147964211,
+        label: "Base (English)",
+        note: "Balanced",
+        engine: Some(Kind::Whisper),
+        languages: ENGLISH,
     },
     Model {
         id: "small.en",
@@ -546,6 +711,54 @@ pub const RECOGNIZERS: [Model; 3] = [
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en.bin",
         sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
         size: 487614201,
+        label: "Small (English)",
+        note: "Most accurate",
+        engine: Some(Kind::Whisper),
+        languages: ENGLISH,
+    },
+    Model {
+        id: "tiny",
+        name: "ggml-tiny.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
+        sha256: "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        size: 77691713,
+        label: "Tiny (multilingual)",
+        note: "Fastest",
+        engine: Some(Kind::Whisper),
+        languages: &CODES_99,
+    },
+    Model {
+        id: "base",
+        name: "ggml-base.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
+        sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        size: 147951465,
+        label: "Base (multilingual)",
+        note: "Balanced",
+        engine: Some(Kind::Whisper),
+        languages: &CODES_99,
+    },
+    Model {
+        id: "small",
+        name: "ggml-small.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.bin",
+        sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        size: 487601967,
+        label: "Small (multilingual)",
+        note: "Accurate",
+        engine: Some(Kind::Whisper),
+        languages: &CODES_99,
+    },
+    Model {
+        id: "large-v3-turbo",
+        name: "ggml-large-v3-turbo-q5_0.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin",
+        sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        size: 574041195,
+        label: "Large Turbo (multilingual)",
+        note: "Most accurate",
+        engine: Some(Kind::Whisper),
+        languages: &CODES,
     },
 ];
 /// Silero voice detection model. The recognizer runs only on the
@@ -557,6 +770,10 @@ pub const VAD: Model = Model {
     url: "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v5.1.2.bin",
     sha256: "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf",
     size: 885098,
+    label: "Voice detection (Silero)",
+    note: "",
+    engine: None,
+    languages: &[],
 };
 pub const CLEANUP: Model = Model {
     id: "s1-mini",
@@ -564,10 +781,32 @@ pub const CLEANUP: Model = Model {
     url: "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/34add00a48a2e5d24e5a4ee5405a99620a3a240c/s1-mini-q4_k_m.gguf",
     sha256: "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634",
     size: 484219808,
+    label: "S1-mini by Superwhisper",
+    note: "",
+    engine: Some(Kind::Llama),
+    languages: ENGLISH,
 };
-pub const MODELS: [Model; 5] = [RECOGNIZERS[0], RECOGNIZERS[1], RECOGNIZERS[2], VAD, CLEANUP];
+pub const MODELS: [Model; 9] = [
+    RECOGNIZERS[0],
+    RECOGNIZERS[1],
+    RECOGNIZERS[2],
+    RECOGNIZERS[3],
+    RECOGNIZERS[4],
+    RECOGNIZERS[5],
+    RECOGNIZERS[6],
+    VAD,
+    CLEANUP,
+];
 pub fn recognizer(id: &str) -> Option<Model> {
     RECOGNIZERS.iter().find(|m| m.id == id).copied()
+}
+/// The smallest recognition model that supports `language`.
+pub fn smallest_supporting(language: &str) -> Option<Model> {
+    RECOGNIZERS
+        .iter()
+        .filter(|m| m.supports(language))
+        .min_by_key(|m| m.size)
+        .copied()
 }
 /// The models to download so `id` works: the model itself, plus the voice
 /// activity model when `id` is a recognizer. Models already on disk are left out.
@@ -694,7 +933,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         request = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         with open(os.path.join(here, "last-request.bin"), "wb") as saved:
             saved.write(request)
-        body = json.dumps({"text": str(os.getpid())}).encode()
+        reply = os.path.join(here, "reply.json")
+        if os.path.exists(reply):
+            body = open(reply, "rb").read()
+        else:
+            body = json.dumps({"text": str(os.getpid())}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -759,6 +1002,10 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
                 .map(String::from)
                 .collect()
         }
+        /// Makes the fake answer with this JSON until the next call.
+        pub fn reply(dir: &Path, json: &str) {
+            std::fs::write(dir.join("reply.json"), json).unwrap();
+        }
         pub fn last_request(dir: &Path) -> String {
             String::from_utf8_lossy(&std::fs::read(dir.join("last-request.bin")).unwrap())
                 .into_owned()
@@ -808,7 +1055,16 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     }
     #[cfg(unix)]
     fn run(dir: &Path, worker: &Worker) -> String {
-        transcribe(dir, &dir.join("model.bin"), vec![0; 64], "", worker, true).unwrap()
+        transcribe(
+            dir,
+            &dir.join("model.bin"),
+            vec![0; 64],
+            "",
+            "en",
+            worker,
+            true,
+        )
+        .unwrap()
     }
     #[cfg(unix)]
     #[test]
@@ -816,11 +1072,29 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         let dir = tempfile::tempdir().unwrap();
         fake::install(dir.path());
         let model = dir.path().join("model.bin");
-        transcribe(dir.path(), &model, vec![0; 64], "", &new_worker(), true).unwrap();
+        transcribe(
+            dir.path(),
+            &model,
+            vec![0; 64],
+            "",
+            "en",
+            &new_worker(),
+            true,
+        )
+        .unwrap();
         let without = fake::last_request(dir.path());
         assert!(!without.contains("name=\"prompt\""));
         let hint = "Vocabulary: podGC, maxGroups.";
-        transcribe(dir.path(), &model, vec![0; 64], hint, &new_worker(), true).unwrap();
+        transcribe(
+            dir.path(),
+            &model,
+            vec![0; 64],
+            hint,
+            "en",
+            &new_worker(),
+            true,
+        )
+        .unwrap();
         let with = fake::last_request(dir.path());
         assert!(with.contains("name=\"prompt\""));
         assert!(with.contains(hint));
@@ -840,6 +1114,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
                 &model,
                 silence(seconds),
                 "",
+                "en",
                 &new_worker(),
                 true,
             )
@@ -877,6 +1152,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             &dir.path().join("model.bin"),
             vec![0; 64],
             "",
+            "en",
             &new_worker(),
             true,
         )
@@ -887,7 +1163,18 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     #[test]
     fn recognition_models_are_chosen_by_id_and_pinned() {
         let ids: Vec<_> = RECOGNIZERS.iter().map(|m| m.id).collect();
-        assert_eq!(ids, ["tiny.en", "base.en", "small.en"]);
+        assert_eq!(
+            ids,
+            [
+                "tiny.en",
+                "base.en",
+                "small.en",
+                "tiny",
+                "base",
+                "small",
+                "large-v3-turbo"
+            ]
+        );
         assert_eq!(recognizer("small.en").unwrap().name, "ggml-small.en.bin");
         assert!(recognizer("large-v3").is_none());
         let mut all: Vec<_> = MODELS.iter().map(|m| m.id).collect();
@@ -905,6 +1192,565 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         }
         assert_eq!(RECOGNIZERS[2].size, 487614201);
         assert_eq!(VAD.size, 885098);
+    }
+    /// Sizes and SHA-256 values from the Hugging Face listing of `ggerganov/whisper.cpp`
+    /// at the pinned revision, checked when each row was added.
+    #[test]
+    fn multilingual_whisper_rows_match_the_pinned_listing() {
+        let listing = [
+            (
+                "tiny",
+                "ggml-tiny.bin",
+                77691713,
+                "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+            ),
+            (
+                "base",
+                "ggml-base.bin",
+                147951465,
+                "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+            ),
+            (
+                "small",
+                "ggml-small.bin",
+                487601967,
+                "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+            ),
+            (
+                "large-v3-turbo",
+                "ggml-large-v3-turbo-q5_0.bin",
+                574041195,
+                "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+            ),
+        ];
+        for (id, name, size, sha256) in listing {
+            let model = recognizer(id).unwrap_or_else(|| panic!("{id} is missing"));
+            assert_eq!(model.name, name);
+            assert_eq!(model.size, size, "{id}");
+            assert_eq!(model.sha256, sha256, "{id}");
+            assert_eq!(
+                model.url,
+                format!(
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/{name}"
+                )
+            );
+            assert_eq!(model.engine, Some(Kind::Whisper));
+        }
+    }
+    /// `n_vocab` in the ggml header decides the language count: 51865 is 99 languages and
+    /// 51866 is 100. Cantonese (`yue`, id 99) exists only in the 100-language models, so
+    /// on the others its id selects the translate token. Read from the pinned files.
+    #[test]
+    fn only_large_v3_turbo_lists_cantonese_and_the_other_multilingual_models_list_99_languages() {
+        use crate::languages::LANGUAGES;
+        let all: Vec<_> = LANGUAGES.iter().map(|l| l.code).collect();
+        assert_eq!(all.last(), Some(&"yue"));
+        for model in RECOGNIZERS {
+            match model.id {
+                id if id.ends_with(".en") => assert_eq!(model.languages, ["en"], "{id}"),
+                "large-v3-turbo" => {
+                    assert_eq!(model.languages, all, "{}", model.id);
+                    assert!(model.supports("yue"));
+                }
+                id => {
+                    assert_eq!(model.languages, &all[..99], "{id}");
+                    assert!(!model.supports("yue"), "{id}");
+                    assert!(model.supports("fr") && model.supports("auto"), "{id}");
+                }
+            }
+        }
+    }
+    #[test]
+    fn the_smallest_model_for_a_language_is_the_smallest_download_that_supports_it() {
+        assert_eq!(smallest_supporting("fr").unwrap().id, "tiny");
+        assert_eq!(smallest_supporting("auto").unwrap().id, "tiny");
+        assert_eq!(smallest_supporting("yue").unwrap().id, "large-v3-turbo");
+        assert!(smallest_supporting("xx").is_none());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn the_recognizer_receives_the_language_with_each_request() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let model = dir.path().join("model.bin");
+        for language in ["fr", "auto"] {
+            transcribe(
+                dir.path(),
+                &model,
+                vec![0; 64],
+                "",
+                language,
+                &new_worker(),
+                true,
+            )
+            .unwrap();
+            let request = fake::last_request(dir.path());
+            assert!(
+                request.contains(&format!("name=\"language\"\r\n\r\n{language}\r\n")),
+                "{request}"
+            );
+        }
+        shutdown(dir.path());
+    }
+    fn cleanup_request(
+        language: &str,
+        enhanced: &str,
+        endpoint: &str,
+        dir: &Path,
+    ) -> Result<String, String> {
+        let mut snapshot = Snapshot {
+            language: language.into(),
+            ..Default::default()
+        };
+        snapshot.cleanup.enhanced = enhanced.into();
+        snapshot.cleanup.endpoint = endpoint.into();
+        enhanced_cleanup(CleanupRequest {
+            workers: dir,
+            data: dir,
+            snapshot: &snapshot,
+            raw: "hello there",
+            worker: &new_worker(),
+            cpu: true,
+        })
+    }
+    use super::enhanced as enhanced_cleanup;
+    const ENGLISH_ONLY: &str = "Managed cleanup supports English only; using Basic";
+    /// Answers one chat-completions request on a loopback port, as a local cleanup server would.
+    fn serve_cleanup(answer: &'static str) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!(
+            "http://127.0.0.1:{}/v1/chat/completions",
+            listener.local_addr().unwrap().port()
+        );
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = vec![];
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).unwrap();
+                request.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(str::to_owned)
+                        })
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+                assert!(n > 0, "request ended early");
+            }
+            let body = json!({"choices": [{"message": {"content": answer}}]}).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        (endpoint, thread)
+    }
+    /// Behavior table row "Managed S1-mini cleanup".
+    #[test]
+    fn managed_cleanup_is_available_in_english() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(managed_cleanup_supported("en"));
+        // English proceeds to the worker, which is missing here.
+        let error = cleanup_request("en", "managed", "", dir.path()).unwrap_err();
+        assert!(
+            error.starts_with("Bundled inference worker is missing"),
+            "{error}"
+        );
+    }
+    #[test]
+    fn managed_cleanup_falls_back_to_basic_with_a_status_in_another_language() {
+        let dir = tempfile::tempdir().unwrap();
+        for language in ["de", "pt", "yue"] {
+            assert!(!managed_cleanup_supported(language), "{language}");
+            let error = cleanup_request(language, "managed", "", dir.path()).unwrap_err();
+            assert_eq!(error, ENGLISH_ONLY, "{language}");
+        }
+    }
+    #[test]
+    fn managed_cleanup_falls_back_to_basic_with_a_status_in_auto_detect() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!managed_cleanup_supported("auto"));
+        let error = cleanup_request("auto", "managed", "", dir.path()).unwrap_err();
+        assert_eq!(error, ENGLISH_ONLY);
+    }
+    /// Behavior table row "Local or remote cleanup endpoint". A local endpoint answers in
+    /// every column. A remote one needs HTTPS and the user's confirmation, which no language
+    /// changes, so the test checks that language never produces the English-only status.
+    fn local_endpoint_answers(language: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let (endpoint, server) = serve_cleanup("Hello there.");
+        let result = cleanup_request(language, "local", &endpoint, dir.path());
+        server.join().unwrap();
+        assert_eq!(result.unwrap(), "Hello there.", "{language}");
+    }
+    #[test]
+    fn a_local_cleanup_endpoint_answers_in_english() {
+        local_endpoint_answers("en");
+    }
+    #[test]
+    fn a_local_cleanup_endpoint_answers_in_another_language() {
+        local_endpoint_answers("de");
+    }
+    #[test]
+    fn a_local_cleanup_endpoint_answers_in_auto_detect() {
+        local_endpoint_answers("auto");
+    }
+    #[test]
+    fn a_remote_cleanup_endpoint_is_judged_by_its_own_rules_in_every_language() {
+        let dir = tempfile::tempdir().unwrap();
+        for language in ["en", "de", "auto"] {
+            let error = cleanup_request(language, "remote", "https://example.com/v1", dir.path())
+                .unwrap_err();
+            assert_eq!(error, "Remote cleanup is disabled", "{language}");
+        }
+    }
+    fn language_field(request: &str, value: &str) -> bool {
+        request.contains(&format!("name=\"language\"\r\n\r\n{value}\r\n"))
+    }
+    #[cfg(unix)]
+    #[test]
+    fn an_auto_request_asks_for_the_detected_language_and_other_requests_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        fake::reply(dir.path(), r#"{"text":"guten tag","language":"german"}"#);
+        let model = dir.path().join("model.bin");
+        let auto = recognize(
+            dir.path(),
+            &model,
+            vec![0; 64],
+            "",
+            "auto",
+            &new_worker(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(auto.text, "guten tag");
+        assert_eq!(auto.language.as_deref(), Some("de"));
+        let request = fake::last_request(dir.path());
+        assert!(language_field(&request, "auto"), "{request}");
+        assert!(request.contains("name=\"response_format\"\r\n\r\nverbose_json\r\n"));
+        assert!(request.contains("name=\"no_language_probabilities\"\r\n\r\ntrue\r\n"));
+        let fixed = recognize(
+            dir.path(),
+            &model,
+            vec![0; 64],
+            "",
+            "fr",
+            &new_worker(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(fixed.language, None);
+        let request = fake::last_request(dir.path());
+        assert!(request.contains("name=\"response_format\"\r\n\r\njson\r\n"));
+        assert!(!request.contains("no_language_probabilities"));
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    fn chunk_recognizer(dir: &Path, language: &str) -> ChunkRecognizer {
+        ChunkRecognizer::new(
+            language,
+            dir,
+            &dir.join("model.bin"),
+            "",
+            &new_worker(),
+            true,
+        )
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_recording_reuses_the_language_its_first_chunk_with_speech_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let recording = chunk_recognizer(dir.path(), "auto");
+        let send = |reply: &str| {
+            fake::reply(dir.path(), reply);
+            let text = recording.transcribe(vec![0; 64]).unwrap();
+            (text, fake::last_request(dir.path()))
+        };
+        // A chunk without speech detects nothing worth keeping.
+        let (text, request) = send(r#"{"text":"","language":"french"}"#);
+        assert_eq!(text, "");
+        assert!(language_field(&request, "auto"));
+        let (text, request) = send(r#"{"text":"guten tag","language":"german"}"#);
+        assert_eq!(text, "guten tag");
+        assert!(language_field(&request, "auto"));
+        // Later chunks reuse German even when the recognizer would now say French.
+        let (_, request) = send(r#"{"text":"ok","language":"french"}"#);
+        assert!(language_field(&request, "de"), "{request}");
+        let (_, request) = send(r#"{"text":"ok","language":"french"}"#);
+        assert!(language_field(&request, "de"), "{request}");
+        // The next recording starts with detection again.
+        let next = chunk_recognizer(dir.path(), "auto");
+        fake::reply(dir.path(), r#"{"text":"salut","language":"french"}"#);
+        next.transcribe(vec![0; 64]).unwrap();
+        assert!(language_field(&fake::last_request(dir.path()), "auto"));
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_speculative_chunk_uses_the_language_but_never_sets_it() {
+        // A speculation recognizes only the start of a chunk that is still being spoken, which
+        // is too short to detect from reliably.
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let recording = chunk_recognizer(dir.path(), "auto");
+        let run = |reply: &str, speculative: bool| {
+            fake::reply(dir.path(), reply);
+            if speculative {
+                recording.transcribe_speculative(vec![0; 64]).unwrap();
+            } else {
+                recording.transcribe(vec![0; 64]).unwrap();
+            }
+            fake::last_request(dir.path())
+        };
+        let request = run(r#"{"text":"salut","language":"french"}"#, true);
+        assert!(language_field(&request, "auto"));
+        let request = run(r#"{"text":"salut","language":"french"}"#, true);
+        assert!(
+            language_field(&request, "auto"),
+            "a speculation must not lock"
+        );
+        let request = run(r#"{"text":"guten tag","language":"german"}"#, false);
+        assert!(language_field(&request, "auto"));
+        let request = run(r#"{"text":"ok","language":"french"}"#, true);
+        assert!(
+            language_field(&request, "de"),
+            "a speculation reuses the lock"
+        );
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn only_a_chunk_with_text_and_a_known_language_sets_the_language() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let recording = chunk_recognizer(dir.path(), "auto");
+        let attempt = |reply: &str| {
+            fake::reply(dir.path(), reply);
+            let result = recording.transcribe(vec![0; 64]);
+            (result, fake::last_request(dir.path()))
+        };
+        // Text that is only whitespace has no speech to detect from.
+        let (result, _) = attempt("{\"text\":\" \\n \",\"language\":\"french\"}");
+        assert_eq!(result.unwrap(), "");
+        // The recognizer named a language that is not in the table.
+        let (result, _) = attempt(r#"{"text":"qapla","language":"klingon"}"#);
+        assert_eq!(result.unwrap(), "qapla");
+        // The request failed.
+        let (result, _) = attempt("not json");
+        assert!(result.is_err());
+        // Every one of those left the language open.
+        let (_, request) = attempt(r#"{"text":"bonjour","language":"french"}"#);
+        assert!(language_field(&request, "auto"), "{request}");
+        let (_, request) = attempt(r#"{"text":"salut","language":"german"}"#);
+        assert!(language_field(&request, "fr"), "{request}");
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_chosen_language_is_never_replaced_by_a_detected_one() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        fake::reply(dir.path(), r#"{"text":"hola","language":"german"}"#);
+        let recording = chunk_recognizer(dir.path(), "es");
+        for _ in 0..2 {
+            recording.transcribe(vec![0; 64]).unwrap();
+            assert!(language_field(&fake::last_request(dir.path()), "es"));
+        }
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn the_recognizer_starts_without_a_fixed_language() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        run(dir.path(), &new_worker());
+        let args = fake::arguments(dir.path());
+        assert!(!args.iter().any(|a| a == "--language"), "{args:?}");
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn changing_the_language_reuses_the_recognizer_process() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let model = dir.path().join("model.bin");
+        let first = transcribe(
+            dir.path(),
+            &model,
+            vec![0; 64],
+            "",
+            "en",
+            &new_worker(),
+            true,
+        )
+        .unwrap();
+        let second = transcribe(
+            dir.path(),
+            &model,
+            vec![0; 64],
+            "",
+            "de",
+            &new_worker(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(fake::starts(dir.path()), 1);
+        shutdown(dir.path());
+    }
+    /// `g_lang` in `src/whisper.cpp` at the revision `scripts/build-runtimes.py` pins,
+    /// as `code:name` in table order, with `_` for spaces.
+    const WHISPER_TABLE: &str = concat!(
+        "en:english zh:chinese de:german es:spanish ru:russian ko:korean fr:french ja:japanese ",
+        "pt:portuguese tr:turkish pl:polish ca:catalan nl:dutch ar:arabic sv:swedish it:italian ",
+        "id:indonesian hi:hindi fi:finnish vi:vietnamese he:hebrew uk:ukrainian el:greek ms:malay ",
+        "cs:czech ro:romanian da:danish hu:hungarian ta:tamil no:norwegian th:thai ur:urdu ",
+        "hr:croatian bg:bulgarian lt:lithuanian la:latin mi:maori ml:malayalam cy:welsh sk:slovak ",
+        "te:telugu fa:persian lv:latvian bn:bengali sr:serbian az:azerbaijani sl:slovenian ",
+        "kn:kannada et:estonian mk:macedonian br:breton eu:basque is:icelandic hy:armenian ",
+        "ne:nepali mn:mongolian bs:bosnian kk:kazakh sq:albanian sw:swahili gl:galician ",
+        "mr:marathi pa:punjabi si:sinhala km:khmer sn:shona yo:yoruba so:somali af:afrikaans ",
+        "oc:occitan ka:georgian be:belarusian tg:tajik sd:sindhi gu:gujarati am:amharic ",
+        "yi:yiddish lo:lao uz:uzbek fo:faroese ht:haitian_creole ps:pashto tk:turkmen nn:nynorsk ",
+        "mt:maltese sa:sanskrit lb:luxembourgish my:myanmar bo:tibetan tl:tagalog mg:malagasy ",
+        "as:assamese tt:tatar haw:hawaiian ln:lingala ha:hausa ba:bashkir jw:javanese ",
+        "su:sundanese yue:cantonese"
+    );
+    #[test]
+    fn the_language_table_is_the_whisper_cpp_table() {
+        use crate::languages::LANGUAGES;
+        let expected: Vec<_> = WHISPER_TABLE.split(' ').collect();
+        assert_eq!(expected.len(), 100);
+        let actual: Vec<_> = LANGUAGES
+            .iter()
+            .map(|l| {
+                let (code, name) = (l.code, l.name.to_lowercase().replace(' ', "_"));
+                format!("{code}:{name}")
+            })
+            .collect();
+        assert_eq!(actual, expected);
+        for language in LANGUAGES {
+            assert!(
+                language
+                    .name
+                    .split(' ')
+                    .all(|word| word.starts_with(|c: char| c.is_ascii_uppercase())),
+                "{}",
+                language.name
+            );
+        }
+        assert_eq!(LANGUAGES[0].name, "English");
+        assert!(!LANGUAGES.iter().any(|l| l.code == "auto"));
+    }
+    #[test]
+    fn every_model_declares_its_engine_and_languages() {
+        use crate::languages::LANGUAGES;
+        for model in RECOGNIZERS {
+            assert!(!model.languages.is_empty(), "{}", model.id);
+            assert_eq!(model.engine, Some(Kind::Whisper), "{}", model.id);
+            assert!(
+                !model.label.is_empty() && !model.note.is_empty(),
+                "{}",
+                model.id
+            );
+            let mut codes = model.languages.to_vec();
+            codes.sort();
+            codes.dedup();
+            assert_eq!(codes.len(), model.languages.len(), "{}", model.id);
+            for code in model.languages {
+                assert!(LANGUAGES.iter().any(|l| l.code == *code), "{}", code);
+            }
+            if model.id.ends_with(".en") {
+                assert_eq!(model.languages, ["en"], "{}", model.id);
+            }
+        }
+        assert_eq!(CLEANUP.engine, Some(Kind::Llama));
+        assert_eq!(CLEANUP.languages, ["en"]);
+        assert_eq!(VAD.engine, None);
+        assert!(VAD.languages.is_empty());
+    }
+    #[test]
+    fn auto_is_valid_only_for_a_model_with_more_than_one_language() {
+        for model in RECOGNIZERS {
+            assert_eq!(
+                model.supports("auto"),
+                model.languages.len() > 1,
+                "{}",
+                model.id
+            );
+            assert!(model.supports("en"), "{}", model.id);
+            assert!(!model.supports(""), "{}", model.id);
+            assert!(!model.supports("xx"), "{}", model.id);
+        }
+        let english = recognizer("small.en").unwrap();
+        assert!(!english.supports("fr"));
+        assert!(!english.supports("auto"));
+        let multilingual = Model {
+            languages: &["en", "fr"],
+            ..english
+        };
+        assert!(multilingual.supports("auto"));
+        assert!(multilingual.supports("fr"));
+        assert!(!multilingual.supports("de"));
+    }
+    #[test]
+    fn the_catalog_gives_the_interface_each_models_metadata_and_install_state() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("ggml-base.en.bin"), b"x").unwrap();
+        let catalog = serde_json::to_value(catalog(dir.path())).unwrap();
+        let ids: Vec<_> = catalog
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "tiny.en",
+                "base.en",
+                "small.en",
+                "tiny",
+                "base",
+                "small",
+                "large-v3-turbo",
+                "silero-vad",
+                "s1-mini"
+            ]
+        );
+        assert_eq!(catalog[3]["label"], "Tiny (multilingual)");
+        assert_eq!(catalog[3]["languages"].as_array().unwrap().len(), 99);
+        assert_eq!(catalog[6]["languages"].as_array().unwrap().len(), 100);
+        assert_eq!(
+            catalog[0],
+            json!({
+                "id": "tiny.en",
+                "label": "Tiny (English)",
+                "note": "Fastest",
+                "size": 77704715,
+                "engine": "whisper",
+                "languages": ["en"],
+                "ready": false,
+            })
+        );
+        assert_eq!(catalog[1]["ready"], true);
+        assert_eq!(catalog[7]["engine"], Value::Null);
+        assert_eq!(catalog[8]["engine"], "llama");
+        assert_eq!(catalog[8]["label"], "S1-mini by Superwhisper");
     }
     #[test]
     fn downloading_a_recognizer_also_fetches_the_missing_voice_detection_model() {
@@ -969,6 +1815,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
                 &dir.path().join("model.bin"),
                 vec![0; 64],
                 "",
+                "en",
                 &cancelled,
                 true
             )

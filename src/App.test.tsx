@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import App from "./App";
 import { IndicatorView } from "./RecordingIndicator";
+import { LANGUAGES, catalog } from "./testModels";
 const ipc = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: ipc }));
 const events = vi.hoisted(() => ({
@@ -32,6 +33,7 @@ const fixture = () => ({
     hotkey: "Control+Space",
     activation: "push",
     recognizer: "tiny.en",
+    language: "en",
     auto_paste: true,
     auto_accept_suggestions: false,
     keep_history: false,
@@ -39,7 +41,7 @@ const fixture = () => ({
     show_overlay: true,
     check_updates: true,
     cleanup: {
-      fillers: ["um", "uh"],
+      fillers: { en: ["um", "uh"] } as Record<string, string[]>,
       excluded: [],
       enhanced: "disabled",
       endpoint: "",
@@ -52,13 +54,8 @@ const fixture = () => ({
   error: "",
   indexes: [],
   history_revision: 0,
-  models: [
-    ["tiny.en", false],
-    ["base.en", false],
-    ["small.en", false],
-    ["silero-vad", false],
-    ["s1-mini", false],
-  ] as [string, boolean][],
+  models: catalog(),
+  languages: LANGUAGES,
   accessibility: false,
   microphone: "unknown",
   platform: "macos",
@@ -72,7 +69,7 @@ let view = fixture();
 let holdDownload: Promise<void> | null = null;
 const install = (...ids: string[]) =>
   view.models.forEach((model) => {
-    if (ids.includes(model[0])) model[1] = true;
+    if (ids.includes(model.id)) model.ready = true;
   });
 beforeEach(() => {
   view = fixture();
@@ -206,7 +203,7 @@ it("keeps unsaved Settings edits when the setup card saves a recognition model",
     expect(ipc).toHaveBeenCalledWith("save_settings", {
       settings: expect.objectContaining({
         recognizer: "base.en",
-        cleanup: expect.objectContaining({ fillers: ["um", "uh"] }),
+        cleanup: expect.objectContaining({ fillers: { en: ["um", "uh"] } }),
       }),
     }),
   );
@@ -235,6 +232,10 @@ it("lets the user choose a larger recognition model, download it, and save the c
     "tiny.en",
     "base.en",
     "small.en",
+    "tiny",
+    "base",
+    "small",
+    "large-v3-turbo",
   ]);
   fireEvent.change(choice, { target: { value: "small.en" } });
   fireEvent.click(
@@ -713,6 +714,359 @@ it("has no separate list of local models; every download sits beside its menu", 
   expect(screen.getByText("Licenses and acknowledgments")).toBeTruthy();
   expect(screen.getByText(/core dictation works offline/i)).toBeTruthy();
 });
+it("builds the recognition model menu from the models the view returns", async () => {
+  view.models[0].label = "Tiny (from the catalog)";
+  view.models[0].note = "Quick";
+  view.models.splice(3, 0, {
+    id: "extra.en",
+    label: "Extra (English)",
+    note: "Experimental",
+    size: 2_000_000_000,
+    engine: "whisper",
+    languages: ["en"],
+    ready: false,
+  });
+  render(<App />);
+  await openSettings();
+  const menu = (await screen.findByRole("combobox", {
+    name: "Recognition model",
+  })) as HTMLSelectElement;
+  expect(Array.from(menu.options).map((option) => option.textContent)).toEqual([
+    "Tiny (from the catalog) - 77.7 MB - Quick",
+    "Base (English) - 148.0 MB - Balanced",
+    "Small (English) - 487.6 MB - Most accurate",
+    "Extra (English) - 2000.0 MB - Experimental",
+    "Tiny (multilingual) - 77.7 MB - Fastest",
+    "Base (multilingual) - 148.0 MB - Balanced",
+    "Small (multilingual) - 487.6 MB - Accurate",
+    "Large Turbo (multilingual) - 574.0 MB - Most accurate",
+  ]);
+  fireEvent.change(menu, { target: { value: "extra.en" } });
+  expect(
+    screen.getByRole("button", { name: "Download Extra (English), 2000.0 MB" }),
+  ).toBeTruthy();
+});
+const menuOptions = (name: string) =>
+  Array.from(
+    (screen.getByRole("combobox", { name }) as HTMLSelectElement).options,
+  );
+it("lists Auto-detect first, then English, then every other language by name", async () => {
+  render(<App />);
+  await openSettings();
+  const menu = (await screen.findByRole("combobox", {
+    name: "Language",
+  })) as HTMLSelectElement;
+  expect(menu.value).toBe("en");
+  expect(menuOptions("Language").map((option) => option.textContent)).toEqual([
+    "Auto-detect",
+    "English",
+    "Cantonese",
+    "Chinese",
+    "French",
+    "German",
+  ]);
+  expect(menuOptions("Language").map((option) => option.value)).toEqual([
+    "auto",
+    "en",
+    "yue",
+    "zh",
+    "fr",
+    "de",
+  ]);
+  expect(menuOptions("Language").every((option) => !option.disabled)).toBe(
+    true,
+  );
+});
+it("offers Auto-detect only while a multilingual model exists", async () => {
+  view.models = view.models.filter(
+    (model) => model.engine !== "whisper" || model.languages.length === 1,
+  );
+  render(<App />);
+  await openSettings();
+  await screen.findByRole("combobox", { name: "Language" });
+  expect(menuOptions("Language").map((option) => option.value)).not.toContain(
+    "auto",
+  );
+});
+it("switches an English-only model to Small when Auto-detect is chosen and keeps a multilingual one", async () => {
+  render(<App />);
+  await openSettings();
+  await chooseLanguage("auto");
+  expect(
+    menuOptions("Recognition model").map((option) => option.value),
+  ).toEqual(["tiny", "base", "small", "large-v3-turbo"]);
+  expect(
+    (
+      screen.getByRole("combobox", {
+        name: "Recognition model",
+      }) as HTMLSelectElement
+    ).value,
+  ).toBe("small");
+  fireEvent.change(
+    screen.getByRole("combobox", { name: "Recognition model" }),
+    {
+      target: { value: "base" },
+    },
+  );
+  await chooseLanguage("fr");
+  await chooseLanguage("auto");
+  expect(
+    (
+      screen.getByRole("combobox", {
+        name: "Recognition model",
+      }) as HTMLSelectElement
+    ).value,
+  ).toBe("base");
+  const saved = await savedSettings();
+  expect(saved.language).toBe("auto");
+  expect(saved.recognizer).toBe("base");
+});
+it("chooses Auto-detect on the setup card and saves it with a multilingual model at once", async () => {
+  render(<App />);
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "auto" },
+  });
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({
+        language: "auto",
+        recognizer: "small",
+      }),
+    }),
+  );
+});
+it("shows only the models that support the chosen language and switches an unsupported model to Small", async () => {
+  render(<App />);
+  await openSettings();
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "fr" },
+  });
+  expect(
+    menuOptions("Recognition model").map((option) => option.value),
+  ).toEqual(["tiny", "base", "small", "large-v3-turbo"]);
+  expect(
+    (
+      screen.getByRole("combobox", {
+        name: "Recognition model",
+      }) as HTMLSelectElement
+    ).value,
+  ).toBe("small");
+});
+const tokens = () =>
+  screen.getByLabelText("Hesitation tokens") as HTMLInputElement;
+const chooseLanguage = async (code: string) =>
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: code },
+  });
+it("edits the hesitation tokens of the selected language and keeps the other lists", async () => {
+  render(<App />);
+  await openSettings();
+  await screen.findByLabelText("Hesitation tokens");
+  expect(tokens().value).toBe("um,uh");
+  expect(tokens().disabled).toBe(false);
+  await chooseLanguage("fr");
+  expect(tokens().value).toBe("");
+  fireEvent.change(tokens(), { target: { value: "euh,ben" } });
+  await chooseLanguage("en");
+  expect(tokens().value).toBe("um,uh");
+  await chooseLanguage("fr");
+  expect(tokens().value).toBe("euh,ben");
+  const saved = await savedSettings();
+  expect(saved.cleanup.fillers).toEqual({
+    en: ["um", "uh"],
+    fr: ["euh", "ben"],
+  });
+});
+it("shows Auto-detect in the Language menu when that is the saved language", async () => {
+  view.settings.language = "auto";
+  view.settings.recognizer = "small";
+  render(<App />);
+  await openSettings();
+  const menu = (await screen.findByRole("combobox", {
+    name: "Language",
+  })) as HTMLSelectElement;
+  expect(menu.value).toBe("auto");
+  expect(menu.selectedOptions[0].textContent).toBe("Auto-detect");
+  expect(Array.from(menu.options).map((option) => option.value)).toEqual([
+    "auto",
+    "en",
+    "yue",
+    "zh",
+    "fr",
+    "de",
+  ]);
+  fireEvent.change(menu, { target: { value: "fr" } });
+  expect(menu.value).toBe("fr");
+  expect(Array.from(menu.options).map((option) => option.value)).toContain(
+    "auto",
+  );
+});
+it("warns that Auto-detect is less reliable for short recordings and says the first chunk sets the language", async () => {
+  render(<App />);
+  await openSettings();
+  await screen.findByRole("combobox", { name: "Language" });
+  expect(screen.queryByText(/auto-detect is less reliable/i)).toBeNull();
+  await chooseLanguage("auto");
+  expect(
+    screen.getByText(
+      /auto-detect is less reliable for recordings under a few seconds.*first chunk/i,
+    ),
+  ).toBeTruthy();
+  await chooseLanguage("fr");
+  expect(screen.queryByText(/auto-detect is less reliable/i)).toBeNull();
+});
+it("disables the Hesitation tokens row for Auto-detect and says why", async () => {
+  view.settings.language = "auto";
+  view.settings.recognizer = "small";
+  render(<App />);
+  await openSettings();
+  await screen.findByLabelText("Hesitation tokens");
+  expect(tokens().disabled).toBe(true);
+  expect(tokens().value).toBe("");
+  expect(screen.getByText(/auto-detect removes none/i)).toBeTruthy();
+});
+it("says that managed S1-mini cleanup and spelled-letter matching are English only", async () => {
+  render(<App />);
+  await openSettings();
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Enhanced cleanup" }),
+    { target: { value: "managed" } },
+  );
+  expect(screen.queryByText(/supports English only/i)).toBeNull();
+  expect(screen.queryByText(/spelled-letter matching/i)).toBeNull();
+  await chooseLanguage("fr");
+  expect(
+    screen.getByText(/managed s1-mini supports english only.*basic cleanup/i),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(/spelled-letter matching.*english only/i),
+  ).toBeTruthy();
+  await chooseLanguage("en");
+  expect(screen.queryByText(/supports English only/i)).toBeNull();
+  expect(screen.queryByText(/spelled-letter matching/i)).toBeNull();
+});
+it("explains the Basic cleanup fallback for Auto-detect when managed cleanup is chosen", async () => {
+  view.settings.language = "auto";
+  view.settings.recognizer = "small";
+  view.settings.cleanup.enhanced = "managed";
+  render(<App />);
+  await openSettings();
+  expect(
+    await screen.findByText(/managed s1-mini supports english only/i),
+  ).toBeTruthy();
+});
+it("switches to Large Turbo for Cantonese, the only model that has it", async () => {
+  view.settings.recognizer = "small";
+  render(<App />);
+  await openSettings();
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "yue" },
+  });
+  expect(
+    menuOptions("Recognition model").map((option) => option.value),
+  ).toEqual(["large-v3-turbo"]);
+  expect(
+    (
+      screen.getByRole("combobox", {
+        name: "Recognition model",
+      }) as HTMLSelectElement
+    ).value,
+  ).toBe("large-v3-turbo");
+});
+it("keeps a valid language and model pair when the setup card saves a model while Settings holds an unsaved language", async () => {
+  render(<App />);
+  await openSettings();
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "fr" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Recognition model" }),
+    { target: { value: "base.en" } },
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({
+        language: "en",
+        recognizer: "base.en",
+      }),
+    }),
+  );
+  await openSettings();
+  expect(
+    (screen.getByRole("combobox", { name: "Language" }) as HTMLSelectElement)
+      .value,
+  ).toBe("fr");
+  const model = screen.getByRole("combobox", {
+    name: "Recognition model",
+  }) as HTMLSelectElement;
+  expect(Array.from(model.options).map((option) => option.value)).toContain(
+    model.value,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  const saves = () =>
+    ipc.mock.calls.filter(([name]) => name === "save_settings");
+  await waitFor(() => expect(saves()).toHaveLength(2));
+  const saved = saves()[1][1].settings as typeof view.settings;
+  expect(saved.language).toBe("fr");
+  expect(saved.recognizer).toBe("small");
+});
+it("keeps the model when it supports the new language and saves the language with it", async () => {
+  view.settings.language = "fr";
+  view.settings.recognizer = "base";
+  render(<App />);
+  await openSettings();
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "de" },
+  });
+  expect(
+    (
+      screen.getByRole("combobox", {
+        name: "Recognition model",
+      }) as HTMLSelectElement
+    ).value,
+  ).toBe("base");
+  const saved = await savedSettings();
+  expect(saved.language).toBe("de");
+  expect(saved.recognizer).toBe("base");
+});
+it("switches to Small (English) when the language returns to English and the model lacks it", async () => {
+  view.models.find((model) => model.id === "tiny.en")!.languages = ["fr"];
+  render(<App />);
+  await openSettings();
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "fr" },
+  });
+  fireEvent.change(screen.getByRole("combobox", { name: "Language" }), {
+    target: { value: "en" },
+  });
+  expect(
+    (
+      screen.getByRole("combobox", {
+        name: "Recognition model",
+      }) as HTMLSelectElement
+    ).value,
+  ).toBe("small.en");
+});
+it("chooses the language on the setup card and saves it with its model at once", async () => {
+  render(<App />);
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "fr" },
+  });
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: expect.objectContaining({
+        language: "fr",
+        recognizer: "small",
+      }),
+    }),
+  );
+  expect(
+    await screen.findByRole("button", {
+      name: "Download Small (multilingual), 487.6 MB",
+    }),
+  ).toBeTruthy();
+});
 it("marks installed recognition models in the menu and confirms the selected one is installed", async () => {
   install("tiny.en", "base.en", "silero-vad");
   render(<App />);
@@ -724,6 +1078,10 @@ it("marks installed recognition models in the menu and confirms the selected one
     "Tiny (English) - Installed - Fastest",
     "Base (English) - Installed - Balanced",
     "Small (English) - 487.6 MB - Most accurate",
+    "Tiny (multilingual) - 77.7 MB - Fastest",
+    "Base (multilingual) - 148.0 MB - Balanced",
+    "Small (multilingual) - 487.6 MB - Accurate",
+    "Large Turbo (multilingual) - 574.0 MB - Most accurate",
   ]);
   expect(
     screen.getByText(

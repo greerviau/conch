@@ -134,6 +134,38 @@ fn disabled_remote_cleanup_makes_no_request_and_cancellation_prevents_launch() {
     );
     inference::stop(&worker);
 }
+/// The real workers under a directory this test owns. The worker pool is keyed by executable
+/// path and `shutdown` stops every server under a directory, so tests that share the real
+/// `workers` directory would kill each other's servers. Dropping the guard stops this test's
+/// servers, also when the test panics.
+struct IsolatedWorkers(tempfile::TempDir);
+impl IsolatedWorkers {
+    fn new(root: &std::path::Path) -> Self {
+        let source = std::env::var_os("CONCH_TEST_WORKERS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| root.join("src-tauri/workers"));
+        // A relative symlink target would resolve under the temporary directory.
+        let source = std::path::absolute(source).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["whisper-server", "llama-server"] {
+            let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+            let (from, to) = (source.join(&file), dir.path().join(&file));
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&from, &to).unwrap();
+            #[cfg(not(unix))]
+            std::fs::copy(&from, &to).map(drop).unwrap();
+        }
+        Self(dir)
+    }
+    fn path(&self) -> &std::path::Path {
+        self.0.path()
+    }
+}
+impl Drop for IsolatedWorkers {
+    fn drop(&mut self) {
+        inference::shutdown(self.0.path());
+    }
+}
 #[test]
 #[ignore = "Requires locally built workers and explicitly downloaded models"]
 fn offline_workers_recognize_and_clean_without_a_model_server_install() {
@@ -141,15 +173,15 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
         .parent()
         .unwrap();
     let data = root.join(".runtime");
-    let workers = std::env::var_os("CONCH_TEST_WORKERS")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| root.join("src-tauri/workers"));
+    let guard = IsolatedWorkers::new(root);
+    let workers = guard.path().to_path_buf();
     let wav = std::fs::read(data.join("synthetic.wav")).unwrap();
     let raw = inference::transcribe(
         &workers,
         &data.join("ggml-tiny.en.bin"),
         wav,
         "",
+        "en",
         &inference::new_worker(),
         true,
     )
@@ -161,6 +193,7 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
         &data.join("ggml-tiny.en.bin"),
         std::fs::read(data.join("synthetic.wav")).unwrap(),
         "Vocabulary: podGC, maxGroups.",
+        "en",
         &inference::new_worker(),
         true,
     )
@@ -183,6 +216,7 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
             &data.join("ggml-tiny.en.bin"),
             conch_lib::audio::wav(&samples).unwrap(),
             "Vocabulary: podGC, maxGroups.",
+            "en",
             &inference::new_worker(),
             true,
         )
@@ -201,7 +235,6 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
     })
     .unwrap();
     assert!(result.to_lowercase().contains("do not change 12"));
-    inference::shutdown(&workers);
 }
 
 #[test]
@@ -330,4 +363,152 @@ fn vocabulary_snapshots_exclude_unselected_and_missing_repositories_and_keep_pri
     assert!(!next.vocabulary.iter().any(|v| v.repository == "a"));
     assert!(next.vocabulary.iter().any(|v| v.text == "BetaOnly"));
     assert!(captured.vocabulary.iter().any(|v| v.text == "AlphaOnly"));
+}
+
+/// Share of the expected words the recognizer returned, ignoring case and punctuation.
+fn word_overlap(expected: &str, heard: &str) -> f32 {
+    let words = |text: &str| -> Vec<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    let heard = words(heard);
+    let expected = words(expected);
+    expected.iter().filter(|w| heard.contains(w)).count() as f32 / expected.len() as f32
+}
+/// Speech generated with macOS `say` voices tests the plumbing and a rough error
+/// rate. It does not test accents, code-switching, or other speakers.
+#[test]
+#[ignore = "Requires built workers, multilingual Tiny, Silero, and say-generated WAVs in CONCH_TEST_MODELS"]
+fn the_chosen_language_reaches_the_multilingual_recognizer_on_each_request() {
+    let models = std::path::PathBuf::from(
+        std::env::var_os("CONCH_TEST_MODELS").expect("CONCH_TEST_MODELS names the model directory"),
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let guard = IsolatedWorkers::new(root);
+    let workers = guard.path().to_path_buf();
+    let model = models.join("ggml-tiny.bin");
+    let worker = inference::new_worker();
+    let samples = [
+        ("en", "Hello, this is a test of speech recognition."),
+        ("fr", "Bonjour, ceci est un test de reconnaissance vocale."),
+        ("de", "Hallo, das ist ein Test der Spracherkennung."),
+        ("es", "Hola, esto es una prueba de reconocimiento de voz."),
+    ];
+    // One pooled worker serves every language: the language travels with each request.
+    for language in ["en", "fr", "de", "es", "auto"] {
+        for (code, expected) in samples {
+            if language != code && language != "auto" {
+                continue;
+            }
+            let wav = std::fs::read(models.join(format!("{code}.wav"))).unwrap();
+            let heard =
+                inference::transcribe(&workers, &model, wav, "", language, &worker, true).unwrap();
+            let overlap = word_overlap(expected, &heard);
+            eprintln!("{language} on {code}: {overlap:.2} {heard:?}");
+            assert!(overlap >= 0.5, "{language} on {code}: {heard:?}");
+        }
+    }
+}
+
+/// Needs the clips written by `scripts/measure-auto-detect.py generate` in `CONCH_TEST_CLIPS`
+/// and multilingual Small in `CONCH_TEST_MODELS`. Each recording is a sentence followed by a
+/// short phrase of the same language, the way a recording ends with a short tail.
+#[test]
+#[ignore = "Requires built workers, multilingual Small, Silero, and clips from scripts/measure-auto-detect.py"]
+fn the_first_chunks_language_keeps_a_short_tail_in_that_language() {
+    let models = std::path::PathBuf::from(
+        std::env::var_os("CONCH_TEST_MODELS").expect("CONCH_TEST_MODELS names the model directory"),
+    );
+    let clips = std::path::PathBuf::from(
+        std::env::var_os("CONCH_TEST_CLIPS").expect("CONCH_TEST_CLIPS names the clip directory"),
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let guard = IsolatedWorkers::new(root);
+    let workers = guard.path().to_path_buf();
+    let samples: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("scripts/auto-detect-samples.json")).unwrap(),
+    )
+    .unwrap();
+    let model = models.join("ggml-small.bin");
+    let worker = inference::new_worker();
+    let (mut locked_total, mut free_total, mut recordings) = (0.0, 0.0, 0.0);
+    for (language, phrases) in samples["phrases"].as_object().unwrap() {
+        for (index, phrase) in phrases.as_array().unwrap().iter().enumerate() {
+            let sentence =
+                std::fs::read(clips.join(format!("sentence-{language}-{index}.wav"))).unwrap();
+            let tail = std::fs::read(clips.join(format!("phrase-{language}-{index}.wav"))).unwrap();
+            let new =
+                || inference::ChunkRecognizer::new("auto", &workers, &model, "", &worker, false);
+            let recording = new();
+            recording.transcribe(sentence).unwrap();
+            let locked = recording.transcribe(tail.clone()).unwrap();
+            let free = new().transcribe(tail).unwrap();
+            let expected = phrase.as_str().unwrap();
+            let (a, b) = (
+                word_overlap(expected, &locked),
+                word_overlap(expected, &free),
+            );
+            eprintln!("{language} #{index}: locked {a:.2} {locked:?}, detecting {b:.2} {free:?}");
+            locked_total += a;
+            free_total += b;
+            recordings += 1.0;
+        }
+    }
+    eprintln!(
+        "mean word overlap of the tail: locked {:.3}, detecting each chunk {:.3}",
+        locked_total / recordings,
+        free_total / recordings
+    );
+    assert!(locked_total > free_total, "the lock did not help the tails");
+}
+
+/// Without voice detection, multilingual Whisper answers silence and room noise with words such
+/// as "Thank you." The app starts the worker with voice detection, so audio without speech must
+/// come back empty in every language setting.
+#[test]
+#[ignore = "Requires built workers and multilingual Tiny, Base, Small, and Silero in CONCH_TEST_MODELS"]
+fn multilingual_models_return_no_text_for_silence_and_noise() {
+    let models = std::path::PathBuf::from(
+        std::env::var_os("CONCH_TEST_MODELS").expect("CONCH_TEST_MODELS names the model directory"),
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let guard = IsolatedWorkers::new(root);
+    let workers = guard.path().to_path_buf();
+    let mut seed = 1u32;
+    let noise: Vec<f32> = (0..3 * 16_000)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            ((seed >> 16) as f32 / 32_768.0 - 1.0) * 0.004
+        })
+        .collect();
+    let worker = inference::new_worker();
+    for name in ["tiny", "base", "small"] {
+        let model = models.join(format!("ggml-{name}.bin"));
+        for samples in [vec![0.0; 16_000], noise.clone()] {
+            for language in ["auto", "fr", "en"] {
+                for hint in ["", "Vocabulary: podGC, maxGroups."] {
+                    let text = inference::transcribe(
+                        &workers,
+                        &model,
+                        conch_lib::audio::wav(&samples).unwrap(),
+                        hint,
+                        language,
+                        &worker,
+                        false,
+                    )
+                    .unwrap();
+                    assert_eq!(text, "", "{name} {language} hint {hint:?}");
+                }
+            }
+        }
+    }
 }

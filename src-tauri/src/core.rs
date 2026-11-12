@@ -16,7 +16,10 @@ pub struct Vocabulary {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Cleanup {
-    pub fillers: Vec<String>,
+    /// Hesitation tokens by recognition language code. A saved plain list loads as
+    /// the English list. Auto-detect uses none.
+    #[serde(deserialize_with = "fillers_by_language")]
+    pub fillers: std::collections::BTreeMap<String, Vec<String>>,
     pub excluded: Vec<String>,
     /// Enhanced cleanup: `disabled`, `managed`, `local`, or `remote`.
     pub enhanced: String,
@@ -24,10 +27,24 @@ pub struct Cleanup {
     pub model: String,
     pub remote_enabled: bool,
 }
+fn fillers_by_language<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Saved {
+        List(Vec<String>),
+        ByLanguage(std::collections::BTreeMap<String, Vec<String>>),
+    }
+    Ok(match Saved::deserialize(deserializer)? {
+        Saved::List(list) => [("en".to_owned(), list)].into(),
+        Saved::ByLanguage(map) => map,
+    })
+}
 impl Default for Cleanup {
     fn default() -> Self {
         Self {
-            fillers: vec!["um".into(), "uh".into()],
+            fillers: [("en".to_owned(), vec!["um".to_owned(), "uh".to_owned()])].into(),
             excluded: vec![],
             enhanced: "disabled".into(),
             endpoint: String::new(),
@@ -36,13 +53,29 @@ impl Default for Cleanup {
         }
     }
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub mappings: Vec<Mapping>,
     pub vocabulary: Vec<Vocabulary>,
     pub cleanup: Cleanup,
     /// Apply repository suggestions that have one candidate without review.
     pub auto_accept: bool,
+    /// ISO code of the recognition language, or `auto`.
+    pub language: String,
+    /// Id of the recognition model the recording uses.
+    pub recognizer: String,
+}
+impl Default for Snapshot {
+    fn default() -> Self {
+        Self {
+            mappings: vec![],
+            vocabulary: vec![],
+            cleanup: Cleanup::default(),
+            auto_accept: false,
+            language: "en".into(),
+            recognizer: "small.en".into(),
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Suggestion {
@@ -68,6 +101,13 @@ pub struct ResultText {
     pub status: String,
     pub edits: Vec<AppliedEdit>,
 }
+/// Whether two mapping phrases are the same words, ignoring case and spacing by the rule
+/// `phrase_regex` matches with.
+pub fn same_phrase(a: &str, b: &str) -> bool {
+    let words =
+        |text: &str| crate::fold::fold(&text.split_whitespace().collect::<Vec<_>>().join(" "));
+    words(a) == words(b)
+}
 fn phrase_regex(phrase: &str) -> Option<regex::Regex> {
     if phrase.trim().is_empty() {
         return None;
@@ -83,7 +123,7 @@ fn phrase_regex(phrase: &str) -> Option<regex::Regex> {
     .ok()
 }
 fn boundary(text: &str, start: usize, end: usize) -> bool {
-    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let word = crate::fold::is_word;
     !text[..start].chars().next_back().is_some_and(word)
         && !text[end..].chars().next().is_some_and(word)
 }
@@ -119,7 +159,8 @@ impl Masked {
 /// only after a non-word character and closes only before one, so the
 /// apostrophes in "don't ... it's" do not pair up.
 fn quote_spans(text: &str) -> Vec<(usize, usize)> {
-    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let word = crate::fold::is_word;
+    let starts_word = |c: char| c.is_alphanumeric() || c == '_';
     let mut spans = vec![];
     let mut at = 0;
     while let Some(offset) = text[at..].find(['"', '\'', '`']) {
@@ -130,9 +171,10 @@ fn quote_spans(text: &str) -> Vec<(usize, usize)> {
             continue;
         }
         let line_end = text[at..].find('\n').map_or(text.len(), |n| at + n);
-        let close = text[at..line_end]
-            .match_indices(mark)
-            .find(|(i, _)| mark != '\'' || !text[at + i + 1..].chars().next().is_some_and(word));
+        let close = text[at..line_end].match_indices(mark).find(|(i, _)| {
+            // A mark right after the quote attaches to the quote, not to a following word.
+            mark != '\'' || !text[at + i + 1..].chars().next().is_some_and(starts_word)
+        });
         if let Some((i, _)) = close {
             let end = at + i + 1;
             spans.push((start, end));
@@ -150,13 +192,9 @@ pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
         .filter(|m| m.enabled && !m.phrase.trim().is_empty())
     {
         groups
-            .entry(
-                m.phrase
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .to_lowercase(),
-            )
+            .entry(crate::fold::fold(
+                &m.phrase.split_whitespace().collect::<Vec<_>>().join(" "),
+            ))
             .or_default()
             .push(m);
     }
@@ -255,16 +293,16 @@ pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
     out.text.push_str(&raw[at..]);
     out
 }
-pub fn basic(masked: &str, cleanup: &Cleanup) -> String {
-    if cleanup
-        .fillers
-        .iter()
-        .all(|filler| filler.trim().is_empty())
-    {
+pub fn basic(masked: &str, cleanup: &Cleanup, language: &str) -> String {
+    let fillers: &[String] = match cleanup.fillers.get(language) {
+        Some(list) if language != crate::languages::AUTO => list,
+        _ => &[],
+    };
+    if fillers.iter().all(|filler| filler.trim().is_empty()) {
         return masked.into();
     }
     let mut text = masked.to_owned();
-    for filler in &cleanup.fillers {
+    for filler in fillers {
         if let Some(re) = phrase_regex(filler) {
             let spans: Vec<_> = re
                 .find_iter(&text)
@@ -292,14 +330,14 @@ pub fn basic(masked: &str, cleanup: &Cleanup) -> String {
 }
 fn spoken(text: &str) -> String {
     static CAMEL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let camel = CAMEL.get_or_init(|| regex::Regex::new(r"([a-z0-9])([A-Z])").unwrap());
+    let camel = CAMEL.get_or_init(|| regex::Regex::new(r"([\p{Ll}\p{N}\p{M}])(\p{Lu})").unwrap());
     camel
         .replace_all(text, "$1 $2")
-        .split(|c: char| !c.is_alphanumeric())
+        .split(|c: char| !(c.is_alphanumeric() || crate::fold::is_mark(c)))
         .filter(|w| !w.is_empty())
+        .map(crate::fold::fold)
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase()
 }
 /// Adds suggestions for words the recognizer spelled differently from an
 /// indexed term. Where two spans overlap, the closer match wins, then the
@@ -311,7 +349,7 @@ fn add_sound_alikes(
     protected: &[(usize, usize)],
     groups: &mut std::collections::BTreeMap<(usize, usize, bool), Vec<Vocabulary>>,
 ) {
-    let found = crate::spoken::find(text, &snapshot.vocabulary, protected);
+    let found = crate::spoken::find(text, &snapshot.vocabulary, protected, &snapshot.language);
     let mut best = std::collections::BTreeMap::<(usize, usize), usize>::new();
     for m in &found {
         best.entry((m.start, m.end))
@@ -368,7 +406,7 @@ pub fn suggestions(text: &str, snapshot: &Snapshot) -> Vec<Suggestion> {
         if !normalized.contains(&phrase) {
             continue;
         }
-        if phrase == v.text.to_lowercase() {
+        if phrase == crate::fold::fold(&v.text) {
             continue;
         }
         if let Some(re) = phrase_regex(&phrase) {
@@ -395,9 +433,7 @@ pub fn suggestions(text: &str, snapshot: &Snapshot) -> Vec<Suggestion> {
         let alternatives: Vec<_> = snapshot
             .mappings
             .iter()
-            .filter(|a| {
-                a.enabled && a.repository.is_some() && a.phrase.eq_ignore_ascii_case(&m.phrase)
-            })
+            .filter(|a| a.enabled && a.repository.is_some() && same_phrase(&a.phrase, &m.phrase))
             .collect();
         if !alternatives.iter().any(|a| a.replacement != m.replacement) {
             continue;
@@ -491,7 +527,7 @@ pub fn parts_mask_like_whole(parts: &[String], snapshot: &Snapshot) -> bool {
 pub fn prepare(raw: &str, snapshot: &Snapshot) -> ResultText {
     let masked = mask(raw, snapshot);
     let text = masked
-        .restore(&basic(&masked.text, &snapshot.cleanup))
+        .restore(&basic(&masked.text, &snapshot.cleanup, &snapshot.language))
         .unwrap_or_else(|| raw.into());
     let mut result = ResultText {
         raw: raw.into(),
@@ -655,12 +691,13 @@ pub fn mapping_for(result: &ResultText, index: usize, candidate: usize) -> Resul
         .get(candidate)
         .ok_or("Candidate is unavailable")?;
     Ok(Mapping {
-        phrase: suggestion
-            .original
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase(),
+        phrase: crate::fold::fold(
+            &suggestion
+                .original
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
         replacement: candidate.text.clone(),
         repository: Some(candidate.repository.clone()).filter(|id| !id.is_empty()),
         enabled: true,
@@ -933,14 +970,204 @@ mod tests {
         s.cleanup.fillers.clear();
         assert_eq!(prepare("um uh", &s).text, "um uh");
     }
+    fn cleaned(text: &str, language: &str) -> String {
+        let snapshot = Snapshot {
+            language: language.into(),
+            ..Default::default()
+        };
+        prepare(text, &snapshot).text
+    }
     #[test]
-    fn blank_hesitation_tokens_leave_the_transcript_exactly_as_recognized() {
-        let mut s = Snapshot::default();
-        s.cleanup.fillers = vec!["".into(), "  ".into()];
+    fn a_saved_hesitation_list_loads_as_the_english_list() {
+        let legacy: Cleanup = serde_json::from_str(r#"{"fillers":["um","uh","er"]}"#).unwrap();
+        assert_eq!(legacy.fillers.len(), 1);
+        assert_eq!(legacy.fillers["en"], ["um", "uh", "er"]);
+        let per_language: Cleanup =
+            serde_json::from_str(r#"{"fillers":{"en":["um"],"pt":["tipo"]}}"#).unwrap();
+        assert_eq!(per_language.fillers["en"], ["um"]);
+        assert_eq!(per_language.fillers["pt"], ["tipo"]);
+        let untouched: Cleanup = serde_json::from_str(r#"{"enhanced":"local"}"#).unwrap();
+        assert_eq!(untouched.fillers["en"], ["um", "uh"]);
+        let round_trip: Cleanup =
+            serde_json::from_str(&serde_json::to_string(&per_language).unwrap()).unwrap();
+        assert_eq!(round_trip.fillers, per_language.fillers);
+    }
+    #[test]
+    fn english_starts_with_um_and_uh_and_every_other_language_with_none() {
+        let cleanup = Cleanup::default();
+        assert_eq!(cleanup.fillers["en"], ["um", "uh"]);
+        assert_eq!(cleanup.fillers.len(), 1);
+        assert_eq!(cleaned("so um I uh agree", "en"), "so I agree");
+    }
+    #[test]
+    fn portuguese_and_german_keep_um_because_their_token_lists_are_empty() {
+        assert_eq!(cleaned("o um carro", "pt"), "o um carro");
+        assert_eq!(cleaned("um zwölf Uhr uh", "de"), "um zwölf Uhr uh");
+        assert_eq!(cleaned("um carro", "fr"), "um carro");
+    }
+    #[test]
+    fn auto_detect_removes_no_hesitation_token_even_when_english_has_some() {
+        assert_eq!(cleaned("so um I uh agree", "auto"), "so um I uh agree");
+        let mut snapshot = Snapshot {
+            language: "auto".into(),
+            ..Default::default()
+        };
+        snapshot
+            .cleanup
+            .fillers
+            .insert("auto".into(), vec!["um".into()]);
+        assert_eq!(prepare("so um I agree", &snapshot).text, "so um I agree");
+    }
+    #[test]
+    fn hesitation_tokens_are_edited_per_language() {
+        let mut snapshot = Snapshot {
+            language: "pt".into(),
+            ..Default::default()
+        };
+        snapshot
+            .cleanup
+            .fillers
+            .insert("pt".into(), vec!["tipo".into()]);
         assert_eq!(
-            prepare(" um,  hello  ,  uh world ", &s).text,
-            " um,  hello  ,  uh world "
+            prepare("é tipo muito bom, um carro", &snapshot).text,
+            "é muito bom, um carro"
         );
+        snapshot.language = "en".into();
+        assert_eq!(
+            prepare("é tipo muito bom, um carro", &snapshot).text,
+            "é tipo muito bom, carro"
+        );
+        assert_eq!(prepare("um uh tipo", &snapshot).text, "tipo");
+    }
+    #[test]
+    fn a_hesitation_token_with_non_ascii_letters_matches_regardless_of_case() {
+        let mut snapshot = Snapshot {
+            language: "de".into(),
+            ..Default::default()
+        };
+        snapshot
+            .cleanup
+            .fillers
+            .insert("de".into(), vec!["äh".into()]);
+        assert_eq!(prepare("also ÄH ja äh gut", &snapshot).text, "also ja gut");
+    }
+    #[test]
+    fn the_spoken_form_of_an_identifier_splits_camel_case_at_any_uppercase_letter() {
+        assert_eq!(spoken("podGC"), "pod gc");
+        assert_eq!(spoken("grünÄpfel"), "grün äpfel");
+        assert_eq!(spoken("straßeÖl2Ärger"), "straße öl2 ärger");
+    }
+    #[test]
+    fn mapping_phrases_compare_equal_when_only_their_non_ascii_case_differs() {
+        assert!(same_phrase("Äpfel", "äpfel"));
+        assert!(same_phrase("pod GC", "POD gc"));
+        assert!(!same_phrase("Äpfel", "Apfel"));
+    }
+    fn in_language(language: &str) -> Snapshot {
+        Snapshot {
+            language: language.into(),
+            ..Default::default()
+        }
+    }
+    fn term_in(text: &str) -> Vocabulary {
+        Vocabulary {
+            text: text.into(),
+            repository: "r".into(),
+            file: "a.go".into(),
+        }
+    }
+    /// Behavior table row "Mapping and identifier matching": Unicode case folding.
+    fn mapping_folds_case(language: &str) {
+        let mut snapshot = in_language(language);
+        snapshot.mappings = vec![mapping("\u{E4}pfel und \u{F6}l", "Apfel\u{F6}l", None)];
+        assert_eq!(
+            prepare("zwei \u{C4}PFEL UND \u{D6}L bitte", &snapshot).text,
+            "zwei Apfel\u{F6}l bitte"
+        );
+    }
+    fn identifiers_fold_case(language: &str) {
+        let mut snapshot = in_language(language);
+        snapshot.vocabulary = vec![
+            term_in("gr\u{FC}n\u{C4}pfel"),
+            term_in("Stra\u{DF}e\u{D6}l"),
+        ];
+        let exact = suggestions("zwei GR\u{DC}N \u{C4}PFEL bitte", &snapshot);
+        assert_eq!(exact.len(), 1, "{language}");
+        assert_eq!(exact[0].candidates[0].text, "gr\u{FC}n\u{C4}pfel");
+        let sound = suggestions("die STRASSE \u{D6}L", &snapshot);
+        assert_eq!(sound.len(), 1, "{language}");
+        assert_eq!(sound[0].candidates[0].text, "Stra\u{DF}e\u{D6}l");
+    }
+    #[test]
+    fn mapping_matching_folds_non_ascii_case_in_english() {
+        mapping_folds_case("en");
+    }
+    #[test]
+    fn mapping_matching_folds_non_ascii_case_in_another_language() {
+        mapping_folds_case("de");
+    }
+    #[test]
+    fn mapping_matching_folds_non_ascii_case_in_auto_detect() {
+        mapping_folds_case("auto");
+    }
+    #[test]
+    fn identifier_matching_folds_non_ascii_case_in_english() {
+        identifiers_fold_case("en");
+    }
+    #[test]
+    fn identifier_matching_folds_non_ascii_case_in_another_language() {
+        identifiers_fold_case("de");
+    }
+    #[test]
+    fn identifier_matching_folds_non_ascii_case_in_auto_detect() {
+        identifiers_fold_case("auto");
+    }
+    #[test]
+    fn conflicting_mappings_that_differ_only_in_greek_sigma_case_are_reported_not_applied() {
+        assert!(same_phrase("\u{3A3}", "\u{3C2}"));
+        assert!(same_phrase("\u{3C3}", "\u{3C2}"));
+        let snapshot = Snapshot {
+            mappings: vec![
+                mapping("\u{3A3}", "Alpha", Some("one")),
+                mapping("\u{3C2}", "Beta", Some("two")),
+            ],
+            ..Default::default()
+        };
+        let result = prepare("\u{3C2}", &snapshot);
+        assert_eq!(result.text, "\u{3C2}");
+        assert_eq!(result.suggestions.len(), 1);
+        assert_eq!(result.suggestions[0].candidates.len(), 2);
+    }
+    #[test]
+    fn a_combining_mark_makes_a_longer_word_so_a_mapping_does_not_match_inside_it() {
+        let snapshot = Snapshot {
+            mappings: vec![mapping("cafe", "Cafe", None)],
+            ..Default::default()
+        };
+        assert_eq!(
+            prepare("a cafe\u{301} and a cafe", &snapshot).text,
+            "a cafe\u{301} and a Cafe"
+        );
+    }
+    /// Behavior table row "Spelled-letter matching": English only.
+    fn spelled_letters(language: &str) -> usize {
+        let mut snapshot = in_language(language);
+        snapshot.vocabulary = vec![term_in("podGC")];
+        suggestions("pod gee see", &snapshot).len()
+    }
+    #[test]
+    fn spelled_letters_match_an_acronym_in_english() {
+        assert_eq!(spelled_letters("en"), 1);
+    }
+    #[test]
+    fn spelled_letters_make_no_suggestion_in_another_language() {
+        for language in ["de", "pt", "fr", "yue"] {
+            assert_eq!(spelled_letters(language), 0, "{language}");
+        }
+    }
+    #[test]
+    fn spelled_letters_make_no_suggestion_in_auto_detect() {
+        assert_eq!(spelled_letters("auto"), 0);
     }
     #[test]
     fn enhanced_cleanup_is_disabled_unless_settings_name_a_choice() {
@@ -1057,6 +1284,36 @@ mod tests {
         assert_eq!(
             prepare("lower max group to one", &next).text,
             "lower maxGroups to one"
+        );
+    }
+    #[test]
+    fn a_remembered_phrase_matches_the_words_as_they_were_heard_even_when_lowercasing_changes_them()
+    {
+        // Lower-casing U+0130 gives "i" plus a combining dot, which is not what was heard.
+        let s = indexed(&["\u{130}Value"]);
+        let result = prepare("an \u{130} value here", &s);
+        let m = mapping_for(&result, 0, 0).unwrap();
+        let next = Snapshot {
+            mappings: vec![m],
+            ..Default::default()
+        };
+        assert_eq!(
+            prepare("an \u{130} value here", &next).text,
+            "an \u{130}Value here"
+        );
+    }
+    #[test]
+    fn a_combining_mark_after_a_closing_single_quote_does_not_keep_the_quote_open() {
+        let s = Snapshot::default();
+        assert_eq!(
+            prepare("say 'um'\u{301} now", &s).text,
+            "say 'um'\u{301} now"
+        );
+        // A mark on the letter before an apostrophe still makes a contraction.
+        assert_eq!(prepare("caf\u{E9}'s um menu", &s).text, "caf\u{E9}'s menu");
+        assert_eq!(
+            prepare("cafe\u{301}'s um menu", &s).text,
+            "cafe\u{301}'s menu"
         );
     }
     #[test]

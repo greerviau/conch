@@ -30,6 +30,8 @@ pub struct Settings {
     /// Id of the recognition model, from `inference::RECOGNIZERS`.
     #[serde(default = "legacy_recognizer")]
     pub recognizer: String,
+    /// ISO code from `languages::LANGUAGES`, or `auto`.
+    pub language: String,
     pub show_overlay: bool,
     pub check_updates: bool,
 }
@@ -51,6 +53,7 @@ impl Default for Settings {
             keep_history: false,
             microphone: String::new(),
             recognizer: "small.en".into(),
+            language: "en".into(),
             show_overlay: true,
             check_updates: true,
         }
@@ -75,6 +78,17 @@ pub fn load(dir: &Path) -> Result<Settings, String> {
     // A model id this build does not offer would make every settings save fail.
     if crate::inference::recognizer(&settings.recognizer).is_none() {
         settings.recognizer = Settings::default().recognizer;
+    }
+    if !crate::languages::known(&settings.language) {
+        settings.language = Settings::default().language;
+    }
+    // Keep the language and move to a model that can recognize it. If that model
+    // is not installed, recording asks for the download.
+    if crate::inference::recognizer(&settings.recognizer)
+        .is_some_and(|model| !model.supports(&settings.language))
+        && let Some(model) = crate::inference::smallest_supporting(&settings.language)
+    {
+        settings.recognizer = model.id.into();
     }
     Ok(settings)
 }
@@ -167,6 +181,8 @@ pub fn snapshot(dir: &Path, settings: &Settings) -> Result<Snapshot, String> {
         vocabulary,
         cleanup: settings.cleanup.clone(),
         auto_accept: settings.auto_accept_suggestions,
+        language: settings.language.clone(),
+        recognizer: settings.recognizer.clone(),
     })
 }
 /// What the interface shows for a repository index. Deserializing this skips
@@ -378,6 +394,110 @@ mod tests {
         settings.recognizer = "tiny.en".into();
         save(dir.path(), &settings).unwrap();
         assert_eq!(load(dir.path()).unwrap().recognizer, "tiny.en");
+    }
+
+    #[test]
+    fn a_new_install_and_settings_saved_before_the_language_choice_use_english() {
+        assert_eq!(Settings::default().language, "en");
+        let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
+        assert_eq!(older.language, "en");
+        let chosen: Settings = serde_json::from_str(r#"{"language":"fr"}"#).unwrap();
+        assert_eq!(chosen.language, "fr");
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load(dir.path()).unwrap().language, "en");
+    }
+
+    #[test]
+    fn an_unknown_stored_language_loads_as_english_and_known_ones_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = Settings {
+            language: "xx".into(),
+            ..Default::default()
+        };
+        save(dir.path(), &settings).unwrap();
+        assert_eq!(load(dir.path()).unwrap().language, "en");
+        for (code, recognizer) in [
+            ("fr", "small"),
+            ("auto", "small"),
+            ("yue", "large-v3-turbo"),
+        ] {
+            settings.language = code.into();
+            settings.recognizer = recognizer.into();
+            save(dir.path(), &settings).unwrap();
+            let loaded = load(dir.path()).unwrap();
+            assert_eq!(
+                (loaded.language.as_str(), loaded.recognizer.as_str()),
+                (code, recognizer)
+            );
+        }
+    }
+
+    #[test]
+    fn a_saved_model_that_lacks_the_saved_language_is_replaced_by_the_smallest_that_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for (language, recognizer) in [("fr", "small.en"), ("auto", "base.en")] {
+            let settings = Settings {
+                language: language.into(),
+                recognizer: recognizer.into(),
+                ..Default::default()
+            };
+            save(dir.path(), &settings).unwrap();
+            let loaded = load(dir.path()).unwrap();
+            assert_eq!(loaded.language, language);
+            assert_eq!(loaded.recognizer, "tiny");
+        }
+        for recognizer in ["small.en", "small"] {
+            let cantonese = Settings {
+                language: "yue".into(),
+                recognizer: recognizer.into(),
+                ..Default::default()
+            };
+            save(dir.path(), &cantonese).unwrap();
+            assert_eq!(load(dir.path()).unwrap().recognizer, "large-v3-turbo");
+        }
+        let kept = Settings {
+            language: "de".into(),
+            recognizer: "large-v3-turbo".into(),
+            ..Default::default()
+        };
+        save(dir.path(), &kept).unwrap();
+        assert_eq!(load(dir.path()).unwrap().recognizer, "large-v3-turbo");
+    }
+
+    #[test]
+    fn a_hesitation_list_saved_before_languages_loads_as_the_english_list() {
+        let dir = tempfile::tempdir().unwrap();
+        open(dir.path())
+            .unwrap()
+            .execute(
+                "INSERT OR REPLACE INTO settings VALUES (1, ?1)",
+                [r#"{"cleanup":{"fillers":["um","er"],"enhanced":"local"}}"#],
+            )
+            .unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.cleanup.fillers["en"], ["um", "er"]);
+        assert_eq!(loaded.cleanup.fillers.len(), 1);
+        assert_eq!(loaded.cleanup.enhanced, "local");
+        assert_eq!(loaded.language, "en");
+        save(dir.path(), &loaded).unwrap();
+        assert_eq!(
+            load(dir.path()).unwrap().cleanup.fillers["en"],
+            ["um", "er"]
+        );
+        let snapshot = snapshot(dir.path(), &loaded).unwrap();
+        assert_eq!(snapshot.cleanup.fillers["en"], ["um", "er"]);
+    }
+    #[test]
+    fn the_snapshot_captures_the_language_and_the_model_the_recording_starts_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            language: "pt".into(),
+            recognizer: "base".into(),
+            ..Default::default()
+        };
+        let snapshot = snapshot(dir.path(), &settings).unwrap();
+        assert_eq!(snapshot.language, "pt");
+        assert_eq!(snapshot.recognizer, "base");
     }
 
     fn term(text: &str, file: &str) -> Vocabulary {
