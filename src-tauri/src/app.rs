@@ -482,7 +482,7 @@ fn process(
             failed(
                 app,
                 generation,
-                "No speech recognized; clipboard unchanged".into(),
+                "No speech recognized".into(),
             );
             return;
         }
