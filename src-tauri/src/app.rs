@@ -9,6 +9,7 @@ use crate::{
     platform,
     session::{Phase, Session},
     storage::{self, Settings},
+    timing::Stopwatch,
 };
 use serde::Serialize;
 use std::{
@@ -40,6 +41,8 @@ pub struct Inner {
     pub audio_ready: bool,
     pub level: Arc<AtomicU32>,
     pub recording_since: Option<Instant>,
+    /// When the recording ended, for timing the wait for the result.
+    pub stopped: Option<Instant>,
     pub recorded_seconds: u64,
     pub indicator_notice: Option<(Instant, String)>,
 }
@@ -236,6 +239,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     inner.worker = inference::new_worker();
     inner.audio_ready = false;
     inner.recording_since = None;
+    inner.stopped = None;
     inner.indicator_notice = None;
     let microphone = inner.settings.microphone.clone();
     let level = inner.level.clone();
@@ -244,24 +248,44 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     drop(inner);
     std::thread::spawn(platform::prepare);
     let cleanup_worker = worker.clone();
-    let transcriber = Transcriber::start(
-        {
-            let (workers, model, worker) = (state.workers.clone(), model.clone(), worker.clone());
-            move || {
-                let _ = inference::preload(&workers, &model, Kind::Whisper, &worker, false);
-            }
-        },
-        {
-            let workers = state.workers.clone();
-            let hint = core::recognition_hint(&snapshot);
-            move |wav| inference::transcribe(&workers, &model, wav, &hint, &worker, false)
-        },
-    );
+    let warm = {
+        let (workers, model, worker) = (state.workers.clone(), model.clone(), worker.clone());
+        move || {
+            let _ = inference::preload(&workers, &model, Kind::Whisper, &worker, false);
+        }
+    };
+    let recognize = {
+        let workers = state.workers.clone();
+        let hint = core::recognition_hint(&snapshot);
+        let worker = worker.clone();
+        move |wav, _speculative| inference::transcribe(&workers, &model, wav, &hint, &worker, false)
+    };
+    // Enhanced cleanup runs on each chunk while the recording continues, so
+    // only the tail is left to clean after the stop.
+    let transcriber = if snapshot.cleanup.enhanced == "disabled" {
+        Transcriber::start(warm, recognize)
+    } else {
+        let (workers, data, snapshot) =
+            (state.workers.clone(), state.data.clone(), snapshot.clone());
+        let worker = worker.clone();
+        Transcriber::start_cleaning(warm, recognize, move |part| {
+            inference::enhanced_part(inference::CleanupRequest {
+                workers: &workers,
+                data: &data,
+                snapshot: &snapshot,
+                raw: part,
+                worker: &worker,
+                cpu: false,
+            })
+        })
+    };
     if snapshot.cleanup.enhanced == "managed" {
         let workers = state.workers.clone();
         let model = state.data.join(inference::CLEANUP.name);
         std::thread::spawn(move || {
-            let _ = inference::preload(&workers, &model, Kind::Llama, &cleanup_worker, false);
+            if inference::preload(&workers, &model, Kind::Llama, &cleanup_worker, false).is_ok() {
+                inference::warm_cleanup(&workers, &model, &cleanup_worker);
+            }
         });
     }
     let handle = app.clone();
@@ -282,14 +306,21 @@ pub fn start(app: AppHandle) -> Result<(), String> {
             |samples| {
                 if let Some(range) = chunker.poll(samples) {
                     transcriber.push(samples[range].to_vec());
+                } else if SPECULATE && let Some(range) = chunker.settle(samples) {
+                    transcriber.speculate(range.clone(), samples[range].to_vec());
                 }
             },
         );
         let state = handle.state::<AppState>();
         match captured {
             Ok(Some(audio::Captured { wav, samples })) => {
+                let reuse = if SPECULATE {
+                    chunker.settled(&samples)
+                } else {
+                    None
+                };
                 if let Some(range) = chunker.tail(&samples) {
-                    transcriber.push(samples[range].to_vec());
+                    transcriber.push_tail(samples[range].to_vec(), reuse);
                 }
                 {
                     let mut inner = state.inner.lock().unwrap();
@@ -302,6 +333,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                         .unwrap_or(0);
                     if inner.session.phase == Phase::Recording {
                         inner.session.finish();
+                        inner.stopped = Some(Instant::now());
                     }
                     inner.stop = None;
                     inner.retry = Some((wav.clone(), snapshot.clone()));
@@ -332,6 +364,7 @@ pub fn finish(state: State<'_, AppState>) -> Result<(), String> {
     if inner.session.finish()
         && let Some(stop) = inner.stop.take()
     {
+        inner.stopped = Some(Instant::now());
         let _ = stop.send(true);
     }
     Ok(())
@@ -370,20 +403,34 @@ fn process(
     chunked: Option<Transcriber>,
 ) {
     let state = app.state::<AppState>();
-    let (worker, model) = {
-        let inner = state.inner.lock().unwrap();
+    let (worker, model, stopped) = {
+        let mut inner = state.inner.lock().unwrap();
         if inner.session.generation != generation {
             return;
         }
         (
             inner.worker.clone(),
             recognition_model(&state.data, &inner.settings),
+            inner.stopped.take(),
         )
     };
+    let mut watch = Stopwatch::start(stopped.unwrap_or_else(Instant::now));
+    if stopped.is_some() {
+        watch.lap("capture");
+    }
+    let mut speculative = false;
+    // Enhanced cleanup of each chunk, when it ran during the recording.
+    let mut cleaned = None;
+    let mut recognized_at = None;
     // Chunks were recognized during the recording. If that failed, recognize
     // the whole recording once, as Retry does.
     let recognition = match chunked.map(Transcriber::finish) {
-        Some(Ok(text)) => Ok(text),
+        Some(Ok(done)) => {
+            speculative = done.speculative;
+            cleaned = usable_cleaning(&done.parts, done.cleaned, &snapshot);
+            recognized_at = Some(done.recognized_at);
+            Ok(done.text)
+        }
         _ => model.and_then(|model| {
             inference::transcribe(
                 &state.workers,
@@ -395,6 +442,20 @@ fn process(
             )
         }),
     };
+    let recognition_stage = if speculative {
+        "recognition (speculative)"
+    } else {
+        "recognition"
+    };
+    match recognized_at {
+        // Cleaning the tail ran after this and ends at `finish`.
+        Some(at) => watch.lap_at(recognition_stage, at),
+        None => watch.lap(recognition_stage),
+    }
+    if cleaned.is_some() {
+        watch.lap("cleanup");
+        note_model_time(&mut watch, &worker);
+    }
     let raw = match recognition {
         Ok(raw) if !raw.trim().is_empty() => raw,
         Ok(_) => {
@@ -414,24 +475,23 @@ fn process(
         return;
     }
     let mut result = core::prepare(&raw, &snapshot);
+    watch.lap("preparation");
     if snapshot.cleanup.enhanced != "disabled" {
-        match inference::enhanced(inference::CleanupRequest {
-            workers: &state.workers,
-            data: &state.data,
-            snapshot: &snapshot,
-            raw: &raw,
-            worker: &worker,
-            cpu: false,
-        }) {
-            Ok(text) => {
-                result.text = text;
-                result.edits.clear();
-                result.suggestions = core::suggestions(&result.text, &snapshot);
-                core::auto_accept(&mut result, &snapshot);
-                result.status =
-                    "Enhanced cleanup completed; semantic equivalence is unverified".into();
-            }
-            Err(error) => result.status = error,
+        let cleaned_during_recording = cleaned.is_some();
+        let outcome = cleaned.unwrap_or_else(|| {
+            inference::enhanced(inference::CleanupRequest {
+                workers: &state.workers,
+                data: &state.data,
+                snapshot: &snapshot,
+                raw: &raw,
+                worker: &worker,
+                cpu: false,
+            })
+        });
+        apply_enhanced(&mut result, outcome, &snapshot);
+        if !cleaned_during_recording {
+            watch.lap("cleanup");
+            note_model_time(&mut watch, &worker);
         }
     }
     let mut inner = state.inner.lock().unwrap();
@@ -439,7 +499,11 @@ fn process(
         return;
     }
     let paste = inner.settings.auto_paste;
-    match delivery::deliver(&mut platform::NativeDesktop::default(), &result.text, paste) {
+    let delivered = delivery::deliver(&mut platform::NativeDesktop::default(), &result.text, paste);
+    watch.lap("delivery");
+    let summary = watch.summary();
+    eprintln!("{summary}");
+    match delivered {
         Ok(status) => {
             inner.indicator_notice =
                 crate::indicator::delivery_notice(&status, result.text.is_empty())
@@ -448,6 +512,7 @@ fn process(
         }
         Err(error) => inner.error = error,
     }
+    result.status.push_str(&format!(". {summary}"));
     match history::record(&state.data, inner.settings.keep_history, &result) {
         Ok(id) => inner.history_id = id,
         Err(error) => {
@@ -459,6 +524,49 @@ fn process(
     }
     inner.result = Some(result);
     inner.retry = None;
+}
+/// Whether the recording flow recognizes the audio since the last chunk
+/// before the stop (`Chunker::settle`, `Transcriber::speculate`). It is off:
+/// a speculation still running at the stop delays the tail, because
+/// `whisper-server` cannot cancel a request. With a pause of 0.35 to 0.5 s, a
+/// short last phrase and a quick release, it raised the median wait for the
+/// cleaned text from 1884 to 2207 ms (23 of 32 runs more than 150 ms slower).
+/// See `docs/validation/latency.md`.
+const SPECULATE: bool = false;
+/// Shows the time the cleanup model reported for its latest request next to
+/// the cleanup stage, so a slow model shows apart from slow work around it.
+fn note_model_time(watch: &mut Stopwatch, worker: &inference::Worker) {
+    if let Some(time) = inference::cleanup_model_time(worker) {
+        watch.note(format!("model {} ms", time.as_millis()));
+    }
+}
+/// The cleaning done during the recording, unless a mapping or a quotation
+/// spans two parts. Each part was masked alone, so such a span was not
+/// protected, and the whole text is cleaned after the stop instead.
+fn usable_cleaning(
+    parts: &[String],
+    cleaned: Option<Result<String, String>>,
+    snapshot: &Snapshot,
+) -> Option<Result<String, String>> {
+    cleaned.filter(|_| core::parts_mask_like_whole(parts, snapshot))
+}
+/// Puts the outcome of Enhanced cleanup into the prepared result: the cleaned
+/// text on success, or the Basic text and the reason on failure.
+fn apply_enhanced(
+    result: &mut core::ResultText,
+    outcome: Result<String, String>,
+    snapshot: &Snapshot,
+) {
+    match outcome {
+        Ok(text) => {
+            result.text = text;
+            result.edits.clear();
+            result.suggestions = core::suggestions(&result.text, snapshot);
+            core::auto_accept(result, snapshot);
+            result.status = "Enhanced cleanup completed; semantic equivalence is unverified".into();
+        }
+        Err(error) => result.status = error,
+    }
 }
 fn failed(app: &AppHandle, generation: u64, error: String) {
     let state = app.state::<AppState>();
@@ -669,6 +777,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             audio_ready: false,
             level: Arc::new(AtomicU32::new(0)),
             recording_since: None,
+            stopped: None,
             recorded_seconds: 0,
             indicator_notice: None,
         }),
@@ -906,6 +1015,52 @@ pub fn set_hotkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cleaned_parts_are_used_only_when_they_protect_what_the_whole_text_protects() {
+        let snapshot = Snapshot {
+            mappings: vec![core::Mapping {
+                phrase: "alpha beta".into(),
+                replacement: "Widget".into(),
+                repository: None,
+                enabled: true,
+            }],
+            ..Default::default()
+        };
+        let cleaned = Some(Ok("Say alpha beta.".to_string()));
+        let parts = |texts: &[&str]| texts.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            usable_cleaning(&parts(&["say alpha", "beta."]), cleaned.clone(), &snapshot),
+            None
+        );
+        assert_eq!(
+            usable_cleaning(&parts(&["say alpha beta."]), cleaned.clone(), &snapshot),
+            cleaned
+        );
+        assert_eq!(
+            usable_cleaning(&parts(&["say alpha", "beta."]), None, &snapshot),
+            None
+        );
+    }
+    #[test]
+    fn enhanced_cleanup_replaces_the_prepared_text_and_a_failure_keeps_it() {
+        let snapshot = Snapshot::default();
+        let mut result = core::prepare("hello world", &snapshot);
+        apply_enhanced(&mut result, Ok("Hello, world.".into()), &snapshot);
+        assert_eq!(result.text, "Hello, world.");
+        assert!(result.edits.is_empty());
+        assert_eq!(
+            result.status,
+            "Enhanced cleanup completed; semantic equivalence is unverified"
+        );
+        let mut result = core::prepare("hello world", &snapshot);
+        apply_enhanced(
+            &mut result,
+            Err("Cleanup failed; using Basic".into()),
+            &snapshot,
+        );
+        assert_eq!(result.text, "hello world");
+        assert_eq!(result.status, "Cleanup failed; using Basic");
+    }
     #[test]
     fn settings_must_name_an_offered_recognition_model() {
         let mut settings = Settings::default();

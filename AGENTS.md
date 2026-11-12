@@ -30,7 +30,7 @@ npm run bundle:local -- --install   # macOS: build, verify signing, replace /App
 ```
 
 Acceptance tests marked `#[ignore]` need `.runtime/` (models, `ggml-silero-v5.1.2.bin`, and a synthetic WAV) and built workers: `cargo test --test acceptance -- --ignored`.
-`src-tauri/examples/latency.rs` measures stop-to-text latency on real workers.
+`src-tauri/examples/latency.rs` measures stop-to-text latency on real workers. `src-tauri/examples/dictation_check.rs` runs dictations through the chunker and transcriber on real workers and reports any that lose words. `src-tauri/examples/cleanup_latency.rs` measures the wait for Enhanced cleanup after the stop.
 
 ## Conventions
 

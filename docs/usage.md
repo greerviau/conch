@@ -36,6 +36,12 @@ Excluded literal terms stay as dictated.
 Enhanced cleanup is Disabled until you choose Managed S1-mini, Local endpoint, or Remote endpoint.
 Managed S1-mini asks for the 484 MB download; until it is installed, Conch uses Basic cleanup.
 Settings saved by an earlier version start with Enhanced cleanup Disabled.
+With Enhanced cleanup on, Conch cleans each finished chunk while you keep speaking, one at a time.
+After you stop, it recognizes and cleans the audio after the last chunk, behind any chunk whose cleaning is still running; a slow endpoint can leave a backlog.
+A dictation with no chunk is recognized and cleaned whole after the stop. That is one shorter than about 9 seconds, or one with no pause of a second after 8 seconds and under 25 seconds of audio pending.
+If a mapping or a quotation spans two chunks, Conch cleans the whole text after the stop, because each chunk was protected alone.
+A part that Basic cleanup leaves empty adds nothing to the result.
+If cleaning any part fails, the whole result gets Basic cleanup and the status line gives the reason.
 
 ## Microphone and paste
 
@@ -75,6 +81,7 @@ Conch starts the recognizer when recording starts and recognizes each finished c
 A chunk ends at the first pause of one second after 8 seconds of audio, or at the quietest point once 25 seconds are pending.
 Only the audio after the last chunk remains to be recognized when you stop.
 If a chunk fails, Conch recognizes the whole recording once.
+The status line under the result ends with the time from the stop to the text and how long each stage took: capture, recognition, preparation, cleanup, and delivery. Cleanup is the wait for the tail's cleaning when chunks were cleaned during the recording; it appears only with Enhanced cleanup. With Managed S1-mini it also shows the time the model reported for its latest request, for example `cleanup 542 ms (model 290 ms)`, so a slow model shows apart from slow work around it. When recording starts, Conch sends the model one token so it is loaded before the first cleanup.
 Workers stay running between recordings and stop after 10 minutes (recognizer) or 5 minutes (managed cleanup) without use.
 Conch stops workers left by a crashed earlier run when it starts.
 
