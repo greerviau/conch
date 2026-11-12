@@ -310,34 +310,6 @@ fn launch(
     server.kill();
     Err("Inference worker startup timed out".into())
 }
-/// Whisper encodes a fixed 30 s window, so a short clip pays for the silence
-/// that pads it. For audio up to this length `whisper_settings` shrinks the
-/// window to the clip. Longer audio spans windows, which needs timestamps to
-/// advance, so it keeps the defaults.
-const SHORT_AUDIO_SECONDS: f32 = 30.0;
-/// Extra encoder context beyond the clip, in 20 ms frames. A smaller margin
-/// made `small.en` repeat itself past the end of 16 s clips (see
-/// `docs/validation/latency.md`).
-const CONTEXT_MARGIN: u32 = 200;
-/// Length of a WAV in seconds, or `None` if it cannot be read.
-fn wav_seconds(wav: &[u8]) -> Option<f32> {
-    let reader = hound::WavReader::new(std::io::Cursor::new(wav)).ok()?;
-    Some(reader.duration() as f32 / reader.spec().sample_rate as f32)
-}
-/// Request fields only `whisper-server` understands. They are measured as one
-/// set: the window sized to the clip, no timestamp tokens, and no temperature
-/// fallback, which re-decodes at random temperatures when the output looks bad.
-fn whisper_settings(seconds: Option<f32>) -> Vec<(&'static str, String)> {
-    let Some(seconds) = seconds.filter(|seconds| *seconds <= SHORT_AUDIO_SECONDS) else {
-        return vec![];
-    };
-    let frames = ((seconds * 50.0).ceil() as u32 + CONTEXT_MARGIN).min(1500);
-    vec![
-        ("audio_ctx", frames.to_string()),
-        ("no_timestamps", "true".into()),
-        ("temperature_inc", "0".into()),
-    ]
-}
 pub fn transcribe(
     workers: &Path,
     model: &Path,
@@ -353,7 +325,6 @@ pub fn transcribe(
         .timeout(Duration::from_secs(90))
         .build()
         .map_err(|_| "Cannot initialize recognizer IPC")?;
-    let seconds = wav_seconds(&wav);
     let mut form = reqwest::blocking::multipart::Form::new()
         .part(
             "file",
@@ -363,9 +334,6 @@ pub fn transcribe(
         .text("temperature", "0");
     if !hint.is_empty() {
         form = form.text("prompt", hint.to_owned());
-    }
-    for (field, value) in whisper_settings(seconds) {
-        form = form.text(field, value);
     }
     let value: Value = client
         .post(format!("{url}/inference"))
@@ -619,28 +587,6 @@ mod tests {
     fn silence(seconds: usize) -> Vec<u8> {
         crate::audio::wav(&vec![0.0; seconds * 16_000]).unwrap()
     }
-    #[test]
-    fn a_wav_reports_its_length_and_garbage_reports_none() {
-        assert_eq!(wav_seconds(&silence(3)), Some(3.0));
-        assert_eq!(wav_seconds(&[0; 64]), None);
-    }
-    #[test]
-    fn short_audio_gets_a_window_that_covers_it_plus_the_margin() {
-        let fields = whisper_settings(Some(5.0));
-        assert!(fields.contains(&("audio_ctx", "450".into())), "{fields:?}");
-        assert!(fields.contains(&("no_timestamps", "true".into())));
-        assert!(fields.contains(&("temperature_inc", "0".into())));
-    }
-    #[test]
-    fn the_window_never_exceeds_the_thirty_second_maximum() {
-        let fields = whisper_settings(Some(29.0));
-        assert!(fields.contains(&("audio_ctx", "1500".into())), "{fields:?}");
-    }
-    #[test]
-    fn long_or_unreadable_audio_keeps_the_defaults() {
-        assert!(whisper_settings(Some(31.0)).is_empty());
-        assert!(whisper_settings(None).is_empty());
-    }
     #[cfg(unix)]
     mod fake {
         use std::{os::unix::fs::PermissionsExt, path::Path};
@@ -718,22 +664,29 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     }
     #[cfg(unix)]
     #[test]
-    fn the_recognizer_gets_a_window_sized_to_short_audio_and_defaults_for_long() {
+    fn a_request_never_overrides_the_window_or_the_decoding_of_the_recognizer() {
+        // A per-request `audio_ctx` made the worker drop most of the text of a
+        // later request (see `docs/validation/latency.md`), so none is sent.
         let dir = tempfile::tempdir().unwrap();
         fake::install(dir.path());
         let model = dir.path().join("model.bin");
-        transcribe(dir.path(), &model, silence(2), "", &new_worker(), true).unwrap();
-        let short = fake::last_request(dir.path());
-        assert!(
-            short.contains("name=\"audio_ctx\"\r\n\r\n300\r\n"),
-            "{short:?}"
-        );
-        assert!(short.contains("name=\"no_timestamps\"\r\n\r\ntrue\r\n"));
-        assert!(short.contains("name=\"temperature_inc\"\r\n\r\n0\r\n"));
-        transcribe(dir.path(), &model, silence(31), "", &new_worker(), true).unwrap();
-        let long = fake::last_request(dir.path());
-        for field in ["audio_ctx", "no_timestamps", "temperature_inc"] {
-            assert!(!long.contains(&format!("name=\"{field}\"")), "{field}");
+        for seconds in [2, 31] {
+            transcribe(
+                dir.path(),
+                &model,
+                silence(seconds),
+                "",
+                &new_worker(),
+                true,
+            )
+            .unwrap();
+            let request = fake::last_request(dir.path());
+            for field in ["audio_ctx", "no_timestamps", "temperature_inc"] {
+                assert!(
+                    !request.contains(&format!("name=\"{field}\"")),
+                    "{seconds} s audio sent {field}"
+                );
+            }
         }
         shutdown(dir.path());
     }

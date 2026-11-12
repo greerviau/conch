@@ -37,7 +37,7 @@ The recorded synthetic runs show 0.04-0.27 s of inference for short inputs on Me
 
 The chunk measurement above covers a 120 s recording. A dictation shorter than about 9 s is a single tail, because a chunk needs 8 s of audio and a 1 s pause.
 That tail was recognized in full after the stop, so it took the full request time: 0.6 s for a clip of about 5 s on `small.en` (`recognition-models.md` and the `default` rows below).
-Two changes address it.
+Speculative recognition addresses it. A second change, per-request `whisper-server` settings, was shipped and then removed because it made later requests lose text (see the last section).
 
 ### Speculative recognition
 
@@ -48,19 +48,27 @@ A chunk or a later speculation queued behind an unstarted speculation discards i
 The recognize closure of `Transcriber::start` receives `true` for a speculation and `false` for a chunk or tail, so a recognizer can treat speculative text as provisional.
 Speculation and the stopwatch go through `Transcriber`, so neither assumes a particular recognizer or language.
 
-`examples/latency.rs` measured it on the real `whisper-server` (Apple M1, Metal, `small.en`, warm worker, the 4.6 s synthetic clip followed by silence before the stop). Each row is one run; the two runs were about an hour apart on a machine that other builds were using:
+`examples/latency.rs` measured it on the real `whisper-server` (Apple M1, Metal, `small.en`, warm worker, a 4.5 s synthetic clip followed by silence before the stop, default request settings). One run per row:
 
 | Silence before the stop | Recognized after the stop | Speculative |
 | --- | --- | --- |
-| 0.5 s | 0.30 s, 0.39 s | 0.24 s, 0.31 s (the speculation was still running at the stop) |
-| 1.0 s | 0.25 s, 0.42 s | 0.00 s, 0.00 s (reused) |
+| 0.5 s | 0.56 s | 0.32 s (the speculation was still running at the stop) |
+| 1.0 s | 0.57 s | 0.00 s (reused) |
 
-These times already include the request settings below.
 How long a user waits between the last word and the key release is not measured here.
 The status line under the result now ends with the time from the stop to the text and the time of each stage (capture, recognition, preparation, cleanup, delivery), so the installed app reports it.
 Stop-to-text in the installed app was not measured in this session, because an agent shell has no Accessibility trust for paste.
 
-### Request settings for short audio
+### Request settings for short audio (removed)
+
+Sending `audio_ctx` sized to the clip, `no_timestamps` and `temperature_inc=0` with each request cut the request time of a short clip by half on `small.en` (table below), and it was shipped in the first version of this change.
+It made a later request on the same worker lose text. On a fresh `small.en` worker, `Daniel-2s`, `Daniel-3s` and `Daniel-4s` (11, 16 and 24 s of synthetic speech) sent in that order, each with its own `audio_ctx` (759, 1008, 1390), returned 6 of the 65 words for the third clip ("The pod gc setting is unsaid"). The same clip alone, or after only the first clip, returned all 65 words, and with the default settings in the same order all were correct.
+Over 190 requests in random order (96 clips of 4 to 30 s, two passes, one fresh worker per setting), 6 requests lost more than 15% of their words with per-request `audio_ctx`, all on 22 to 24 s clips, and the word error rate was 16.6%. The default settings, `no_timestamps` with `temperature_inc=0`, `audio_ctx` rounded up to 250-frame steps, and `audio_ctx` only for clips up to 10 s lost none (11.5%, 11.1%, 11.3% and 11.2%).
+Through the recording flow (`examples/dictation_check.rs`: chunker, transcriber and real worker, each dictation followed by 0.3 to 1.2 s of quiet), 96 dictations lost words 15 times with per-request `audio_ctx` and no speculation, and the word error rate was 22.0%. With speculation on, 2 of 96 lost words, one by dropping the last sentence. With the request settings removed, 192 dictations (two passes) lost words 0 times and the word error rate was 11.3%.
+The cause inside `whisper.cpp` was not found. The loss depends on the requests that came before, so it is not a property of one request's `audio_ctx`; the benchmark below sent clips in one fixed order and did not show it. The 0.5 s margin failures and the 25.9% / 14.2% rerun noted below were probably the same effect, not temperature sampling as first assumed.
+Speculation is not the cause: with speculation on and `audio_ctx` off, 96 dictations lost words 0 times.
+The request settings are removed. Per-request `audio_ctx` could return only after the cause is found and a run like `dictation_check` loses no text.
+What follows is the measurement that shipped them, kept because it shows the speed available.
 
 `scripts/benchmark-recognition.py` sends each setting to one warm `whisper-server` (voice detection on, 4 threads, no recognition hint).
 The clips are 40 synthetic ones from four macOS `say` voices (Samantha, Daniel, Karen, Alex): 8 technical sentences of 4.4-6.0 s and 2 groups of three sentences of 15.2-17.0 s, 896 words in all.
