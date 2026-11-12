@@ -51,19 +51,20 @@ export type Settings = {
 export const activeProfile = (settings: Settings) =>
   settings.profiles.find((p) => p.id === settings.active_profile) ??
   settings.profiles[0];
-/** `settings` with the active profile changed by `patch`. */
-export const withActive = (
+/** `settings` with the profile `id` changed by `patch`. */
+export const withProfile = (
   settings: Settings,
+  id: string,
   patch: Partial<Profile>,
-): Settings => {
-  const active = activeProfile(settings);
-  return {
-    ...settings,
-    profiles: settings.profiles.map((p) =>
-      p.id === active.id ? { ...p, ...patch } : p,
-    ),
-  };
-};
+): Settings => ({
+  ...settings,
+  profiles: settings.profiles.map((p) =>
+    p.id === id ? { ...p, ...patch } : p,
+  ),
+});
+/** `settings` with the active profile changed by `patch`. */
+export const withActive = (settings: Settings, patch: Partial<Profile>) =>
+  withProfile(settings, activeProfile(settings).id, patch);
 /**
  * `settings` with `repositories` as the repository list. A repository that is
  * new supplies context to the active profile, and a removed one leaves every profile.

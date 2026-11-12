@@ -1014,7 +1014,7 @@ it("shows Auto-detect in the Language menu when that is the saved language", asy
     "auto",
   );
 });
-it("warns that Auto-detect is less reliable for short recordings and says the first chunk sets the language", async () => {
+it("warns that Auto-detect is less reliable for short recordings and says the start of a recording sets the language", async () => {
   render(<App />);
   await openProfiles();
   await screen.findByRole("combobox", { name: "Language" });
@@ -1022,7 +1022,7 @@ it("warns that Auto-detect is less reliable for short recordings and says the fi
   await chooseLanguage("auto");
   expect(
     screen.getByText(
-      /auto-detect is less reliable for recordings under a few seconds.*first chunk/i,
+      /auto-detect is less reliable for recordings under a few seconds.*language Conch hears first/i,
     ),
   ).toBeTruthy();
   await chooseLanguage("fr");
@@ -1422,4 +1422,72 @@ it("saves a model picked on the setup card to the active profile", async () => {
     "tiny.en",
     "small.en",
   ]);
+});
+it("follows a profile switched from the menu bar, so a new repository joins that profile", async () => {
+  twoProfiles();
+  view.settings.active_profile = "default";
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Repositories" }));
+  view.settings.active_profile = "code";
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Enter a path instead" }));
+  fireEvent.change(screen.getByLabelText("Repository path"), {
+    target: { value: "/work/skills" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add path" }));
+  const saved = await savedSettings();
+  expect(saved.active_profile).toBe("code");
+  expect(saved.profiles[0].repositories).toEqual([]);
+  expect(saved.profiles[1].repositories).toHaveLength(2);
+});
+it("saves a setup card choice to the saved active profile while the draft makes another active", async () => {
+  twoProfiles();
+  view.settings.active_profile = "default";
+  render(<App />);
+  await openProfiles();
+  fireEvent.click(
+    within(await screen.findByRole("list", { name: "Profiles" })).getAllByRole(
+      "listitem",
+    )[1],
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Make active" }));
+  fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Recognition model" }),
+    { target: { value: "small.en" } },
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", expect.anything()),
+  );
+  const first = ipc.mock.calls.find(([name]) => name === "save_settings")![1]
+    .settings as typeof view.settings;
+  expect(first.profiles.map((p) => p.recognizer)).toEqual([
+    "small.en",
+    "tiny.en",
+  ]);
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(
+      ipc.mock.calls.filter(([name]) => name === "save_settings"),
+    ).toHaveLength(2),
+  );
+  const second = ipc.mock.calls.filter(
+    ([name]) => name === "save_settings",
+  )[1][1].settings as typeof view.settings;
+  expect(second.profiles.map((p) => p.recognizer)).toEqual([
+    "small.en",
+    "tiny.en",
+  ]);
+  expect(second.active_profile).toBe("code");
+});
+it("keeps the profile switcher on the Dictation page while the active profile's model is missing", async () => {
+  twoProfiles();
+  view.microphone = "granted";
+  view.settings.profiles[1].recognizer = "base.en";
+  install("tiny.en", "silero-vad");
+  render(<App />);
+  const group = await screen.findByRole("radiogroup", { name: "Profile" });
+  expect(within(group).getAllByRole("radio")).toHaveLength(2);
 });

@@ -15,6 +15,7 @@ import {
   activeProfile,
   folderName,
   withActive,
+  withProfile,
   withRepositories,
 } from "./types";
 import { modelForLanguage, voiceDetection } from "./models";
@@ -58,12 +59,23 @@ export default function App() {
   }, []);
   // Whether the last refresh failed, so a failure that repeats on every poll is logged once.
   const refreshFailed = useRef(false);
+  // The saved active profile at the last refresh, so a switch from the menu bar or the
+  // recording indicator reaches the draft without discarding its other edits.
+  const savedActive = useRef<string | null>(null);
   const reload = useCallback(async () => {
     try {
       const v = await invoke<View>("view");
       refreshFailed.current = false;
       setView(v);
-      setDraft((d) => d ?? v.settings);
+      const switched =
+        savedActive.current !== null &&
+        savedActive.current !== v.settings.active_profile;
+      savedActive.current = v.settings.active_profile;
+      setDraft((d) =>
+        d && switched
+          ? { ...d, active_profile: v.settings.active_profile }
+          : (d ?? v.settings),
+      );
     } catch (e) {
       setError(refreshFailed.current ? String(e) : noted(e));
       refreshFailed.current = true;
@@ -159,20 +171,24 @@ export default function App() {
       setPercent(null);
     }
   }
-  /** Saves `patch` to the active profile alone, so unsaved edits elsewhere stay in the draft. */
+  /**
+   * Saves `patch` to the saved active profile alone, so unsaved edits elsewhere stay in
+   * the draft. The draft changes the same profile, even when it makes another one active.
+   */
   async function saveActive(patch: Parameters<typeof withActive>[1]) {
     if (!view) return;
+    const id = activeProfile(view.settings).id;
     if (
       await command("save_settings", {
-        settings: withActive(view.settings, patch),
+        settings: withProfile(view.settings, id, patch),
       })
     )
       setDraft((current) => {
-        if (!current) return current;
+        const draftProfile = current?.profiles.find((p) => p.id === id);
+        if (!current || !draftProfile) return current;
         // The draft can hold an unsaved language that the saved model lacks.
-        const draftProfile = activeProfile(current);
         const language = patch.language ?? draftProfile.language;
-        return withActive(current, {
+        return withProfile(current, id, {
           ...patch,
           recognizer: modelForLanguage(
             view.models,
@@ -456,45 +472,41 @@ export default function App() {
                 </div>
               )}
             </section>
+            {view.settings.profiles.length > 1 && (
+              <section className="card profilebar">
+                <div className="card-head">
+                  <h2>Profile</h2>
+                  <button className="link" onClick={() => setTab("Profiles")}>
+                    Edit profiles
+                  </button>
+                </div>
+                <div
+                  className="segmented"
+                  role="radiogroup"
+                  aria-label="Profile"
+                >
+                  {view.settings.profiles.map((p) => (
+                    <button
+                      key={p.id}
+                      role="radio"
+                      aria-checked={p.id === profile.id}
+                      className={p.id === profile.id ? "on" : ""}
+                      disabled={processing}
+                      onClick={() => void chooseProfile(p.id)}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+                <p className="summary">
+                  {profileSummary(profile, view.models)}
+                </p>
+                {contextChips}
+              </section>
+            )}
             {showWorkspace && (
               <>
-                {view.settings.profiles.length > 1 ? (
-                  <section className="card profilebar">
-                    <div className="card-head">
-                      <h2>Profile</h2>
-                      <button
-                        className="link"
-                        onClick={() => setTab("Profiles")}
-                      >
-                        Edit profiles
-                      </button>
-                    </div>
-                    <div
-                      className="segmented"
-                      role="radiogroup"
-                      aria-label="Profile"
-                    >
-                      {view.settings.profiles.map((p) => (
-                        <button
-                          key={p.id}
-                          role="radio"
-                          aria-checked={p.id === profile.id}
-                          className={p.id === profile.id ? "on" : ""}
-                          disabled={processing}
-                          onClick={() => void chooseProfile(p.id)}
-                        >
-                          {p.name}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="summary">
-                      {profileSummary(profile, view.models)}
-                    </p>
-                    {contextChips}
-                  </section>
-                ) : (
-                  contextChips
-                )}
+                {view.settings.profiles.length === 1 && contextChips}
                 <section className="card">
                   <div className="card-head">
                     <h2>Result</h2>

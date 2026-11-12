@@ -183,7 +183,7 @@ export function Profiles({
               title="Language"
               note={`The language you speak. Models that cannot recognize it are hidden.${
                 profile.language === "auto"
-                  ? " Auto-detect is less reliable for recordings under a few seconds. The first chunk of a recording with speech sets the language for the rest of it."
+                  ? " Auto-detect is less reliable for recordings under a few seconds. A recording keeps the language Conch hears first."
                   : ""
               }${
                 profile.language === "en"
