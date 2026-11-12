@@ -122,7 +122,6 @@ mod tests {
         Repository {
             id: "r".into(),
             root: root.into(),
-            selected: true,
             exclusions: vec![],
         }
     }
@@ -135,8 +134,6 @@ mod tests {
         assert!(schedule.due(&repositories, true, now));
         schedule.refreshed(&repositories, true, now);
         assert!(!schedule.due(&repositories, true, now + POLL * 10));
-        repositories[0].selected = false;
-        assert!(!schedule.due(&repositories, true, now));
         schedule.files_changed();
         assert!(schedule.due(&repositories, true, now));
         schedule.refreshed(&repositories, true, now);

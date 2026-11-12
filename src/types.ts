@@ -1,7 +1,6 @@
 export type Repository = {
   id: string;
   root: string;
-  selected: boolean;
   exclusions: string[];
 };
 export type Mapping = {
@@ -14,11 +13,23 @@ export type Cleanup = {
   /** Hesitation tokens by language code. */
   fillers: Record<string, string[]>;
   excluded: string[];
-  /** Enhanced cleanup: disabled, managed, local, or remote. */
-  enhanced: string;
+  /** The endpoint local and remote Enhanced cleanup use, shared by every profile. */
   endpoint: string;
   model: string;
   remote_enabled: boolean;
+};
+/** The recognition language and model, Enhanced cleanup, and repository context of a recording. */
+export type Profile = {
+  id: string;
+  name: string;
+  /** ISO code from the language table, or `auto`. */
+  language: string;
+  recognizer: string;
+  /** Enhanced cleanup: disabled, managed, local, or remote. */
+  enhanced: string;
+  /** Ids of the repositories that supply context. */
+  repositories: string[];
+  auto_accept: boolean;
 };
 export type Settings = {
   repositories: Repository[];
@@ -27,15 +38,57 @@ export type Settings = {
   hotkey: string;
   activation: string;
   auto_paste: boolean;
-  auto_accept_suggestions: boolean;
   keep_history: boolean;
   /** Input device name. Empty follows the system input. */
   microphone: string;
-  recognizer: string;
-  /** ISO code from the language table, or `auto`. */
-  language: string;
   show_overlay: boolean;
   check_updates: boolean;
+  /** Never empty. */
+  profiles: Profile[];
+  active_profile: string;
+};
+/** The profile a recording uses: the active one, or the first when the id is unknown. */
+export const activeProfile = (settings: Settings) =>
+  settings.profiles.find((p) => p.id === settings.active_profile) ??
+  settings.profiles[0];
+/** `settings` with the profile `id` changed by `patch`. */
+export const withProfile = (
+  settings: Settings,
+  id: string,
+  patch: Partial<Profile>,
+): Settings => ({
+  ...settings,
+  profiles: settings.profiles.map((p) =>
+    p.id === id ? { ...p, ...patch } : p,
+  ),
+});
+/** `settings` with the active profile changed by `patch`. */
+export const withActive = (settings: Settings, patch: Partial<Profile>) =>
+  withProfile(settings, activeProfile(settings).id, patch);
+/**
+ * `settings` with `repositories` as the repository list. A repository that is
+ * new supplies context to the active profile, and a removed one leaves every profile.
+ */
+export const withRepositories = (
+  settings: Settings,
+  repositories: Repository[],
+): Settings => {
+  const added = repositories
+    .filter((r) => !settings.repositories.some((old) => old.id === r.id))
+    .map((r) => r.id);
+  const kept = new Set(repositories.map((r) => r.id));
+  const active = activeProfile(settings).id;
+  return {
+    ...settings,
+    repositories,
+    profiles: settings.profiles.map((p) => ({
+      ...p,
+      repositories: [
+        ...p.repositories.filter((id) => kept.has(id)),
+        ...(p.id === active ? added : []),
+      ],
+    })),
+  };
 };
 export type Candidate = { text: string; repository: string; file: string };
 export type ResultText = {

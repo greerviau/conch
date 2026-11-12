@@ -6,31 +6,25 @@ import { Setup, ShortcutRecorder, shortcutLabel } from "./Setup";
 import { History } from "./History";
 import { Logs } from "./Logs";
 import { Mappings } from "./Mappings";
+import { Profiles, profileSummary } from "./Profiles";
 import { Repositories } from "./Repositories";
 import { Mic, Stop } from "./icons";
 import { Updates } from "./Updates";
 import { Row, Toggle } from "./ui";
-import { folderName } from "./types";
 import {
-  LanguageMenu,
-  ModelStatus,
-  RECOGNIZER_TRADEOFF,
-  RecognizerMenu,
-  voiceDetectionNote,
-} from "./ModelChoice";
-import {
-  cleanupModel,
-  modelForLanguage,
-  recognizerInfo,
-  size,
-  supports,
-  voiceDetection,
-} from "./models";
+  activeProfile,
+  folderName,
+  withActive,
+  withProfile,
+  withRepositories,
+} from "./types";
+import { modelForLanguage, voiceDetection } from "./models";
 import type { Cleanup, Mapping, Settings, View } from "./types";
 
 const TABS = [
   "Dictation",
   "History",
+  "Profiles",
   "Repositories",
   "Mappings",
   "Settings",
@@ -51,7 +45,6 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [text, setText] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [secret, setSecret] = useState("");
   const [percent, setPercent] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -66,12 +59,23 @@ export default function App() {
   }, []);
   // Whether the last refresh failed, so a failure that repeats on every poll is logged once.
   const refreshFailed = useRef(false);
+  // The saved active profile at the last refresh, so a switch from the menu bar or the
+  // recording indicator reaches the draft without discarding its other edits.
+  const savedActive = useRef<string | null>(null);
   const reload = useCallback(async () => {
     try {
       const v = await invoke<View>("view");
       refreshFailed.current = false;
       setView(v);
-      setDraft((d) => d ?? v.settings);
+      const switched =
+        savedActive.current !== null &&
+        savedActive.current !== v.settings.active_profile;
+      savedActive.current = v.settings.active_profile;
+      setDraft((d) =>
+        d && switched
+          ? { ...d, active_profile: v.settings.active_profile }
+          : (d ?? v.settings),
+      );
     } catch (e) {
       setError(refreshFailed.current ? String(e) : noted(e));
       refreshFailed.current = true;
@@ -95,8 +99,13 @@ export default function App() {
     const unlisten = listen<[number, number]>("model-progress", (e) =>
       setPercent(Math.round((e.payload[0] / e.payload[1]) * 100)),
     );
+    // Edit Profiles... in the menu bar menu opens the Profiles page.
+    const opened = listen<string>("open-tab", (e) => {
+      if (TABS.includes(e.payload)) setTab(e.payload);
+    });
     return () => {
       void unlisten.then((f) => f());
+      void opened.then((f) => f());
     };
   }, []);
   /** Adds mappings the backend saved on its own, so the draft neither hides them nor deletes them on the next save. */
@@ -140,15 +149,12 @@ export default function App() {
       const v = await invoke<View>("view");
       setDraft((current) =>
         contextOnly && current
-          ? {
-              ...current,
-              repositories: current.repositories.map((repository) => ({
-                ...repository,
-                selected:
-                  v.settings.repositories.find((r) => r.id === repository.id)
-                    ?.selected ?? repository.selected,
-              })),
-            }
+          ? withActive(
+              { ...current, active_profile: v.settings.active_profile },
+              {
+                repositories: activeProfile(v.settings).repositories,
+              },
+            )
           : v.settings,
       );
       setView(v);
@@ -165,40 +171,49 @@ export default function App() {
       setPercent(null);
     }
   }
-  /** Saves the model alone, so unsaved edits on the Settings page stay in the draft. */
-  async function chooseRecognizer(id: string) {
+  /**
+   * Saves `patch` to the saved active profile alone, so unsaved edits elsewhere stay in
+   * the draft. The draft changes the same profile, even when it makes another one active.
+   */
+  async function saveActive(patch: Parameters<typeof withActive>[1]) {
     if (!view) return;
+    const id = activeProfile(view.settings).id;
     if (
       await command("save_settings", {
-        settings: { ...view.settings, recognizer: id },
+        settings: withProfile(view.settings, id, patch),
       })
     )
-      setDraft((current) =>
-        current
-          ? {
-              ...current,
-              // The draft can hold an unsaved language that `id` lacks.
-              recognizer: modelForLanguage(view.models, current.language, id),
-            }
-          : current,
-      );
+      setDraft((current) => {
+        const draftProfile = current?.profiles.find((p) => p.id === id);
+        if (!current || !draftProfile) return current;
+        // The draft can hold an unsaved language that the saved model lacks.
+        const language = patch.language ?? draftProfile.language;
+        return withProfile(current, id, {
+          ...patch,
+          recognizer: modelForLanguage(
+            view.models,
+            language,
+            patch.recognizer ?? draftProfile.recognizer,
+          ),
+        });
+      });
   }
-  /** Saves the language and the model that supports it, like `chooseRecognizer`. */
-  async function chooseLanguage(code: string) {
-    if (!view) return;
-    const recognizer = modelForLanguage(
-      view.models,
-      code,
-      view.settings.recognizer,
-    );
-    if (
-      await command("save_settings", {
-        settings: { ...view.settings, language: code, recognizer },
-      })
-    )
-      setDraft((current) =>
-        current ? { ...current, language: code, recognizer } : current,
-      );
+  const chooseRecognizer = (id: string) => saveActive({ recognizer: id });
+  /** Saves the language and the model that supports it. */
+  const chooseLanguage = (code: string) =>
+    view &&
+    saveActive({
+      language: code,
+      recognizer: modelForLanguage(
+        view.models,
+        code,
+        activeProfile(view.settings).recognizer,
+      ),
+    });
+  /** Makes a profile active at once. A recording in progress switches to it. */
+  async function chooseProfile(id: string) {
+    if (await command("choose_profile", { id }))
+      setDraft((current) => current && { ...current, active_profile: id });
   }
   async function chooseRepository() {
     try {
@@ -206,18 +221,10 @@ export default function App() {
       if (path)
         setDraft((current) =>
           current
-            ? {
-                ...current,
-                repositories: [
-                  ...current.repositories,
-                  {
-                    id: crypto.randomUUID(),
-                    root: path,
-                    selected: true,
-                    exclusions: [],
-                  },
-                ],
-              }
+            ? withRepositories(current, [
+                ...current.repositories,
+                { id: crypto.randomUUID(), root: path, exclusions: [] },
+              ])
             : current,
         );
     } catch (e) {
@@ -242,13 +249,15 @@ export default function App() {
   const installed = (id: string) =>
     view.models.some((model) => model.id === id && model.ready);
   const vad = voiceDetection(view.models);
-  const cleanupMini = cleanupModel(view.models);
   // A recognizer runs with the voice detection model, so both must be on disk.
-  const recognizerReady = (id: string) => installed(id) && installed(vad.id);
-  const modelInstalled = recognizerReady(view.settings.recognizer);
+  // The S1-mini cleanup model needs nothing else.
+  const recognizerReady = (id: string) =>
+    installed(id) &&
+    (view.models.find((m) => m.id === id)?.engine === "llama" ||
+      installed(vad.id));
+  const profile = activeProfile(view.settings);
+  const modelInstalled = recognizerReady(profile.recognizer);
   const downloadBusy = downloadingId !== null || view.downloading;
-  const draftRecognizer = recognizerInfo(view.models, draft.recognizer);
-  const voiceDetectionOnly = installed(draft.recognizer) && !installed(vad.id);
   const microphoneReady =
     view.platform !== "macos" || view.microphone === "granted";
   const needsSetup =
@@ -260,13 +269,13 @@ export default function App() {
   const showWorkspace = canRecord || !!view.result;
   const hasChanges = JSON.stringify(draft) !== JSON.stringify(view.settings);
   const cleanup = draft.cleanup;
-  const autoDetect = draft.language === "auto";
+  // Hesitation tokens are kept per language; Settings edits the list of the active profile's.
+  const draftLanguage = activeProfile(draft).language;
+  const autoDetect = draftLanguage === "auto";
   const languageName = autoDetect
     ? "Auto-detect"
-    : (view.languages.find((language) => language.code === draft.language)
-        ?.name ?? draft.language);
-  const managedUnsupported =
-    cleanup.enhanced === "managed" && !supports(cleanupMini, draft.language);
+    : (view.languages.find((language) => language.code === draftLanguage)
+        ?.name ?? draftLanguage);
   const updateCleanup = (patch: Partial<Cleanup>) =>
     setDraft({ ...draft, cleanup: { ...cleanup, ...patch } });
   const repositoryName = (id: string) => {
@@ -303,6 +312,43 @@ export default function App() {
     </>
   ) : (
     <>Hold {hotkey} in any app, or click the button.</>
+  );
+  const contextChips = (
+    <div className="chips" aria-label="Repository context">
+      <small>Context</small>
+      {view.settings.repositories.map((r) => {
+        const on = profile.repositories.includes(r.id);
+        return (
+          <label
+            className={`chip${on ? " on" : ""}`}
+            key={r.id}
+            title={`Changes here update the ${profile.name} profile.`}
+          >
+            <input
+              type="checkbox"
+              checked={on}
+              disabled={view.phase !== "idle"}
+              onChange={(e) =>
+                void save(
+                  withActive(view.settings, {
+                    repositories: e.target.checked
+                      ? [...profile.repositories, r.id]
+                      : profile.repositories.filter((id) => id !== r.id),
+                  }),
+                  true,
+                )
+              }
+            />
+            {folderName(r.root)}
+          </label>
+        );
+      })}
+      {view.settings.repositories.length === 0 && (
+        <small>
+          No repositories selected. Dictation and global mappings still work.
+        </small>
+      )}
+    </div>
   );
   const statusLabel = recording
     ? "Recording"
@@ -361,16 +407,16 @@ export default function App() {
               <Setup
                 models={view.models}
                 languages={view.languages}
-                language={view.settings.language}
+                language={profile.language}
                 onLanguage={(code) => void chooseLanguage(code)}
                 mac={view.platform === "macos"}
                 installed={modelInstalled}
-                recognizer={view.settings.recognizer}
+                recognizer={profile.recognizer}
                 onRecognizer={(id) => void chooseRecognizer(id)}
                 ready={recognizerReady}
-                voiceOnly={installed(view.settings.recognizer)}
-                onDownload={() => void downloadModel(view.settings.recognizer)}
-                downloading={downloadingId === view.settings.recognizer}
+                voiceOnly={installed(profile.recognizer)}
+                onDownload={() => void downloadModel(profile.recognizer)}
+                downloading={downloadingId === profile.recognizer}
                 otherDownload={downloadBusy}
                 percent={percent}
                 accessibility={view.accessibility || view.platform === "linux"}
@@ -426,36 +472,41 @@ export default function App() {
                 </div>
               )}
             </section>
+            {view.settings.profiles.length > 1 && (
+              <section className="card profilebar">
+                <div className="card-head">
+                  <h2>Profile</h2>
+                  <button className="link" onClick={() => setTab("Profiles")}>
+                    Edit profiles
+                  </button>
+                </div>
+                <div
+                  className="segmented"
+                  role="radiogroup"
+                  aria-label="Profile"
+                >
+                  {view.settings.profiles.map((p) => (
+                    <button
+                      key={p.id}
+                      role="radio"
+                      aria-checked={p.id === profile.id}
+                      className={p.id === profile.id ? "on" : ""}
+                      disabled={processing}
+                      onClick={() => void chooseProfile(p.id)}
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+                <p className="summary">
+                  {profileSummary(profile, view.models)}
+                </p>
+                {contextChips}
+              </section>
+            )}
             {showWorkspace && (
               <>
-                <div className="chips" aria-label="Repository context">
-                  <small>Context</small>
-                  {view.settings.repositories.map((r, i) => (
-                    <label
-                      className={`chip${r.selected ? " on" : ""}`}
-                      key={r.id}
-                      title="Selected repositories are captured when recording starts."
-                    >
-                      <input
-                        type="checkbox"
-                        checked={r.selected}
-                        disabled={view.phase !== "idle"}
-                        onChange={(e) => {
-                          const settings = structuredClone(view.settings);
-                          settings.repositories[i].selected = e.target.checked;
-                          void save(settings, true);
-                        }}
-                      />
-                      {folderName(r.root)}
-                    </label>
-                  ))}
-                  {view.settings.repositories.length === 0 && (
-                    <small>
-                      No repositories selected. Dictation and global mappings
-                      still work.
-                    </small>
-                  )}
-                </div>
+                {view.settings.profiles.length === 1 && contextChips}
                 <section className="card">
                   <div className="card-head">
                     <h2>Result</h2>
@@ -593,12 +644,38 @@ export default function App() {
             onSettings={() => setTab("Settings")}
           />
         )}
+        {tab === "Profiles" && (
+          <Profiles
+            settings={draft}
+            onChange={setDraft}
+            models={view.models}
+            languages={view.languages}
+            indexes={view.indexes}
+            ready={recognizerReady}
+            downloadingId={downloadingId}
+            downloadBusy={downloadBusy}
+            percent={percent}
+            onDownload={(id) => void downloadModel(id)}
+            onCredential={async (endpoint, secret) => {
+              const saved = await command("credential", { endpoint, secret });
+              if (saved)
+                setNotice(
+                  secret === null
+                    ? "Credential removed"
+                    : "Credential saved in the platform store",
+                );
+              return saved;
+            }}
+          />
+        )}
         {tab === "Repositories" && (
           <Repositories
             repositories={draft.repositories}
             indexes={view.indexes}
             refreshing={busy}
-            onChange={(repositories) => setDraft({ ...draft, repositories })}
+            onChange={(repositories) =>
+              setDraft(withRepositories(draft, repositories))
+            }
             onChoose={() => void chooseRepository()}
             onRefresh={async () => {
               setBusy(true);
@@ -777,25 +854,6 @@ export default function App() {
                 </p>
               </div>
             </div>
-            <h3 className="group">Repository context</h3>
-            <div className="card rows">
-              <Row
-                title="Auto-accept"
-                note={
-                  draft.auto_accept_suggestions
-                    ? "Conch replaces a heard phrase with the identifier it sounds like when no other suggestion competes for those words. Each replacement is listed under Accepted edits."
-                    : "Repository suggestions wait for you to accept them. Turn this on to apply an unambiguous match without review."
-                }
-              >
-                <Toggle
-                  label="Auto-accept repository suggestions"
-                  checked={draft.auto_accept_suggestions}
-                  onChange={(auto_accept_suggestions) =>
-                    setDraft({ ...draft, auto_accept_suggestions })
-                  }
-                />
-              </Row>
-            </div>
             <h3 className="group">History</h3>
             <div className="card rows">
               <Row
@@ -831,13 +889,13 @@ export default function App() {
                   value={
                     autoDetect
                       ? ""
-                      : (cleanup.fillers[draft.language] ?? []).join(",")
+                      : (cleanup.fillers[draftLanguage] ?? []).join(",")
                   }
                   onChange={(e) =>
                     updateCleanup({
                       fillers: {
                         ...cleanup.fillers,
-                        [draft.language]: e.target.value.split(","),
+                        [draftLanguage]: e.target.value.split(","),
                       },
                     })
                   }
@@ -855,208 +913,6 @@ export default function App() {
                   }
                 />
               </Row>
-              <Row
-                title="Enhanced cleanup"
-                note={`Rewrites the transcript with a language model after Basic cleanup.${
-                  managedUnsupported
-                    ? ` Managed S1-mini supports English only; Conch uses Basic cleanup for ${languageName}. A local or remote endpoint works in any language.`
-                    : ""
-                }`}
-              >
-                <select
-                  aria-label="Enhanced cleanup"
-                  value={cleanup.enhanced}
-                  onChange={(e) =>
-                    updateCleanup({
-                      enhanced: e.target.value,
-                      remote_enabled: false,
-                    })
-                  }
-                >
-                  <option value="disabled">Disabled</option>
-                  <option value="managed">Managed S1-mini</option>
-                  <option value="local">Local endpoint</option>
-                  <option value="remote">Remote endpoint</option>
-                </select>
-              </Row>
-              {cleanup.enhanced === "managed" && (
-                <ModelStatus
-                  ready={installed(cleanupMini.id)}
-                  downloading={downloadingId === cleanupMini.id}
-                  percent={percent}
-                  blocked={downloadBusy}
-                  label={cleanupMini.label}
-                  readyText={`${cleanupMini.label} is installed.`}
-                  needText="Managed cleanup needs the optional S1-mini model. Until it is installed, Conch uses Basic cleanup."
-                  button={`Download ${cleanupMini.label}, ${size(cleanupMini)}`}
-                  onDownload={() => void downloadModel(cleanupMini.id)}
-                />
-              )}
-              {(cleanup.enhanced === "local" ||
-                cleanup.enhanced === "remote") && (
-                <>
-                  <Row title="Endpoint" note="Full chat-completions endpoint">
-                    <input
-                      aria-label="Endpoint"
-                      value={cleanup.endpoint}
-                      onChange={(e) =>
-                        updateCleanup({
-                          endpoint: e.target.value,
-                          remote_enabled: false,
-                        })
-                      }
-                      placeholder="http://127.0.0.1:8080/v1/chat/completions"
-                    />
-                  </Row>
-                  <Row title="Model">
-                    <input
-                      aria-label="Model"
-                      value={cleanup.model}
-                      onChange={(e) => updateCleanup({ model: e.target.value })}
-                    />
-                  </Row>
-                </>
-              )}
-              {cleanup.enhanced === "remote" && (
-                <div className="callout">
-                  <p>
-                    Destination: {cleanup.endpoint || "Set an HTTPS endpoint"}
-                  </p>
-                  <p>
-                    Dictated text leaves this device. The provider may charge
-                    for requests. Protected spans use placeholders, but the
-                    transcript can still contain confidential text. Conch sends
-                    no audio, source files, vocabulary indexes, or clipboard
-                    content.
-                  </p>
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={cleanup.remote_enabled}
-                      onChange={(e) =>
-                        updateCleanup({ remote_enabled: e.target.checked })
-                      }
-                    />
-                    Enable remote cleanup for this destination
-                  </label>
-                  <label className="field">
-                    API key
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={secret}
-                      onChange={(e) => setSecret(e.target.value)}
-                    />
-                  </label>
-                  <div className="actions">
-                    <button
-                      onClick={async () => {
-                        if (
-                          await command("credential", {
-                            endpoint: cleanup.endpoint,
-                            secret,
-                          })
-                        ) {
-                          setSecret("");
-                          setNotice("Credential saved in the platform store");
-                        }
-                      }}
-                    >
-                      Save key
-                    </button>
-                    <button
-                      className="ghost"
-                      onClick={async () => {
-                        if (
-                          await command("credential", {
-                            endpoint: cleanup.endpoint,
-                            secret: null,
-                          })
-                        ) {
-                          setSecret("");
-                          setNotice("Credential removed");
-                        }
-                      }}
-                    >
-                      Remove key
-                    </button>
-                  </div>
-                </div>
-              )}
-              {cleanup.enhanced !== "disabled" && (
-                <p className="note">
-                  Enhanced failures use Basic. Preservation checks do not prove
-                  semantic equivalence. Enhanced input is limited to 3,000
-                  bytes.
-                </p>
-              )}
-            </div>
-            <h3 className="group">Recognition</h3>
-            <div className="card rows">
-              <Row
-                title="Language"
-                note={`The language you speak. Models that cannot recognize it are hidden.${
-                  autoDetect
-                    ? " Auto-detect is less reliable for recordings under a few seconds. The first chunk of a recording with speech sets the language for the rest of it."
-                    : ""
-                }${
-                  draft.language === "en"
-                    ? ""
-                    : ' Spelled-letter matching of acronyms, such as "pod gee see", works for English only.'
-                }`}
-              >
-                <LanguageMenu
-                  languages={view.languages}
-                  models={view.models}
-                  value={draft.language}
-                  disabled={downloadBusy}
-                  onChange={(code) =>
-                    setDraft({
-                      ...draft,
-                      language: code,
-                      recognizer: modelForLanguage(
-                        view.models,
-                        code,
-                        draft.recognizer,
-                      ),
-                    })
-                  }
-                />
-              </Row>
-              <Row title="Recognition model" note={RECOGNIZER_TRADEOFF}>
-                <RecognizerMenu
-                  models={view.models}
-                  language={draft.language}
-                  value={draft.recognizer}
-                  onChange={(id) => setDraft({ ...draft, recognizer: id })}
-                  ready={recognizerReady}
-                  disabled={downloadBusy}
-                />
-              </Row>
-              <ModelStatus
-                ready={recognizerReady(draft.recognizer)}
-                downloading={downloadingId === draft.recognizer}
-                percent={percent}
-                blocked={downloadBusy}
-                label={draftRecognizer.label}
-                readyText={`${draftRecognizer.label} is installed. Speech stays on this device.`}
-                needText={
-                  voiceDetectionOnly
-                    ? "This model needs the voice detection model before you can record with it."
-                    : "This model needs a one-time download before you can record with it."
-                }
-                button={
-                  voiceDetectionOnly
-                    ? `Download ${vad.label}, ${size(vad)}`
-                    : `Download ${draftRecognizer.label}, ${size(draftRecognizer)}`
-                }
-                note={
-                  voiceDetectionOnly
-                    ? undefined
-                    : voiceDetectionNote(view.models)
-                }
-                onDownload={() => void downloadModel(draft.recognizer)}
-              />
             </div>
             <p className="note">
               Core dictation works offline after a model download.

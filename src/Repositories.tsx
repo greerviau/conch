@@ -88,7 +88,6 @@ export function Repositories({
       {
         id: crypto.randomUUID(),
         root: path.trim(),
-        selected: true,
         exclusions: [],
       },
     ]);

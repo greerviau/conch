@@ -13,7 +13,6 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: ipc }));
 const repo = (id: string, root: string): Repository => ({
   id,
   root,
-  selected: true,
   exclusions: [],
 });
 const repos = [
@@ -110,7 +109,6 @@ it("adds a repository by typed path", () => {
   expect(next).toHaveLength(4);
   expect(next[3]).toMatchObject({
     root: "/work/new",
-    selected: true,
     exclusions: [],
   });
 });

@@ -21,8 +21,7 @@ pub struct Cleanup {
     #[serde(deserialize_with = "fillers_by_language")]
     pub fillers: std::collections::BTreeMap<String, Vec<String>>,
     pub excluded: Vec<String>,
-    /// Enhanced cleanup: `disabled`, `managed`, `local`, or `remote`.
-    pub enhanced: String,
+    /// The chat-completions endpoint that local and remote Enhanced cleanup use.
     pub endpoint: String,
     pub model: String,
     pub remote_enabled: bool,
@@ -46,7 +45,6 @@ impl Default for Cleanup {
         Self {
             fillers: [("en".to_owned(), vec!["um".to_owned(), "uh".to_owned()])].into(),
             excluded: vec![],
-            enhanced: "disabled".into(),
             endpoint: String::new(),
             model: String::new(),
             remote_enabled: false,
@@ -58,6 +56,8 @@ pub struct Snapshot {
     pub mappings: Vec<Mapping>,
     pub vocabulary: Vec<Vocabulary>,
     pub cleanup: Cleanup,
+    /// Enhanced cleanup: `disabled`, `managed`, `local`, or `remote`.
+    pub enhanced: String,
     /// Apply repository suggestions that have one candidate without review.
     pub auto_accept: bool,
     /// ISO code of the recognition language, or `auto`.
@@ -71,6 +71,7 @@ impl Default for Snapshot {
             mappings: vec![],
             vocabulary: vec![],
             cleanup: Cleanup::default(),
+            enhanced: "disabled".into(),
             auto_accept: false,
             language: "en".into(),
             recognizer: "small.en".into(),
@@ -1168,15 +1169,6 @@ mod tests {
     #[test]
     fn spelled_letters_make_no_suggestion_in_auto_detect() {
         assert_eq!(spelled_letters("auto"), 0);
-    }
-    #[test]
-    fn enhanced_cleanup_is_disabled_unless_settings_name_a_choice() {
-        assert_eq!(Cleanup::default().enhanced, "disabled");
-        let saved: Cleanup =
-            serde_json::from_str(r#"{"mode":"enhanced","provider":"managed"}"#).unwrap();
-        assert_eq!(saved.enhanced, "disabled");
-        let chosen: Cleanup = serde_json::from_str(r#"{"enhanced":"local"}"#).unwrap();
-        assert_eq!(chosen.enhanced, "local");
     }
     fn indexed(texts: &[&str]) -> Snapshot {
         Snapshot {

@@ -670,7 +670,7 @@ pub struct CleanupRequest<'a> {
 /// whole dictation.
 pub fn enhanced_part(request: CleanupRequest<'_>) -> Result<String, String> {
     let cleanup = &request.snapshot.cleanup;
-    if cleanup.enhanced != "disabled" && !request.raw.contains("CONCHPROTECTED") {
+    if request.snapshot.enhanced != "disabled" && !request.raw.contains("CONCHPROTECTED") {
         let masked = core::mask(request.raw, request.snapshot);
         if core::basic(&masked.text, cleanup, &request.snapshot.language)
             .trim()
@@ -691,10 +691,10 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         cpu,
     } = request;
     let cleanup = &snapshot.cleanup;
-    if cleanup.enhanced == "disabled" {
+    if snapshot.enhanced == "disabled" {
         return Err("Enhanced cleanup is disabled".into());
     }
-    if cleanup.enhanced == "managed" && !managed_cleanup_supported(&snapshot.language) {
+    if snapshot.enhanced == "managed" && !managed_cleanup_supported(&snapshot.language) {
         return Err("Managed cleanup supports English only; using Basic".into());
     }
     if worker.locked().cancelled {
@@ -712,7 +712,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         return Err("Enhanced input exceeds the conservative 3,000-byte limit; using Basic".into());
     }
     let mut lease = None;
-    let (endpoint, token, system, user) = if cleanup.enhanced == "managed" {
+    let (endpoint, token, system, user) = if snapshot.enhanced == "managed" {
         let held = acquire(workers, &data.join(CLEANUP.name), Kind::Llama, worker, cpu)?;
         let (url, key) = (held.server.endpoint.clone(), held.server.token.clone());
         lease = Some(held);
@@ -723,7 +723,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
             format!("{CONTROL_LINE}\n{basic}"),
         )
     } else {
-        let remote = cleanup.enhanced == "remote";
+        let remote = snapshot.enhanced == "remote";
         if remote && !cleanup.remote_enabled {
             return Err("Remote cleanup is disabled".into());
         }
@@ -748,9 +748,9 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         let operation = async {
             if worker.locked().cancelled {return Err("Cancelled".to_string());}
             let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(30));
-            if cleanup.enhanced != "remote" {builder = builder.no_proxy();}
+            if snapshot.enhanced != "remote" {builder = builder.no_proxy();}
             let client = builder.build().map_err(|_| "Cannot initialize cleanup client")?;
-            if cleanup.enhanced == "managed" {
+            if snapshot.enhanced == "managed" {
                 let tokenizer = endpoint.trim_end_matches("/v1/chat/completions").to_owned()+"/tokenize";
                 let tokens: Value = client.post(tokenizer).bearer_auth(&token).json(&json!({"content":format!("{system}\n{user}")})).send().await.and_then(|r|r.error_for_status()).map_err(|_| "Local tokenization failed; using Basic")?.json().await.map_err(|_| "Invalid tokenizer response")?;
                 if tokens["tokens"].as_array().is_none_or(|tokens|tokens.len() > 1000) {return Err("Managed cleanup input exceeds 1,000 tokens; using Basic".into());}
@@ -1037,8 +1037,10 @@ mod tests {
     #[test]
     fn a_part_that_basic_cleanup_empties_cleans_to_nothing_without_a_worker() {
         let dir = tempfile::tempdir().unwrap();
-        let mut snapshot = crate::core::Snapshot::default();
-        snapshot.cleanup.enhanced = "managed".into();
+        let mut snapshot = crate::core::Snapshot {
+            enhanced: "managed".into(),
+            ..Default::default()
+        };
         let part = |raw: &str, snapshot: &crate::core::Snapshot| {
             enhanced_part(CleanupRequest {
                 workers: dir.path(),
@@ -1053,7 +1055,7 @@ mod tests {
         // A part with words reaches the worker, which is not installed here.
         assert!(part("rename the helper", &snapshot).is_err());
         // Disabled cleanup stays an error for every part.
-        snapshot.cleanup.enhanced = "disabled".into();
+        snapshot.enhanced = "disabled".into();
         assert!(part("um, uh", &snapshot).is_err());
     }
     #[test]
@@ -1211,8 +1213,10 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     fn enhanced_cleanup_keeps_the_time_the_model_reported() {
         let dir = tempfile::tempdir().unwrap();
         fake::install_cleanup(dir.path());
-        let mut snapshot = crate::core::Snapshot::default();
-        snapshot.cleanup.enhanced = "managed".into();
+        let snapshot = crate::core::Snapshot {
+            enhanced: "managed".into(),
+            ..Default::default()
+        };
         let worker = new_worker();
         assert_eq!(cleanup_model_time(&worker), None);
         let cleaned = enhanced(CleanupRequest {
@@ -1492,7 +1496,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             language: language.into(),
             ..Default::default()
         };
-        snapshot.cleanup.enhanced = enhanced.into();
+        snapshot.enhanced = enhanced.into();
         snapshot.cleanup.endpoint = endpoint.into();
         enhanced_cleanup(CleanupRequest {
             workers: dir,

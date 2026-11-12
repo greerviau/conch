@@ -4,7 +4,7 @@ import { Mappings } from "./Mappings";
 import type { Mapping, Repository } from "./types";
 afterEach(cleanup);
 const repositories: Repository[] = [
-  { id: "a", root: "/work/conch", selected: true, exclusions: [] },
+  { id: "a", root: "/work/conch", exclusions: [] },
 ];
 const mappings: Mapping[] = [
   { phrase: "git hub", replacement: "GitHub", repository: null, enabled: true },

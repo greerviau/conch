@@ -194,8 +194,10 @@ impl Setup {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let mut snapshot = Snapshot::default();
-    snapshot.cleanup.enhanced = "managed".into();
+    let snapshot = Snapshot {
+        enhanced: "managed".into(),
+        ..Default::default()
+    };
     let setup = Setup {
         workers: PathBuf::from(&args[1]),
         data: PathBuf::from(&args[2]),
