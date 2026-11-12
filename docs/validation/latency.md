@@ -122,7 +122,10 @@ The prompt is cached after the first request (1 token evaluated, about 10 ms) an
 About 100 tokens per second on the GPU and 85 on the CPU (`--gpu-layers 0`) suggest that decoding is limited by memory bandwidth, so the worker's threads and layers are not a lever (moderate confidence).
 
 Conch now cleans each chunk and the tail as soon as it is recognized (`Transcriber::start_cleaning`, a second thread behind the recognizer).
-After the stop only the tail's cleaning is left, and a failure of any part gives Basic cleanup for the whole result.
+After the stop only the tail's cleaning is left, unless the cleaner is slower than the speech: parts are cleaned one at a time, so earlier parts can still be queued at the stop.
+A failure of any part gives Basic cleanup for the whole result.
+Each part is masked alone, so a mapping or a quotation that spans two parts is not protected in either; `core::parts_mask_like_whole` detects that and the whole text is cleaned after the stop instead.
+A recognition failure drops the parts still queued for cleaning and does not wait for the one in progress, so the recording can be recognized again at once.
 `examples/cleanup_latency.rs` fed the 16 long synthetic dictations (10 to 30 s, 0.4 to 0.9 s pauses between sentences, 0.6 s of quiet before the stop, `small.en`, managed S1-mini) at real time, once with per-chunk cleaning and once with the earlier flow (`after`: one cleanup of the whole text after the stop). One run per clip.
 
 | Dictation | Chunks | Per-chunk cleaning, stop to text | One cleanup after the stop |
@@ -134,7 +137,7 @@ After the stop only the tail's cleaning is left, and a failure of any part gives
 | 12 clips of 10 to 24 s | 0 | 816 to 1926 ms (median 1410 ms) | 696 to 1938 ms (median 1257 ms) |
 
 - A dictation with a chunk saves about 0.6 to 0.8 s: the wait is the tail's recognition and its cleaning, about 170 to 370 ms and 240 to 440 ms in these runs.
-- A dictation without a chunk gains nothing, and the two columns differ only by run-to-run variation. A chunk needs 8 s of audio and a pause of 1 s, and the pauses between the sentences of these clips are shorter, so only the five-sentence clips had one. Recognition of the 10 to 24 s tail (0.3 to 1.0 s) now dominates those dictations.
+- A dictation without a chunk gains nothing, and the two columns differ only by run-to-run variation. A chunk needs 8 s of audio and a pause of 1 s (or 25 s of audio pending), and the pauses between the sentences of these clips are shorter, so only the five-sentence clips had one. Recognition of the 10 to 24 s tail (0.3 to 1.0 s) now dominates those dictations.
 - The cleaned text of the per-chunk run equalled the whole-text cleanup of the same raw text in 16 of 16 dictations, but 12 of them had a single part, so only the 4 dictations with a chunk compare per-chunk with whole-text cleaning; their word error rate against the spoken words was the same (12.1% over all 16).
 - The `cleanup_latency` run without `after` also cleans the whole text once after the stop to compare texts. That request reuses the prompt cache of the per-chunk request, so its time (356 to 1039 ms) is too low for the earlier flow; the `after` run is the comparison.
 - Four requests at once on `llama-server --parallel 4` took 481 ms for four 21 to 25 token sentences against 857 ms for the 92-token text in one request (1.8 times faster, not 4 times). The worker runs one slot, where the four requests took 943 ms. This is not used.

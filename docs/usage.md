@@ -36,8 +36,10 @@ Excluded literal terms stay as dictated.
 Enhanced cleanup is Disabled until you choose Managed S1-mini, Local endpoint, or Remote endpoint.
 Managed S1-mini asks for the 484 MB download; until it is installed, Conch uses Basic cleanup.
 Settings saved by an earlier version start with Enhanced cleanup Disabled.
-With Enhanced cleanup on, Conch cleans each finished chunk while you keep speaking, so after you stop only the audio after the last chunk is left to recognize and clean.
-A dictation without a chunk, one that never pauses for a second after 8 seconds, is cleaned whole after the stop.
+With Enhanced cleanup on, Conch cleans each finished chunk while you keep speaking, one at a time.
+After you stop, it recognizes and cleans the audio after the last chunk, behind any chunk whose cleaning is still running; a slow endpoint can leave a backlog.
+A dictation with no chunk is recognized and cleaned whole after the stop. That is one shorter than about 9 seconds, or one with no pause of a second after 8 seconds and under 25 seconds of audio pending.
+If a mapping or a quotation spans two chunks, Conch cleans the whole text after the stop, because each chunk was protected alone.
 A part that Basic cleanup leaves empty adds nothing to the result.
 If cleaning any part fails, the whole result gets Basic cleanup and the status line gives the reason.
 

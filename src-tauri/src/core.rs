@@ -477,6 +477,17 @@ pub fn recognition_hint(snapshot: &Snapshot) -> String {
     }
     format!("{PREFIX}{}.", chosen.join(", "))
 }
+/// Whether masking each part protects the same literals as masking the whole
+/// text. A mapping or a quotation that spans two parts is protected in the
+/// whole text and in neither part.
+pub fn parts_mask_like_whole(parts: &[String], snapshot: &Snapshot) -> bool {
+    let whole = mask(&parts.join(" "), snapshot).literals;
+    let split: Vec<String> = parts
+        .iter()
+        .flat_map(|part| mask(part, snapshot).literals)
+        .collect();
+    whole == split
+}
 pub fn prepare(raw: &str, snapshot: &Snapshot) -> ResultText {
     let masked = mask(raw, snapshot);
     let text = masked
@@ -679,6 +690,41 @@ mod tests {
             repository: repository.map(str::to_owned),
             enabled: true,
         }
+    }
+    fn parts(texts: &[&str]) -> Vec<String> {
+        texts.iter().map(|text| (*text).into()).collect()
+    }
+    #[test]
+    fn parts_that_contain_every_protected_span_mask_like_the_whole_text() {
+        let snapshot = Snapshot {
+            mappings: vec![mapping("alpha beta", "Widget", None)],
+            ..Default::default()
+        };
+        assert!(parts_mask_like_whole(
+            &parts(&["say alpha beta.", "then \"quote\" it."]),
+            &snapshot
+        ));
+        assert!(parts_mask_like_whole(&parts(&["only one part"]), &snapshot));
+        assert!(parts_mask_like_whole(&[], &snapshot));
+    }
+    #[test]
+    fn a_mapping_that_spans_two_parts_does_not_mask_like_the_whole_text() {
+        let snapshot = Snapshot {
+            mappings: vec![mapping("alpha beta", "Widget", None)],
+            ..Default::default()
+        };
+        assert!(!parts_mask_like_whole(
+            &parts(&["say alpha", "beta."]),
+            &snapshot
+        ));
+    }
+    #[test]
+    fn a_quotation_that_spans_two_parts_does_not_mask_like_the_whole_text() {
+        let snapshot = Snapshot::default();
+        assert!(!parts_mask_like_whole(
+            &parts(&["say \"um", "hello\""]),
+            &snapshot
+        ));
     }
     #[test]
     fn repeated_accepted_replacements_keep_independent_undo() {

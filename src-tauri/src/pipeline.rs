@@ -1,4 +1,13 @@
-use std::{collections::VecDeque, ops::Range, sync::mpsc, thread::JoinHandle};
+use std::{
+    collections::VecDeque,
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread::JoinHandle,
+};
 
 enum Job {
     Chunk(Vec<f32>),
@@ -20,6 +29,8 @@ type Cleaner = Box<dyn Fn(&str) -> Result<String, String> + Send>;
 pub struct Recognized {
     pub text: String,
     pub speculative: bool,
+    /// The text of each chunk and of the tail, in order, as joined into `text`.
+    pub parts: Vec<String>,
     /// When the last part was recognized, before its cleaning finished.
     pub recognized_at: std::time::Instant,
     /// The cleaned parts joined, or the first cleaning failure; `None` when the
@@ -68,24 +79,30 @@ impl Transcriber {
         let (send, receive) = mpsc::channel::<Job>();
         let thread = std::thread::spawn(move || {
             warm();
+            // Set when recognition fails, so parts still queued for cleaning are
+            // skipped.
+            let abandoned = Arc::new(AtomicBool::new(false));
             let cleaner = clean.map(|clean| {
                 let (send, receive) = mpsc::channel::<String>();
-                let thread = std::thread::spawn(move || {
-                    let mut cleaned: Vec<String> = vec![];
-                    let mut failure = None;
-                    for part in receive {
-                        if failure.is_some() {
-                            continue;
-                        }
-                        match clean(&part) {
-                            Ok(text) if !text.trim().is_empty() => {
-                                cleaned.push(text.trim().to_owned())
+                let thread = std::thread::spawn({
+                    let abandoned = abandoned.clone();
+                    move || {
+                        let mut cleaned: Vec<String> = vec![];
+                        let mut failure = None;
+                        for part in receive {
+                            if failure.is_some() || abandoned.load(Ordering::Relaxed) {
+                                continue;
                             }
-                            Ok(_) => (),
-                            Err(error) => failure = Some(error),
+                            match clean(&part) {
+                                Ok(text) if !text.trim().is_empty() => {
+                                    cleaned.push(text.trim().to_owned())
+                                }
+                                Ok(_) => (),
+                                Err(error) => failure = Some(error),
+                            }
                         }
+                        failure.map_or_else(|| Ok(cleaned.join(" ")), Err)
                     }
-                    failure.map_or_else(|| Ok(cleaned.join(" ")), Err)
                 });
                 (send, thread)
             });
@@ -152,23 +169,26 @@ impl Transcriber {
                 }
             }
             let recognized_at = std::time::Instant::now();
+            if let Some(error) = failure {
+                // The recording is recognized again as a whole, so the cleaning
+                // of its parts is not needed. A cleaning already in progress
+                // ends on its own.
+                abandoned.store(true, Ordering::Relaxed);
+                return Err(error);
+            }
             let cleaned = cleaner.map(|(send, thread)| {
                 drop(send);
                 thread
                     .join()
                     .unwrap_or_else(|_| Err("Cleanup worker failed".into()))
             });
-            failure.map_or_else(
-                || {
-                    Ok(Recognized {
-                        text: parts.join(" "),
-                        speculative,
-                        recognized_at,
-                        cleaned,
-                    })
-                },
-                Err,
-            )
+            Ok(Recognized {
+                text: parts.join(" "),
+                parts,
+                speculative,
+                recognized_at,
+                cleaned,
+            })
         });
         Self { send, thread }
     }
@@ -568,5 +588,104 @@ mod tests {
         transcriber.push_tail(chunk(100), None);
         let outcome = transcriber.finish().unwrap();
         assert!(outcome.recognized_at.elapsed() >= std::time::Duration::from_millis(100));
+    }
+    #[test]
+    fn a_recognition_failure_does_not_wait_for_a_cleaning_in_progress() {
+        let (release, hold) = mpsc::channel::<()>();
+        let (started_send, started) = mpsc::channel::<()>();
+        let calls = Arc::new(Mutex::new(0));
+        let transcriber = Transcriber::start_cleaning(
+            || (),
+            {
+                let calls = calls.clone();
+                move |_, _| {
+                    let mut calls = calls.lock().unwrap();
+                    *calls += 1;
+                    if *calls == 1 {
+                        Ok("first".into())
+                    } else {
+                        Err("worker died".into())
+                    }
+                }
+            },
+            {
+                let hold = Mutex::new(hold);
+                let started = Mutex::new(started_send);
+                move |text| {
+                    started.lock().unwrap().send(()).unwrap();
+                    let _ = hold.lock().unwrap().recv();
+                    Ok(text.into())
+                }
+            },
+        );
+        transcriber.push(chunk(100));
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the first chunk was never cleaned");
+        transcriber.push(chunk(100));
+        let (done_send, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_send.send(transcriber.finish());
+        });
+        let outcome = done.recv_timeout(std::time::Duration::from_secs(2));
+        let _ = release.send(());
+        let outcome = outcome.expect("finish waited for the cleaning that was in progress");
+        assert_eq!(outcome.unwrap_err(), "worker died");
+    }
+    #[test]
+    fn parts_still_queued_are_not_cleaned_after_a_recognition_failure() {
+        let (release, hold) = mpsc::channel::<()>();
+        let (started_send, started) = mpsc::channel::<()>();
+        let cleaned = Arc::new(Mutex::new(vec![]));
+        let calls = Arc::new(Mutex::new(0));
+        let transcriber = Transcriber::start_cleaning(
+            || (),
+            {
+                let calls = calls.clone();
+                move |_, _| {
+                    let mut calls = calls.lock().unwrap();
+                    *calls += 1;
+                    match *calls {
+                        1 | 2 => Ok(format!("part{calls}")),
+                        _ => Err("worker died".into()),
+                    }
+                }
+            },
+            {
+                let hold = Mutex::new(hold);
+                let started = Mutex::new(started_send);
+                let cleaned = cleaned.clone();
+                move |text| {
+                    cleaned.lock().unwrap().push(text.to_owned());
+                    let _ = started.lock().unwrap().send(());
+                    let _ = hold.lock().unwrap().recv();
+                    Ok(text.into())
+                }
+            },
+        );
+        transcriber.push(chunk(100));
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the first chunk was never cleaned");
+        transcriber.push(chunk(100));
+        transcriber.push(chunk(100));
+        assert_eq!(transcriber.finish().unwrap_err(), "worker died");
+        let _ = release.send(());
+        let _ = release.send(());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(*cleaned.lock().unwrap(), vec!["part1".to_string()]);
+    }
+    #[test]
+    fn the_parts_of_the_recording_are_returned_in_order() {
+        let transcriber = Transcriber::start(|| (), |wav, _| Ok(format!("text{}", wav.len())));
+        transcriber.push(chunk(100));
+        transcriber.push_tail(chunk(200), None);
+        let [a, b] = sizes(&[100, 200])[..] else {
+            unreachable!()
+        };
+        assert_eq!(
+            transcriber.finish().unwrap().parts,
+            vec![format!("text{a}"), format!("text{b}")]
+        );
     }
 }

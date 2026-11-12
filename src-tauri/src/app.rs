@@ -421,7 +421,7 @@ fn process(
     let recognition = match chunked.map(Transcriber::finish) {
         Some(Ok(done)) => {
             speculative = done.speculative;
-            cleaned = done.cleaned;
+            cleaned = usable_cleaning(&done.parts, done.cleaned, &snapshot);
             recognized_at = Some(done.recognized_at);
             Ok(done.text)
         }
@@ -516,6 +516,16 @@ fn process(
     }
     inner.result = Some(result);
     inner.retry = None;
+}
+/// The cleaning done during the recording, unless a mapping or a quotation
+/// spans two parts. Each part was masked alone, so such a span was not
+/// protected, and the whole text is cleaned after the stop instead.
+fn usable_cleaning(
+    parts: &[String],
+    cleaned: Option<Result<String, String>>,
+    snapshot: &Snapshot,
+) -> Option<Result<String, String>> {
+    cleaned.filter(|_| core::parts_mask_like_whole(parts, snapshot))
 }
 /// Puts the outcome of Enhanced cleanup into the prepared result: the cleaned
 /// text on success, or the Basic text and the reason on failure.
@@ -982,6 +992,32 @@ pub fn set_hotkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cleaned_parts_are_used_only_when_they_protect_what_the_whole_text_protects() {
+        let snapshot = Snapshot {
+            mappings: vec![core::Mapping {
+                phrase: "alpha beta".into(),
+                replacement: "Widget".into(),
+                repository: None,
+                enabled: true,
+            }],
+            ..Default::default()
+        };
+        let cleaned = Some(Ok("Say alpha beta.".to_string()));
+        let parts = |texts: &[&str]| texts.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            usable_cleaning(&parts(&["say alpha", "beta."]), cleaned.clone(), &snapshot),
+            None
+        );
+        assert_eq!(
+            usable_cleaning(&parts(&["say alpha beta."]), cleaned.clone(), &snapshot),
+            cleaned
+        );
+        assert_eq!(
+            usable_cleaning(&parts(&["say alpha", "beta."]), None, &snapshot),
+            None
+        );
+    }
     #[test]
     fn enhanced_cleanup_replaces_the_prepared_text_and_a_failure_keeps_it() {
         let snapshot = Snapshot::default();
