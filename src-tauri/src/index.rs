@@ -10,6 +10,15 @@ pub struct Index {
 }
 pub const MAX_FILE_BYTES: u64 = 512 * 1024;
 pub const MAX_ENTRIES: usize = 50_000;
+/// Build output and dependency folders the scan does not enter.
+pub const SKIPPED_DIRECTORIES: [&str; 6] = [
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "__pycache__",
+];
 pub fn scan(root: &Path, repository: &str, exclusions: &[String]) -> Result<Index, String> {
     if !root.is_dir() {
         return Ok(Index::default());
@@ -27,10 +36,9 @@ pub fn scan(root: &Path, repository: &str, exclusions: &[String]) -> Result<Inde
         .follow_links(false)
         .overrides(overrides.build().map_err(|_| "Invalid exclusions")?)
         .filter_entry(|e| {
-            !matches!(
-                e.file_name().to_str(),
-                Some("node_modules" | "target" | "dist" | "build" | "vendor" | "__pycache__")
-            )
+            e.file_name()
+                .to_str()
+                .is_none_or(|name| !SKIPPED_DIRECTORIES.contains(&name))
         })
         .build();
     let mut result = Index {

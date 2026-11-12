@@ -1,3 +1,4 @@
+use crate::lock::Locked;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{
     sync::{Arc, Mutex, mpsc},
@@ -71,7 +72,7 @@ pub fn capture(
     let make = |format| -> Result<cpal::Stream, String> {
         let error = error.clone();
         let on_error = move |_| {
-            *error.lock().unwrap() = true;
+            *error.locked() = true;
         };
         match format {
             cpal::SampleFormat::F32 => build::<f32>(
@@ -111,13 +112,13 @@ pub fn capture(
     ready();
     let start = Instant::now();
     let keep = loop {
-        if *error.lock().unwrap() {
+        if *error.locked() {
             return Err("Microphone capture failed".into());
         }
         if start.elapsed().as_secs() >= MAX_SECONDS as u64 {
             break true;
         }
-        observe(&buffer.lock().unwrap());
+        observe(&buffer.locked());
         match stop.recv_timeout(Duration::from_millis(100)) {
             Ok(keep) => break keep,
             Err(mpsc::RecvTimeoutError::Disconnected) => break false,
@@ -128,7 +129,7 @@ pub fn capture(
     if !keep {
         return Ok(None);
     }
-    let mut buffer = buffer.lock().unwrap();
+    let mut buffer = buffer.locked();
     if buffer.len() < RATE as usize / 5 {
         return Err("Recording is too short; record again".into());
     }
@@ -158,7 +159,7 @@ where
         .build_input_stream(
             config,
             move |samples: &[T], _| {
-                let mut out = buffer.lock().unwrap();
+                let mut out = buffer.locked();
                 let mut peak = 0.0f32;
                 for frame in samples.chunks_exact(channels) {
                     sum +=

@@ -52,6 +52,7 @@ pub fn permission() -> bool {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use crate::lock::Locked;
     use core_foundation::{
         base::{CFEqual, CFRelease, CFTypeRef, TCFType},
         string::CFString,
@@ -141,7 +142,7 @@ mod macos {
     /// A failed request is retried on the next call.
     fn wake_application(pid: i32) -> Option<std::time::Instant> {
         use core_foundation::boolean::CFBoolean;
-        let mut woken = WOKEN.lock().unwrap();
+        let mut woken = WOKEN.locked();
         if let Some((_, at)) = woken.iter().find(|(woken_pid, _)| *woken_pid == pid) {
             return Some(*at);
         }

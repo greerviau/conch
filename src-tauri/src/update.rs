@@ -1,3 +1,4 @@
+use crate::lock::Locked;
 use crate::{
     app::AppState,
     inference,
@@ -66,11 +67,11 @@ impl Tracker {
         }
     }
     pub fn status(&self) -> Status {
-        self.inner.lock().unwrap().0.clone()
+        self.inner.locked().0.clone()
     }
     /// Moves to `next` unless a check or install is already running, in one step.
     pub fn begin(&self, next: Status) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         if matches!(inner.0, Status::Checking | Status::Installing) {
             return false;
         }
@@ -78,13 +79,13 @@ impl Tracker {
         true
     }
     pub fn set(&self, status: Status) {
-        self.inner.lock().unwrap().0 = status;
+        self.inner.locked().0 = status;
     }
     fn schedule(&self, due: Instant) {
-        self.inner.lock().unwrap().1 = Some(due);
+        self.inner.locked().1 = Some(due);
     }
     fn due(&self) -> Option<Instant> {
-        self.inner.lock().unwrap().1
+        self.inner.locked().1
     }
 }
 impl Default for Tracker {
@@ -170,15 +171,7 @@ pub fn check_now(app: &AppHandle) {
 /// Downloads the available update, waits for any recording to finish, stops
 /// the workers, installs, and restarts Conch. Blocks the calling thread.
 pub fn install_now(app: &AppHandle) -> Result<(), String> {
-    let phase = |app: &AppHandle| {
-        app.state::<AppState>()
-            .inner
-            .lock()
-            .unwrap()
-            .session
-            .phase
-            .clone()
-    };
+    let phase = |app: &AppHandle| app.state::<AppState>().inner.locked().session.phase.clone();
     if let Some(reason) = install_blocked(&phase(app)) {
         return Err(reason.into());
     }
@@ -233,8 +226,7 @@ pub fn watch(app: &AppHandle) {
             let enabled = app
                 .state::<AppState>()
                 .inner
-                .lock()
-                .unwrap()
+                .locked()
                 .settings
                 .check_updates;
             let due = app.state::<Tracker>().due();

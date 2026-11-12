@@ -79,7 +79,7 @@ With Automatic paste off, Conch does not ask for the Accessibility permission.
 The top bar switches between Dictation, History, Repositories, Mappings, Settings, and Logs.
 On Repositories, click Add repository to choose a folder, or Enter a path instead to type one.
 Changes to repositories, mappings, and settings stay in a draft until you click Save changes in the bar that appears at the bottom.
-After saving, click Refresh indexes.
+Conch indexes a saved repository within a few seconds and indexes it again when its files change. Changes inside hidden folders such as `.git` and inside `node_modules`, `target`, `dist`, `build`, `vendor`, and `__pycache__` do not start a new index. Click Refresh indexes to index every repository now.
 Each repository shows Ready, Partial index, or Folder not found, its term count, when it was last indexed, and how many symbol extractions were skipped.
 Click Terms to browse what Conch indexed for a repository: file paths, file names, and function, class, and type names.
 Search the terms, filter them to Files or Symbols, and move through them 100 at a time with Previous and Next.

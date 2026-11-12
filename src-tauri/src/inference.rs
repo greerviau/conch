@@ -1,3 +1,4 @@
+use crate::lock::Locked;
 use crate::{
     core::{self, Snapshot},
     languages::{CODES, CODES_99, ENGLISH},
@@ -34,7 +35,7 @@ pub struct WorkerState {
 pub type Worker = Arc<Mutex<WorkerState>>;
 /// The time the model reported for the latest cleanup request of `worker`.
 pub fn cleanup_model_time(worker: &Worker) -> Option<Duration> {
-    worker.lock().unwrap().cleanup_model_time
+    worker.locked().cleanup_model_time
 }
 /// Prompt plus generation time in a `llama-server` reply, if it has them.
 fn model_time(reply: &Value) -> Option<Duration> {
@@ -164,13 +165,7 @@ pub struct Server {
 }
 impl Server {
     fn alive(&self) -> bool {
-        self.child
-            .lock()
-            .unwrap()
-            .try_wait()
-            .ok()
-            .flatten()
-            .is_none()
+        self.child.locked().try_wait().ok().flatten().is_none()
     }
     /// The log source for this worker's entries.
     fn source(&self) -> &'static str {
@@ -193,7 +188,7 @@ impl Server {
     }
     fn kill(&self) {
         self.killed.store(true, Ordering::SeqCst);
-        let mut child = self.child.lock().unwrap();
+        let mut child = self.child.locked();
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -210,7 +205,7 @@ impl Lease {
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        *self.server.used.lock().unwrap() = Instant::now();
+        *self.server.used.locked() = Instant::now();
         self.server.busy.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -218,8 +213,7 @@ type Slot = Arc<Mutex<Option<Arc<Server>>>>;
 type Key = (PathBuf, PathBuf, bool);
 static POOL: LazyLock<Mutex<HashMap<Key, Slot>>> = LazyLock::new(Default::default);
 fn slots(within: &Path) -> Vec<Slot> {
-    POOL.lock()
-        .unwrap()
+    POOL.locked()
         .iter()
         .filter(|((executable, _, _), _)| executable.starts_with(within))
         .map(|(_, slot)| slot.clone())
@@ -229,7 +223,7 @@ fn slots(within: &Path) -> Vec<Slot> {
 /// used at least the given duration ago. The next request starts a fresh one.
 pub fn reap_idle_within(within: &Path, whisper: Duration, llama: Duration) {
     for slot in slots(within) {
-        let mut guard = slot.lock().unwrap();
+        let mut guard = slot.locked();
         let Some(server) = guard.as_ref() else {
             continue;
         };
@@ -237,8 +231,7 @@ pub fn reap_idle_within(within: &Path, whisper: Duration, llama: Duration) {
             Kind::Whisper => whisper,
             Kind::Llama => llama,
         };
-        if server.busy.load(Ordering::SeqCst) == 0 && server.used.lock().unwrap().elapsed() >= limit
-        {
+        if server.busy.load(Ordering::SeqCst) == 0 && server.used.locked().elapsed() >= limit {
             server.stop_for("it was idle");
             *guard = None;
         }
@@ -250,7 +243,7 @@ pub fn reap_idle(within: &Path) {
 /// Stops every pooled server under `within`. Called when the app exits.
 pub fn shutdown(within: &Path) {
     for slot in slots(within) {
-        if let Some(server) = slot.lock().unwrap().take() {
+        if let Some(server) = slot.locked().take() {
             server.stop_for("Conch is exiting or installing an update");
         }
     }
@@ -275,7 +268,7 @@ pub fn reap_orphans(workers: &Path) {
 pub fn reap_orphans(_: &Path) {}
 pub fn stop(worker: &Worker) {
     let using = {
-        let mut state = worker.lock().unwrap();
+        let mut state = worker.locked();
         state.cancelled = true;
         std::mem::take(&mut state.using)
     };
@@ -314,16 +307,15 @@ fn acquire(
     if !model.is_file() || (kind == Kind::Whisper && !vad_path(model).is_file()) {
         return Err("Download the required model in Settings first".into());
     }
-    if worker.lock().unwrap().cancelled {
+    if worker.locked().cancelled {
         return Err("Cancelled".into());
     }
     let slot = POOL
-        .lock()
-        .unwrap()
+        .locked()
         .entry((executable.clone(), model.to_owned(), cpu))
         .or_default()
         .clone();
-    let mut guard = slot.lock().unwrap();
+    let mut guard = slot.locked();
     let server = match guard.as_ref().filter(|server| server.alive()) {
         Some(server) => server.clone(),
         None => {
@@ -333,7 +325,7 @@ fn acquire(
         }
     };
     let lease = Lease::new(server.clone());
-    let mut state = worker.lock().unwrap();
+    let mut state = worker.locked();
     if state.cancelled {
         drop(state);
         server.stop_for("the recording was cancelled");
@@ -423,14 +415,14 @@ fn launch(
             while reader.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
                 let text = String::from_utf8_lossy(&line);
                 if loggable(kind, &text) {
-                    tail.lock().unwrap().push(&text);
+                    tail.locked().push(&text);
                 }
                 line.clear();
             }
             drained.store(true, Ordering::SeqCst);
             // Before the worker is ready, `launch` reports its failure with this output.
             if started.load(Ordering::SeqCst) && !killed.load(Ordering::SeqCst) {
-                let detail = tail.lock().unwrap().text();
+                let detail = tail.locked().text();
                 let source = if kind == Kind::Whisper {
                     "recognizer"
                 } else {
@@ -470,7 +462,7 @@ fn launch(
         .map_err(|_| "Cannot initialize local IPC")?;
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(45) {
-        let cancelled = worker.lock().unwrap().cancelled;
+        let cancelled = worker.locked().cancelled;
         if cancelled || !server.alive() {
             let reason = "Inference worker stopped or was cancelled";
             if cancelled {
@@ -513,7 +505,7 @@ fn launch_failed(server: &Server, reason: &str) {
     while !server.drained.load(Ordering::SeqCst) && wait.elapsed() < Duration::from_millis(500) {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let detail = server.tail.lock().unwrap().text();
+    let detail = server.tail.locked().text();
     log::record(
         log::Level::Error,
         server.source(),
@@ -636,8 +628,7 @@ impl ChunkRecognizer {
     fn run(&self, wav: Vec<u8>, speculative: bool) -> Result<String, String> {
         let language = self
             .locked
-            .lock()
-            .unwrap()
+            .locked()
             .clone()
             .unwrap_or_else(|| self.configured.clone());
         let recognition = recognize(
@@ -654,7 +645,7 @@ impl ChunkRecognizer {
             && !recognition.text.trim().is_empty()
             && let Some(found) = recognition.language
         {
-            self.locked.lock().unwrap().get_or_insert(found);
+            self.locked.locked().get_or_insert(found);
         }
         Ok(recognition.text)
     }
@@ -706,7 +697,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
     if cleanup.enhanced == "managed" && !managed_cleanup_supported(&snapshot.language) {
         return Err("Managed cleanup supports English only; using Basic".into());
     }
-    if worker.lock().unwrap().cancelled {
+    if worker.locked().cancelled {
         return Err("Cancelled".into());
     }
     if raw.contains("CONCHPROTECTED") {
@@ -755,7 +746,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         .map_err(|_| "Cannot initialize cleanup runtime")?;
     let value: Value = runtime.block_on(async {
         let operation = async {
-            if worker.lock().unwrap().cancelled {return Err("Cancelled".to_string());}
+            if worker.locked().cancelled {return Err("Cancelled".to_string());}
             let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(30));
             if cleanup.enhanced != "remote" {builder = builder.no_proxy();}
             let client = builder.build().map_err(|_| "Cannot initialize cleanup client")?;
@@ -775,11 +766,11 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
             serde_json::from_slice(&bytes).map_err(|_| "Invalid cleanup response".into())
         };
         let cancelled = async {
-            loop {if worker.lock().unwrap().cancelled {return;} tokio::time::sleep(Duration::from_millis(20)).await;}
+            loop {if worker.locked().cancelled {return;} tokio::time::sleep(Duration::from_millis(20)).await;}
         };
         tokio::select! {biased; _ = cancelled => Err("Cancelled".into()), result = operation => result}
     })?;
-    worker.lock().unwrap().cleanup_model_time = model_time(&value);
+    worker.locked().cleanup_model_time = model_time(&value);
     let after = value["choices"][0]["message"]["content"]
         .as_str()
         .ok_or("Invalid cleanup response")?;

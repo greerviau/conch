@@ -104,3 +104,5 @@ pub mod tray;
 pub mod update;
 
 pub mod history;
+pub mod lock;
+pub mod watch;

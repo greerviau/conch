@@ -1,3 +1,4 @@
+use crate::lock::Locked;
 use crate::session::Phase;
 use serde::Serialize;
 #[derive(Clone, Serialize)]
@@ -53,7 +54,7 @@ pub fn presentation(
 pub fn state(app: &tauri::AppHandle) -> Indicator {
     use tauri::Manager;
     let state = app.state::<crate::app::AppState>();
-    let inner = state.inner.lock().unwrap();
+    let inner = state.inner.locked();
     let notice = inner
         .indicator_notice
         .as_ref()

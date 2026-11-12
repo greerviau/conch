@@ -1,3 +1,4 @@
+use crate::lock::Locked;
 use crate::{app::AppState, session::Phase};
 use std::time::Duration;
 use tauri::{
@@ -91,7 +92,7 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(200));
             let now = {
                 let state = app.state::<AppState>();
-                let inner = state.inner.lock().unwrap();
+                let inner = state.inner.locked();
                 (inner.session.phase.clone(), inner.audio_ready)
             };
             if shown.as_ref() == Some(&now) {
