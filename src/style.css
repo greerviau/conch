@@ -1060,6 +1060,92 @@ mark {
   padding: 36px 0;
 }
 
+/* Logs */
+.logs .terms-tools {
+  flex-wrap: wrap;
+}
+.day {
+  margin: 0;
+  padding: 10px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.log + .log {
+  border-top: 1px solid var(--line);
+}
+.log-line {
+  display: grid;
+  grid-template-columns: 84px 64px 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 0;
+  font-size: 13px;
+}
+.log-line time {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.log-line .tag {
+  font-size: 12px;
+}
+.tag.info {
+  color: var(--muted);
+}
+.log-line .src {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.log-line .msg {
+  overflow-wrap: anywhere;
+}
+.log.err .msg {
+  color: var(--danger);
+}
+details.log {
+  margin-top: 0;
+}
+details.log > summary {
+  list-style: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: inherit;
+}
+details.log > summary::-webkit-details-marker {
+  display: none;
+}
+details.log > summary .msg::after {
+  content: "Details";
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+details.log[open] > summary .msg::after {
+  content: "Hide";
+}
+.detail {
+  margin: 0 0 10px 168px;
+}
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
 /* Mappings */
 .mapping {
   display: grid;
@@ -1242,6 +1328,31 @@ body.overlay-surface {
   }
   .row-control {
     max-width: 100%;
+  }
+  .log-line {
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 2px 10px;
+  }
+  .log-line time {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .log-line .tag {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: start;
+  }
+  .log-line .src {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .log-line .msg {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .detail {
+    margin-left: 0;
   }
   .mapping {
     grid-template-columns: 38px minmax(0, 1fr) 28px;

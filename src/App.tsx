@@ -1,9 +1,10 @@
 import { PasteAccess } from "./PasteAccess";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Setup, ShortcutRecorder, shortcutLabel } from "./Setup";
 import { History } from "./History";
+import { Logs } from "./Logs";
 import { Mappings } from "./Mappings";
 import { Repositories } from "./Repositories";
 import { Mic, Stop } from "./icons";
@@ -27,8 +28,21 @@ import {
 } from "./models";
 import type { Cleanup, Mapping, Settings, View } from "./types";
 
-const TABS = ["Dictation", "History", "Repositories", "Mappings", "Settings"];
+const TABS = [
+  "Dictation",
+  "History",
+  "Repositories",
+  "Mappings",
+  "Settings",
+  "Logs",
+];
 
+/** Records a failed command in the log, so the error banner's link to Logs has an entry to show. */
+function noted(error: unknown) {
+  const message = String(error);
+  invoke("logs_note", { message }).catch(() => undefined);
+  return message;
+}
 export default function App() {
   const [view, setView] = useState<View>();
   const [draft, setDraft] = useState<Settings>();
@@ -46,17 +60,21 @@ export default function App() {
     try {
       await invoke("shortcut_capture", { active });
     } catch (error) {
-      setError(String(error));
+      setError(noted(error));
       throw error;
     }
   }, []);
+  // Whether the last refresh failed, so a failure that repeats on every poll is logged once.
+  const refreshFailed = useRef(false);
   const reload = useCallback(async () => {
     try {
       const v = await invoke<View>("view");
+      refreshFailed.current = false;
       setView(v);
       setDraft((d) => d ?? v.settings);
     } catch (e) {
-      setError(String(e));
+      setError(refreshFailed.current ? String(e) : noted(e));
+      refreshFailed.current = true;
     }
   }, []);
   useEffect(() => {
@@ -112,7 +130,7 @@ export default function App() {
         );
       return true;
     } catch (e) {
-      setError(String(e));
+      setError(noted(e));
       return false;
     }
   }
@@ -203,7 +221,7 @@ export default function App() {
             : current,
         );
     } catch (e) {
-      setError(String(e));
+      setError(noted(e));
     }
   }
   async function saveEdit() {
@@ -322,7 +340,14 @@ export default function App() {
       <main className="page">
         {(error || view.error) && (
           <div role="alert" className="error">
-            {error || view.error}
+            {error || view.error}{" "}
+            <button
+              className="link"
+              style={{ color: "inherit" }}
+              onClick={() => setTab("Logs")}
+            >
+              View logs
+            </button>
           </div>
         )}
         {notice && (
@@ -468,7 +493,10 @@ export default function App() {
                   <p className="note">
                     {view.result?.status ||
                       "The initial result is copied automatically. Eligible focused inputs receive one paste."}{" "}
-                    Review edits stay here until you copy them.
+                    Review edits stay here until you copy them.{" "}
+                    <button className="link" onClick={() => setTab("Logs")}>
+                      Timing and details in Logs
+                    </button>
                   </p>
                   {view.result && (
                     <details>
@@ -557,6 +585,7 @@ export default function App() {
             )}
           </>
         )}
+        {tab === "Logs" && <Logs revision={view.logs_revision} />}
         {tab === "History" && (
           <History
             enabled={view.settings.keep_history}

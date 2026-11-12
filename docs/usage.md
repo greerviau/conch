@@ -76,7 +76,7 @@ With Automatic paste off, Conch does not ask for the Accessibility permission.
 
 ## Repositories, mappings, and the shortcut
 
-The top bar switches between Dictation, History, Repositories, Mappings, and Settings.
+The top bar switches between Dictation, History, Repositories, Mappings, Settings, and Logs.
 On Repositories, click Add repository to choose a folder, or Enter a path instead to type one.
 Changes to repositories, mappings, and settings stay in a draft until you click Save changes in the bar that appears at the bottom.
 After saving, click Refresh indexes.
@@ -105,7 +105,7 @@ Conch starts the recognizer when recording starts and recognizes each finished c
 A chunk ends at the first pause of one second after 8 seconds of audio, or at the quietest point once 25 seconds are pending.
 Only the audio after the last chunk remains to be recognized when you stop.
 If a chunk fails, Conch recognizes the whole recording once.
-The status line under the result ends with the time from the stop to the text and how long each stage took: capture, recognition, preparation, cleanup, and delivery. Cleanup is the wait for the tail's cleaning when chunks were cleaned during the recording; it appears only with Enhanced cleanup. With Managed S1-mini it also shows the time the model reported for its latest request, for example `cleanup 542 ms (model 290 ms)`, so a slow model shows apart from slow work around it. When recording starts, Conch sends the model one token so it is loaded before the first cleanup.
+The Logs page records the time from the stop to the text and how long each stage took: capture, recognition, preparation, cleanup, and delivery. Cleanup is the wait for the tail's cleaning when chunks were cleaned during the recording; it appears only with Enhanced cleanup. With Managed S1-mini it also shows the time the model reported for its latest request, for example `cleanup 542 ms (model 290 ms)`, so a slow model shows apart from slow work around it. When recording starts, Conch sends the model one token so it is loaded before the first cleanup.
 Workers stay running between recordings and stop after 10 minutes (recognizer) or 5 minutes (managed cleanup) without use.
 Conch stops workers left by a crashed earlier run when it starts.
 
@@ -151,6 +151,20 @@ Copy puts an entry's result on the clipboard, Copy raw puts the raw transcript t
 Delete removes one entry. Clear history asks for confirmation and removes all of them.
 Turning Keep history off stops saving but keeps what is already there until you delete it.
 Entries are stored unencrypted in Conch's local database; see [privacy](privacy.md).
+
+## Logs
+
+The Logs page shows what Conch did and why, newest first, 50 entries at a time.
+Each entry has a time, a level (Info, Warning, or Error), a source, and a message, and some have details behind a Details link.
+The sources are `app`, `cleanup`, `delivery`, `dictation`, `download`, `index`, `permissions`, `recognizer`, `ui`, and `update`.
+Conch logs each dictation's stop-to-text time with its stages, how each result was delivered and why a clipboard fallback happened, cleanup and recognition failures, inference worker starts, stops with the reason, and failures with the recognizer's last diagnostic lines, errors that the Dictation page showed for a failed command (source `ui`, cut at 500 characters, with a repeat within a minute and more than 20 a minute dropped), model downloads, update checks, permission changes, and repository indexing.
+The buttons above the list narrow it to warnings (warnings and errors) or to errors, and to one source. Search matches the message, the details, and the source.
+Copy shown entries puts the entries on the page on the clipboard as text with UTC times, which suits a bug report.
+Show log file opens the file manager at `conch.log` in Conch's data directory.
+Clear logs asks for confirmation and deletes every entry.
+Conch writes the log whether or not Keep history is on, keeps about 4 MB (`conch.log` and the previous `conch.log.1`), and deletes the oldest entries first.
+Logs never contain audio, transcripts, result text, or source text. They show your home directory as `~` and any other absolute path as `.../file name`; see [privacy](privacy.md).
+The Dictation page links its status line and its error banner to this page.
 
 ## Delivery
 

@@ -68,6 +68,25 @@ export type HistoryEntry = {
   raw: string;
 };
 export type HistoryPage = { items: HistoryEntry[]; total: number };
+export type LogEntry = {
+  /** Unix time in milliseconds. */
+  time: number;
+  level: "info" | "warn" | "error";
+  source: string;
+  message: string;
+  detail?: string;
+};
+export type LogPage = {
+  items: LogEntry[];
+  /** Entries that match the filters. */
+  total: number;
+  /** Entries in the log before filtering. */
+  all: number;
+  /** Every source that has an entry, sorted. */
+  sources: string[];
+  /** Size of the log files on disk. */
+  bytes: number;
+};
 /** A model the catalog offers, with whether it is on disk. Engine is null for voice detection. */
 export type ModelView = {
   id: string;
@@ -89,6 +108,8 @@ export type View = {
   indexes: IndexRow[];
   /** The id of the newest history entry, or 0. */
   history_revision: number;
+  /** Changes whenever the log changes. */
+  logs_revision: number;
   models: ModelView[];
   /** Every recognition language, in the order of the Whisper table. */
   languages: Language[];

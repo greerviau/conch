@@ -1,6 +1,7 @@
 use crate::{
     core::{self, Snapshot},
     languages::{CODES, CODES_99, ENGLISH},
+    log,
 };
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
@@ -10,7 +11,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, LazyLock, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -104,9 +105,58 @@ pub fn endpoint_allowed(endpoint: &str, remote: bool) -> bool {
         local && matches!(url.scheme(), "http" | "https")
     }
 }
+/// The last lines a worker wrote to stderr, kept for the log when it fails.
+#[derive(Default)]
+struct Tail {
+    lines: std::collections::VecDeque<String>,
+}
+/// Whether a line of worker output may reach the log. Workers can print the
+/// text they process (the llama server does at debug verbosity), so only lines
+/// from the recognizer's own libraries are kept, and a cleanup worker's output
+/// never is.
+fn loggable(kind: Kind, line: &str) -> bool {
+    static LIBRARY: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^(?:ggml_|GGML_|whisper_init|whisper_model_load|whisper_backend|whisper_vad|error:|ERROR|fatal|terminate called)").unwrap()
+    });
+    kind == Kind::Whisper && LIBRARY.is_match(line.trim_start())
+}
+const TAIL_LINES: usize = 20;
+const TAIL_WIDTH: usize = 300;
+impl Tail {
+    fn push(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        let line = if line.chars().count() > TAIL_WIDTH {
+            let mut cut: String = line.chars().take(TAIL_WIDTH - 3).collect();
+            cut.push_str("...");
+            cut
+        } else {
+            line.to_owned()
+        };
+        self.lines.push_back(line);
+        while self.lines.len() > TAIL_LINES {
+            self.lines.pop_front();
+        }
+    }
+    fn text(&self) -> Option<String> {
+        (!self.lines.is_empty()).then(|| self.lines.iter().cloned().collect::<Vec<_>>().join("\n"))
+    }
+}
 pub struct Server {
     kind: Kind,
+    /// The executable's file name, for the log.
+    name: String,
+    /// The model's file name, for the log.
+    model: String,
     child: Mutex<Child>,
+    /// The last lines the worker wrote to stderr.
+    tail: Arc<Mutex<Tail>>,
+    /// Set before Conch stops the worker, so its exit is not reported as a failure.
+    killed: Arc<AtomicBool>,
+    /// Set when the worker's stderr has ended.
+    drained: Arc<AtomicBool>,
     endpoint: String,
     token: String,
     used: Mutex<Instant>,
@@ -122,7 +172,27 @@ impl Server {
             .flatten()
             .is_none()
     }
+    /// The log source for this worker's entries.
+    fn source(&self) -> &'static str {
+        match self.kind {
+            Kind::Whisper => "recognizer",
+            Kind::Llama => "cleanup",
+        }
+    }
+    /// Stops the worker on purpose and logs the reason once. A worker that was
+    /// already stopped is not logged again.
+    fn stop_for(&self, reason: &str) {
+        let first = !self.killed.swap(true, Ordering::SeqCst);
+        self.kill();
+        if first {
+            log::info(
+                self.source(),
+                &format!("Stopped {} (model {}): {reason}", self.name, self.model),
+            );
+        }
+    }
     fn kill(&self) {
+        self.killed.store(true, Ordering::SeqCst);
         let mut child = self.child.lock().unwrap();
         let _ = child.kill();
         let _ = child.wait();
@@ -169,7 +239,7 @@ pub fn reap_idle_within(within: &Path, whisper: Duration, llama: Duration) {
         };
         if server.busy.load(Ordering::SeqCst) == 0 && server.used.lock().unwrap().elapsed() >= limit
         {
-            server.kill();
+            server.stop_for("it was idle");
             *guard = None;
         }
     }
@@ -181,7 +251,7 @@ pub fn reap_idle(within: &Path) {
 pub fn shutdown(within: &Path) {
     for slot in slots(within) {
         if let Some(server) = slot.lock().unwrap().take() {
-            server.kill();
+            server.stop_for("Conch is exiting or installing an update");
         }
     }
 }
@@ -210,7 +280,7 @@ pub fn stop(worker: &Worker) {
         std::mem::take(&mut state.using)
     };
     for server in using {
-        server.kill();
+        server.stop_for("the recording was cancelled");
     }
 }
 /// Starts the worker for a recording while the user is still speaking, so the
@@ -266,7 +336,7 @@ fn acquire(
     let mut state = worker.lock().unwrap();
     if state.cancelled {
         drop(state);
-        server.kill();
+        server.stop_for("the recording was cancelled");
         return Err("Cancelled".into());
     }
     state.using.push(server);
@@ -326,13 +396,68 @@ fn launch(
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let child = command
+        .stderr(Stdio::piped());
+    let mut child = command
         .spawn()
         .map_err(|_| "Cannot launch inference worker")?;
+    let name = executable
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let tail = Arc::new(Mutex::new(Tail::default()));
+    let killed = Arc::new(AtomicBool::new(false));
+    let drained = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(AtomicBool::new(false));
+    if let Some(stderr) = child.stderr.take() {
+        let (tail, killed, drained, started, name) = (
+            tail.clone(),
+            killed.clone(),
+            drained.clone(),
+            started.clone(),
+            name.clone(),
+        );
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut reader = std::io::BufReader::new(stderr);
+            let mut line = Vec::new();
+            // Drain the pipe for as long as the worker runs, or it blocks on a full pipe.
+            while reader.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
+                let text = String::from_utf8_lossy(&line);
+                if loggable(kind, &text) {
+                    tail.lock().unwrap().push(&text);
+                }
+                line.clear();
+            }
+            drained.store(true, Ordering::SeqCst);
+            // Before the worker is ready, `launch` reports its failure with this output.
+            if started.load(Ordering::SeqCst) && !killed.load(Ordering::SeqCst) {
+                let detail = tail.lock().unwrap().text();
+                let source = if kind == Kind::Whisper {
+                    "recognizer"
+                } else {
+                    "cleanup"
+                };
+                log::record(
+                    log::Level::Warn,
+                    source,
+                    &format!("Worker {name} exited unexpectedly"),
+                    detail.as_deref(),
+                );
+            }
+        });
+    } else {
+        drained.store(true, Ordering::SeqCst);
+    }
+    let model_name = model
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     let server = Server {
         kind,
+        name,
+        model: model_name,
         child: Mutex::new(child),
+        tail,
+        killed,
+        drained,
         endpoint: format!("http://127.0.0.1:{port}"),
         token,
         used: Mutex::new(Instant::now()),
@@ -345,9 +470,15 @@ fn launch(
         .map_err(|_| "Cannot initialize local IPC")?;
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(45) {
-        if worker.lock().unwrap().cancelled || !server.alive() {
-            server.kill();
-            return Err("Inference worker stopped or was cancelled".into());
+        let cancelled = worker.lock().unwrap().cancelled;
+        if cancelled || !server.alive() {
+            let reason = "Inference worker stopped or was cancelled";
+            if cancelled {
+                server.stop_for("the recording was cancelled");
+            } else {
+                launch_failed(&server, "it exited");
+            }
+            return Err(reason.into());
         }
         if client
             .get(format!("{}/health", server.endpoint))
@@ -355,12 +486,40 @@ fn launch(
             .send()
             .is_ok_and(|r| r.status().is_success())
         {
+            started.store(true, Ordering::SeqCst);
+            log::info(
+                server.source(),
+                &format!(
+                    "Worker started: {}, model {}, ready in {} ms",
+                    server.name,
+                    server.model,
+                    start.elapsed().as_millis()
+                ),
+            );
             return Ok(server);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    server.kill();
+    launch_failed(&server, "it did not answer within 45 seconds");
     Err("Inference worker startup timed out".into())
+}
+/// Stops a worker that did not become ready and logs why, with the last lines
+/// it wrote to stderr.
+fn launch_failed(server: &Server, reason: &str) {
+    server.kill();
+    // The output ends once the process is gone; give the reader a moment to
+    // take the last lines.
+    let wait = Instant::now();
+    while !server.drained.load(Ordering::SeqCst) && wait.elapsed() < Duration::from_millis(500) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let detail = server.tail.lock().unwrap().text();
+    log::record(
+        log::Level::Error,
+        server.source(),
+        &format!("Worker {} did not start: {reason}", server.name),
+        detail.as_deref(),
+    );
 }
 pub fn transcribe(
     workers: &Path,
@@ -984,6 +1143,46 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         pub fn last_chat(dir: &Path) -> String {
             String::from_utf8_lossy(&std::fs::read(dir.join("last-chat.json")).unwrap())
                 .into_owned()
+        }
+        /// A recognizer that writes to stderr and exits before it serves.
+        pub fn install_dying(dir: &Path, message: &str) {
+            let exe = dir.join("whisper-server");
+            std::fs::write(&exe, format!("#!/bin/sh\necho '{message}' >&2\nexit 1\n")).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(dir.join("model.bin"), b"model").unwrap();
+            std::fs::write(dir.join(super::VAD.name), b"vad").unwrap();
+        }
+        /// A recognizer that answers its health check, then writes to stderr
+        /// and exits half a second later.
+        pub fn install_crashing(dir: &Path, message: &str) {
+            let exe = dir.join("whisper-server");
+            let script = SCRIPT.replace(
+                "http.server.ThreadingHTTPServer",
+                &format!(
+                    "import threading\nthreading.Timer(0.5, lambda: (sys.stderr.write('{message}\\n'), sys.stderr.flush(), os._exit(3))).start()\nhttp.server.ThreadingHTTPServer"
+                ),
+            );
+            std::fs::write(&exe, script).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(dir.join("model.bin"), b"model").unwrap();
+            std::fs::write(dir.join(super::VAD.name), b"vad").unwrap();
+        }
+        /// A model file next to the fake worker under a name no other test uses,
+        /// so a test finds only its own entries in the shared log.
+        pub fn model(dir: &Path, name: &str) -> std::path::PathBuf {
+            std::fs::write(dir.join(name), b"model").unwrap();
+            dir.join(name)
+        }
+        /// A recognizer that takes three seconds to answer its health check.
+        pub fn install_slow(dir: &Path) {
+            let exe = dir.join("whisper-server");
+            let script = SCRIPT.replace(
+                "http.server.ThreadingHTTPServer",
+                "import time\ntime.sleep(3)\nhttp.server.ThreadingHTTPServer",
+            );
+            std::fs::write(&exe, script).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(dir.join(super::VAD.name), b"vad").unwrap();
         }
         pub fn install(dir: &Path) {
             let exe = dir.join("whisper-server");
@@ -1919,6 +2118,234 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             )
             .unwrap(),
             "Do not change podGC before 12."
+        );
+    }
+    /// The process-wide log, started once in a directory that outlives the test run's tests.
+    fn logged() -> &'static crate::log::Log {
+        static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        crate::log::init(DIR.get_or_init(|| tempfile::tempdir().unwrap()).path())
+    }
+    fn entries(source: &str, query: &str) -> Vec<crate::log::Entry> {
+        logged().page("all", source, query, 0, 50).unwrap().items
+    }
+    #[test]
+    fn the_output_tail_keeps_the_last_lines_each_cut_short() {
+        let mut tail = Tail::default();
+        assert_eq!(tail.text(), None);
+        tail.push("   \n");
+        assert_eq!(tail.text(), None, "a blank line is not output");
+        for n in 1..=30 {
+            tail.push(&format!("line {n}\n"));
+        }
+        tail.push(&"x".repeat(1_000));
+        let text = tail.text().unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 20);
+        assert_eq!(lines[0], "line 12");
+        assert_eq!(lines[18], "line 30");
+        assert_eq!(lines[19].chars().count(), 300);
+        assert!(lines[19].ends_with("..."));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_that_dies_while_starting_is_logged_with_its_last_output() {
+        logged();
+        let dir = tempfile::tempdir().unwrap();
+        fake::install_dying(dir.path(), "ggml_init failed: out of memory 7c1d");
+        let result = preload(
+            dir.path(),
+            &dir.path().join("model.bin"),
+            Kind::Whisper,
+            &new_worker(),
+            true,
+        );
+        assert!(result.is_err());
+        let found = entries("recognizer", "7c1d");
+        assert_eq!(found.len(), 1, "logged once: {found:?}");
+        assert_eq!(found[0].level, crate::log::Level::Error);
+        assert!(
+            found[0]
+                .message
+                .starts_with("Worker whisper-server did not start")
+        );
+        assert!(
+            found[0]
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("out of memory 7c1d")
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_started_worker_is_logged_with_its_model_and_start_time() {
+        logged();
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        let model = fake::model(dir.path(), "started-1b7e.bin");
+        preload(dir.path(), &model, Kind::Whisper, &new_worker(), true).unwrap();
+        let started = entries("recognizer", "started-1b7e.bin");
+        assert_eq!(started.len(), 1, "{started:?}");
+        assert_eq!(started[0].level, crate::log::Level::Info);
+        assert!(
+            started[0]
+                .message
+                .starts_with("Worker started: whisper-server, model started-1b7e.bin, ready in ")
+        );
+        assert!(started[0].message.ends_with(" ms"));
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_that_exits_after_starting_is_logged_but_one_we_stop_is_not() {
+        logged();
+        let dir = tempfile::tempdir().unwrap();
+        fake::install_crashing(dir.path(), "ggml_abort: crash marker 9f2e");
+        preload(
+            dir.path(),
+            &dir.path().join("model.bin"),
+            Kind::Whisper,
+            &new_worker(),
+            true,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let found = loop {
+            let found = entries("recognizer", "9f2e");
+            if !found.is_empty() || Instant::now() > deadline {
+                break found;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].level, crate::log::Level::Warn);
+        assert!(
+            found[0]
+                .message
+                .starts_with("Worker whisper-server exited unexpectedly")
+        );
+        assert!(found[0].detail.as_ref().unwrap().contains("9f2e"));
+        shutdown(dir.path());
+        // A worker that Conch stops writes nothing: its output ends and the
+        // stop is the reason.
+        let quiet = tempfile::tempdir().unwrap();
+        fake::install(quiet.path());
+        preload(
+            quiet.path(),
+            &quiet.path().join("model.bin"),
+            Kind::Whisper,
+            &new_worker(),
+            true,
+        )
+        .unwrap();
+        let before = entries("recognizer", "exited unexpectedly").len();
+        shutdown(quiet.path());
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(entries("recognizer", "exited unexpectedly").len(), before);
+    }
+    #[test]
+    fn only_library_diagnostics_from_the_recognizer_reach_the_log() {
+        for line in [
+            "ggml_metal_init: failed to allocate buffer",
+            "whisper_init_from_file_with_params_no_state: loading model from 'm.bin'",
+            "whisper_model_load: n_vocab = 51864",
+            "GGML_ASSERT(ctx != NULL) failed",
+            "error: failed to load model",
+            "terminate called after throwing an instance of 'std::bad_alloc'",
+        ] {
+            assert!(loggable(Kind::Whisper, line), "{line}");
+            assert!(!loggable(Kind::Llama, line), "the cleanup worker: {line}");
+        }
+        for line in [
+            "whisper_full_with_state: prompt[0] = 'maxGroups podGC'",
+            "whisper_full_with_state: decoder  0: token  1234 'helper'",
+            "[00:00:00.000 --> 00:00:02.000]  rename the helper to fetchUser",
+            "Parsed message: {\"role\":\"user\",\"content\":\"hello there\"}",
+            "srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 200",
+            "rename the helper",
+        ] {
+            assert!(!loggable(Kind::Whisper, line), "{line}");
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_worker_keeps_library_lines_and_drops_lines_that_may_be_text() {
+        logged();
+        let dir = tempfile::tempdir().unwrap();
+        fake::install_dying(
+            dir.path(),
+            "ggml_init failed: bad model 4b7a\n[00:00 --> 00:02]  call me at 555 0100 4b7a",
+        );
+        assert!(
+            preload(
+                dir.path(),
+                &dir.path().join("model.bin"),
+                Kind::Whisper,
+                &new_worker(),
+                true,
+            )
+            .is_err()
+        );
+        let found = entries("recognizer", "bad model 4b7a");
+        assert_eq!(found.len(), 1, "{found:?}");
+        let detail = found[0].detail.as_ref().unwrap();
+        assert!(detail.contains("ggml_init failed: bad model 4b7a"));
+        assert!(!detail.contains("555 0100"), "{detail}");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_worker_logs_its_model_and_why() {
+        logged();
+        let quit = tempfile::tempdir().unwrap();
+        fake::install(quit.path());
+        let model = fake::model(quit.path(), "quit-3c9d.bin");
+        preload(quit.path(), &model, Kind::Whisper, &new_worker(), true).unwrap();
+        shutdown(quit.path());
+        let found = entries("recognizer", "quit-3c9d.bin");
+        assert!(
+            found.iter().any(|e| e.message
+                == "Stopped whisper-server (model quit-3c9d.bin): Conch is exiting or installing an update"),
+            "{found:?}"
+        );
+        let cancelled = tempfile::tempdir().unwrap();
+        fake::install(cancelled.path());
+        let model = fake::model(cancelled.path(), "cancel-8e2a.bin");
+        let worker = new_worker();
+        preload(cancelled.path(), &model, Kind::Whisper, &worker, true).unwrap();
+        stop(&worker);
+        stop(&worker);
+        shutdown(cancelled.path());
+        let found = entries(
+            "recognizer",
+            "Stopped whisper-server (model cancel-8e2a.bin)",
+        );
+        assert_eq!(
+            found.len(),
+            1,
+            "logged once, for the first reason: {found:?}"
+        );
+        assert!(found[0].message.ends_with("the recording was cancelled"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_while_a_worker_starts_logs_the_stop() {
+        logged();
+        let dir = tempfile::tempdir().unwrap();
+        fake::install_slow(dir.path());
+        let model = fake::model(dir.path(), "slow-6f40.bin");
+        let worker = new_worker();
+        let starting = {
+            let (workers, model, worker) = (dir.path().to_owned(), model.clone(), worker.clone());
+            std::thread::spawn(move || preload(&workers, &model, Kind::Whisper, &worker, true))
+        };
+        std::thread::sleep(Duration::from_millis(600));
+        stop(&worker);
+        assert!(starting.join().unwrap().is_err());
+        let found = entries("recognizer", "slow-6f40.bin");
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].message,
+            "Stopped whisper-server (model slow-6f40.bin): the recording was cancelled"
         );
     }
 }

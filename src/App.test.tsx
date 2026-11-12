@@ -6,6 +6,7 @@ import {
   cleanup,
   waitFor,
   act,
+  within,
 } from "@testing-library/react";
 import App from "./App";
 import { IndicatorView } from "./RecordingIndicator";
@@ -54,6 +55,7 @@ const fixture = () => ({
   error: "",
   indexes: [],
   history_revision: 0,
+  logs_revision: 0,
   models: catalog(),
   languages: LANGUAGES,
   accessibility: false,
@@ -86,6 +88,8 @@ beforeEach(() => {
         install(id, ...(id === "s1-mini" ? [] : ["silero-vad"]));
         return;
       }
+      if (name === "logs_page")
+        return { items: [], total: 0, all: 0, sources: [], bytes: 0 };
       if (name === "microphones")
         return ["Built-in Microphone", "USB Microphone"];
       if (name === "save_settings") {
@@ -514,6 +518,89 @@ it("opens the History page, which links to Settings while history is off", async
   expect(
     await screen.findByRole("checkbox", { name: "Keep history of results" }),
   ).toBeTruthy();
+});
+it("opens the Logs page from the top bar", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Logs" }));
+  expect(
+    await screen.findByText(/never contain audio, transcripts, result text/),
+  ).toBeTruthy();
+  expect(ipc).toHaveBeenCalledWith("logs_page", expect.anything());
+});
+it("keeps timing off the Dictation page and links its status line to the Logs page", async () => {
+  view.result = {
+    ...suggestionResult(false),
+    suggestions: [],
+    status: "Copied; paste requested",
+  };
+  render(<App />);
+  const note = await screen.findByText(/Copied; paste requested/);
+  expect(note.textContent).not.toMatch(/Stop to text|\d+ ms/);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Timing and details in Logs" }),
+  );
+  expect(
+    await screen.findByText(/never contain audio, transcripts, result text/),
+  ).toBeTruthy();
+});
+it("links an error the app reported to the Logs page", async () => {
+  view.error = "Global hotkey unavailable; use the recording controls";
+  render(<App />);
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Global hotkey unavailable");
+  fireEvent.click(within(alert).getByRole("button", { name: "View logs" }));
+  expect(
+    await screen.findByText(/never contain audio, transcripts, result text/),
+  ).toBeTruthy();
+});
+it("logs a failed command and links its error banner to the Logs page", async () => {
+  view.microphone = "granted";
+  install("tiny.en", "silero-vad");
+  const base = ipc.getMockImplementation()!;
+  ipc.mockImplementation(
+    async (name: string, args?: Record<string, unknown>) => {
+      if (name === "start")
+        throw "Enable Conch microphone access in Setup before recording";
+      return base(name, args);
+    },
+  );
+  render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Start recording" }),
+  );
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Enable Conch microphone access");
+  expect(ipc).toHaveBeenCalledWith("logs_note", {
+    message: "Enable Conch microphone access in Setup before recording",
+  });
+  fireEvent.click(within(alert).getByRole("button", { name: "View logs" }));
+  expect(
+    await screen.findByText(/never contain audio, transcripts, result text/),
+  ).toBeTruthy();
+});
+it("logs a failed refresh once while it keeps failing, and again after it recovers", async () => {
+  let broken = false;
+  const base = ipc.getMockImplementation()!;
+  ipc.mockImplementation(
+    async (name: string, args?: Record<string, unknown>) => {
+      if (name === "view" && broken) throw "Cannot read indexes";
+      return base(name, args);
+    },
+  );
+  render(<App />);
+  await screen.findByRole("button", { name: "Settings" });
+  const notes = () =>
+    ipc.mock.calls.filter(
+      (c) => c[0] === "logs_note" && c[1].message === "Cannot read indexes",
+    ).length;
+  broken = true;
+  await screen.findByRole("alert");
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  expect(notes()).toBe(1);
+  broken = false;
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  broken = true;
+  await waitFor(() => expect(notes()).toBe(2), { timeout: 3000 });
 });
 it("shows the installed version and checks for updates on request", async () => {
   render(<App />);
