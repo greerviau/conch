@@ -1,4 +1,9 @@
-use crate::{app::AppState, inference, session::Phase};
+use crate::{
+    app::AppState,
+    inference,
+    log::{self, Level},
+    session::Phase,
+};
 use serde::Serialize;
 use std::{
     sync::Mutex,
@@ -100,15 +105,37 @@ fn show(app: &AppHandle, status: &Status) {
     }
 }
 
+/// The log line for a change of update status, or nothing for a status that
+/// only passes through.
+fn log_line(status: &Status, version: &str) -> Option<(Level, String)> {
+    match status {
+        Status::Current => Some((
+            Level::Info,
+            format!("Checked for updates: {version} is the latest version"),
+        )),
+        Status::Available(found) => Some((Level::Info, format!("Update {found} is available"))),
+        Status::Installing => Some((Level::Info, "Installing the update".into())),
+        Status::Failed(message) => Some((Level::Warn, message.clone())),
+        Status::Idle | Status::Checking => None,
+    }
+}
+fn log_status(status: &Status) {
+    if let Some((level, message)) = log_line(status, env!("CARGO_PKG_VERSION")) {
+        log::record(level, "update", &message, None);
+    }
+}
+
 fn begin(app: &AppHandle, status: Status) -> bool {
     let started = app.state::<Tracker>().begin(status.clone());
     if started {
+        log_status(&status);
         show(app, &status);
     }
     started
 }
 
 fn finish(app: &AppHandle, status: Status) {
+    log_status(&status);
     show(app, &status);
     app.state::<Tracker>().set(status);
 }
@@ -319,5 +346,30 @@ mod tests {
             serde_json::to_value(Status::Current).unwrap(),
             serde_json::json!({"state": "current"})
         );
+    }
+    #[test]
+    fn each_outcome_of_an_update_is_logged_and_a_passing_status_is_not() {
+        let line = |status| log_line(&status, "0.3.0");
+        assert_eq!(
+            line(Status::Current),
+            Some((
+                Level::Info,
+                "Checked for updates: 0.3.0 is the latest version".into()
+            ))
+        );
+        assert_eq!(
+            line(Status::Available("0.4.0".into())),
+            Some((Level::Info, "Update 0.4.0 is available".into()))
+        );
+        assert_eq!(
+            line(Status::Installing),
+            Some((Level::Info, "Installing the update".into()))
+        );
+        assert_eq!(
+            line(Status::Failed("The update check failed: offline".into())),
+            Some((Level::Warn, "The update check failed: offline".into()))
+        );
+        assert_eq!(line(Status::Checking), None);
+        assert_eq!(line(Status::Idle), None);
     }
 }

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Setup, ShortcutRecorder, shortcutLabel } from "./Setup";
 import { History } from "./History";
+import { Logs } from "./Logs";
 import { Mappings } from "./Mappings";
 import { Repositories } from "./Repositories";
 import { Mic, Stop } from "./icons";
@@ -27,7 +28,14 @@ import {
 } from "./models";
 import type { Cleanup, Mapping, Settings, View } from "./types";
 
-const TABS = ["Dictation", "History", "Repositories", "Mappings", "Settings"];
+const TABS = [
+  "Dictation",
+  "History",
+  "Repositories",
+  "Mappings",
+  "Settings",
+  "Logs",
+];
 
 export default function App() {
   const [view, setView] = useState<View>();
@@ -323,6 +331,18 @@ export default function App() {
         {(error || view.error) && (
           <div role="alert" className="error">
             {error || view.error}
+            {!error && (
+              <>
+                {" "}
+                <button
+                  className="link"
+                  style={{ color: "inherit" }}
+                  onClick={() => setTab("Logs")}
+                >
+                  View logs
+                </button>
+              </>
+            )}
           </div>
         )}
         {notice && (
@@ -468,7 +488,10 @@ export default function App() {
                   <p className="note">
                     {view.result?.status ||
                       "The initial result is copied automatically. Eligible focused inputs receive one paste."}{" "}
-                    Review edits stay here until you copy them.
+                    Review edits stay here until you copy them.{" "}
+                    <button className="link" onClick={() => setTab("Logs")}>
+                      Timing and details in Logs
+                    </button>
                   </p>
                   {view.result && (
                     <details>
@@ -557,6 +580,7 @@ export default function App() {
             )}
           </>
         )}
+        {tab === "Logs" && <Logs revision={view.logs_revision} />}
         {tab === "History" && (
           <History
             enabled={view.settings.keep_history}

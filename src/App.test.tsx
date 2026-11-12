@@ -6,6 +6,7 @@ import {
   cleanup,
   waitFor,
   act,
+  within,
 } from "@testing-library/react";
 import App from "./App";
 import { IndicatorView } from "./RecordingIndicator";
@@ -54,6 +55,7 @@ const fixture = () => ({
   error: "",
   indexes: [],
   history_revision: 0,
+  logs_revision: 0,
   models: catalog(),
   languages: LANGUAGES,
   accessibility: false,
@@ -86,6 +88,8 @@ beforeEach(() => {
         install(id, ...(id === "s1-mini" ? [] : ["silero-vad"]));
         return;
       }
+      if (name === "logs_page")
+        return { items: [], total: 0, all: 0, sources: [], bytes: 0 };
       if (name === "microphones")
         return ["Built-in Microphone", "USB Microphone"];
       if (name === "save_settings") {
@@ -513,6 +517,40 @@ it("opens the History page, which links to Settings while history is off", async
   fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
   expect(
     await screen.findByRole("checkbox", { name: "Keep history of results" }),
+  ).toBeTruthy();
+});
+it("opens the Logs page from the top bar", async () => {
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Logs" }));
+  expect(
+    await screen.findByText(/never contain audio, transcripts, result text/),
+  ).toBeTruthy();
+  expect(ipc).toHaveBeenCalledWith("logs_page", expect.anything());
+});
+it("keeps timing off the Dictation page and links its status line to the Logs page", async () => {
+  view.result = {
+    ...suggestionResult(false),
+    suggestions: [],
+    status: "Copied; paste requested",
+  };
+  render(<App />);
+  const note = await screen.findByText(/Copied; paste requested/);
+  expect(note.textContent).not.toMatch(/Stop to text|\d+ ms/);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Timing and details in Logs" }),
+  );
+  expect(
+    await screen.findByText(/never contain audio, transcripts, result text/),
+  ).toBeTruthy();
+});
+it("links an error the app reported to the Logs page", async () => {
+  view.error = "Global hotkey unavailable; use the recording controls";
+  render(<App />);
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Global hotkey unavailable");
+  fireEvent.click(within(alert).getByRole("button", { name: "View logs" }));
+  expect(
+    await screen.findByText(/never contain audio, transcripts, result text/),
   ).toBeTruthy();
 });
 it("shows the installed version and checks for updates on request", async () => {

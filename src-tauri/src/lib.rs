@@ -6,6 +6,7 @@ pub mod fold;
 pub mod index;
 pub mod inference;
 pub mod languages;
+pub mod log;
 pub mod pipeline;
 pub mod platform;
 pub mod session;
@@ -46,6 +47,10 @@ pub fn run() {
             app::history_copy,
             app::history_delete,
             app::history_clear,
+            app::logs_page,
+            app::logs_clear,
+            app::logs_reveal,
+            app::logs_copy,
             app::download,
             app::credential,
             update::check_update,

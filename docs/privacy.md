@@ -33,5 +33,9 @@ With it on, Conch saves each delivered result and its raw transcript, with the d
 The History page copies, searches, and deletes entries, and Clear history deletes all of them.
 Turning Keep history off stops saving but leaves existing entries until you delete them.
 Transcripts can contain confidential information, and the database file is not encrypted.
+Conch keeps a diagnostic log, `conch.log`, in the same directory, whether or not Keep history is on. It holds about 4 MB of timestamped entries: stage times, delivery outcomes, failures, worker starts and exits, downloads, update checks, permission changes, and repository index sizes.
+Entries never contain audio, transcripts, result text, or source text, and they show your home directory as `~`.
+An inference worker's last lines of output are saved when it fails to start or exits unexpectedly. Conch cannot inspect that output, so read it on the Logs page before you share a log.
+The Logs page copies, searches, and deletes entries, and Clear logs deletes all of them. The file is not encrypted.
 Inference workers use authenticated loopback HTTP.
 They stay running between recordings, stop after an idle period or on exit, and cancellation stops the ones the cancelled recording used.

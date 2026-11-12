@@ -5,6 +5,7 @@ use crate::{
     delivery::{self, Desktop},
     history, index,
     inference::{self, Kind, Worker},
+    log,
     pipeline::Transcriber,
     platform,
     session::{Phase, Session},
@@ -45,6 +46,8 @@ pub struct Inner {
     pub stopped: Option<Instant>,
     pub recorded_seconds: u64,
     pub indicator_notice: Option<(Instant, String)>,
+    /// The last Accessibility and microphone readings, so a change is logged once.
+    pub permissions: Option<(bool, String)>,
 }
 #[derive(Serialize)]
 pub struct View {
@@ -54,6 +57,7 @@ pub struct View {
     error: String,
     indexes: Vec<(String, storage::IndexStatus, i64)>,
     history_revision: i64,
+    logs_revision: u64,
     models: Vec<inference::ModelView>,
     languages: &'static [crate::languages::Language],
     accessibility: bool,
@@ -73,8 +77,15 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
     let indexes = storage::index_status(&state.data)?;
     let history_revision = history::revision(&state.data)?;
     let accessibility = platform::permission();
-    let microphone = platform::microphone_status().into();
-    let inner = state.inner.lock().unwrap();
+    let microphone: String = platform::microphone_status().into();
+    let mut inner = state.inner.lock().unwrap();
+    let permissions = (accessibility, microphone.clone());
+    if inner.permissions.as_ref() != Some(&permissions) {
+        for (level, message) in permission_changes(inner.permissions.as_ref(), &permissions) {
+            log::record(level, "permissions", &message, None);
+        }
+        inner.permissions = Some(permissions);
+    }
     Ok(View {
         settings: inner.settings.clone(),
         phase: inner.session.phase.clone(),
@@ -82,6 +93,7 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
         error: inner.error.clone(),
         indexes,
         history_revision,
+        logs_revision: log::get().map_or(0, |log| log.revision()),
         models: inference::catalog(&state.data),
         languages: &crate::languages::LANGUAGES,
         accessibility,
@@ -214,6 +226,10 @@ fn refresh_now(app: &AppHandle) -> Result<(), String> {
     let repositories = state.inner.lock().unwrap().settings.repositories.clone();
     for repository in repositories {
         let index = index::scan(&repository.root, &repository.id, &repository.exclusions)?;
+        let before = storage::index_status(&state.data)?
+            .into_iter()
+            .find(|row| row.0 == repository.id)
+            .map(|row| row.1);
         let inner = state.inner.lock().unwrap();
         if inner.settings.repositories.iter().any(|r| {
             r.id == repository.id
@@ -221,6 +237,13 @@ fn refresh_now(app: &AppHandle) -> Result<(), String> {
                 && r.exclusions == repository.exclusions
         }) {
             storage::put_index(&state.data, &repository.id, &index)?;
+            let name = repository.root.file_name().map_or_else(
+                || repository.id.clone(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            if let Some(message) = index_message(&name, before.as_ref(), &index) {
+                log::info("index", &message);
+            }
         }
     }
     Ok(())
@@ -361,6 +384,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
             }
             Ok(None) => (),
             Err(error) => {
+                log::error("audio", &error);
                 let mut inner = state.inner.lock().unwrap();
                 if inner.session.generation == generation {
                     inner.session.cancel();
@@ -508,6 +532,9 @@ fn process(
                 cpu: false,
             })
         });
+        if let Err(error) = &outcome {
+            log::error("cleanup", error);
+        }
         apply_enhanced(&mut result, outcome, &snapshot);
         if !cleaned_during_recording {
             watch.lap("cleanup");
@@ -521,21 +548,33 @@ fn process(
     let paste = inner.settings.auto_paste;
     let delivered = delivery::deliver(&mut platform::NativeDesktop::default(), &result.text, paste);
     watch.lap("delivery");
-    let summary = watch.summary();
-    eprintln!("{summary}");
+    log::record(
+        log::Level::Info,
+        "dictation",
+        &watch.headline(),
+        Some(&watch.detail()),
+    );
     match delivered {
         Ok(status) => {
-            inner.indicator_notice =
-                crate::indicator::delivery_notice(&status, result.text.is_empty())
-                    .map(|text| (Instant::now(), text));
+            let notice = crate::indicator::delivery_notice(&status, result.text.is_empty());
+            let level = if notice.is_some() {
+                log::Level::Warn
+            } else {
+                log::Level::Info
+            };
+            log::record(level, "delivery", &status, None);
+            inner.indicator_notice = notice.map(|text| (Instant::now(), text));
             result.status.push_str(&format!(". {status}"));
         }
-        Err(error) => inner.error = error,
+        Err(error) => {
+            log::error("delivery", &error);
+            inner.error = error;
+        }
     }
-    result.status.push_str(&format!(". {summary}"));
     match history::record(&state.data, inner.settings.keep_history, &result) {
         Ok(id) => inner.history_id = id,
         Err(error) => {
+            log::error("history", &error);
             inner.history_id = None;
             if inner.error.is_empty() {
                 inner.error = error;
@@ -588,7 +627,96 @@ fn apply_enhanced(
         Err(error) => result.status = error,
     }
 }
+/// The log entries for a change in the permissions Conch reads while it runs.
+/// The first reading states them; later ones report only what changed.
+fn permission_changes(
+    before: Option<&(bool, String)>,
+    now: &(bool, String),
+) -> Vec<(log::Level, String)> {
+    let Some(before) = before else {
+        let accessibility = if now.0 { "granted" } else { "not granted" };
+        return vec![(
+            log::Level::Info,
+            format!(
+                "Accessibility access is {accessibility} and microphone access is {}",
+                now.1
+            ),
+        )];
+    };
+    let mut changes = vec![];
+    if before.0 != now.0 {
+        changes.push(if now.0 {
+            (log::Level::Info, "Accessibility access was granted".into())
+        } else {
+            (
+                log::Level::Warn,
+                "Accessibility access was turned off".into(),
+            )
+        });
+    }
+    if before.1 != now.1 {
+        let level = if now.1 == "granted" {
+            log::Level::Info
+        } else {
+            log::Level::Warn
+        };
+        changes.push((level, format!("Microphone access changed to {}", now.1)));
+    }
+    changes
+}
+/// `4212` as `4,212`.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    grouped
+}
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{} {}", thousands(n), if n == 1 { one } else { many })
+}
+/// The log line for a repository index, or nothing when a rescan found what
+/// the stored index already holds.
+fn index_message(
+    name: &str,
+    before: Option<&storage::IndexStatus>,
+    index: &index::Index,
+) -> Option<String> {
+    let terms = index.entries.len();
+    if before.is_some_and(|b| {
+        b.entries == terms
+            && b.skipped == index.skipped
+            && b.incomplete == index.incomplete
+            && b.available == index.available
+    }) {
+        return None;
+    }
+    if !index.available {
+        return Some(format!("Cannot index {name}: the folder is unavailable"));
+    }
+    let mut message = format!("Indexed {name}: {}", plural(terms, "term", "terms"));
+    if index.skipped > 0 {
+        message.push_str(&format!(
+            ", {} skipped",
+            plural(index.skipped, "symbol extraction", "symbol extractions")
+        ));
+    }
+    if index.incomplete {
+        message.push_str(", incomplete");
+    }
+    Some(message)
+}
 fn failed(app: &AppHandle, generation: u64, error: String) {
+    let level = if error.starts_with("No speech recognized") {
+        log::Level::Info
+    } else {
+        log::Level::Error
+    };
+    log::record(level, "dictation", &error, None);
     let state = app.state::<AppState>();
     let mut inner = state.inner.lock().unwrap();
     if inner.session.generation == generation {
@@ -603,6 +731,7 @@ pub fn retry(app: AppHandle) -> Result<(), String> {
     let mut inner = state.inner.lock().unwrap();
     let (wav, snapshot) = inner.retry.clone().ok_or("No failed recording to retry")?;
     let generation = inner.session.start()?;
+    log::info("dictation", "Retrying the last recording");
     inner.session.finish();
     inner.error.clear();
     inner.worker = inference::new_worker();
@@ -700,6 +829,38 @@ pub async fn history_page(
     .await
     .map_err(|_| "History worker failed")?
 }
+fn log_store() -> Result<&'static log::Log, String> {
+    log::get().ok_or_else(|| "The log is unavailable".to_string())
+}
+/// One page of the log, newest first, for the Logs page.
+#[tauri::command]
+pub async fn logs_page(
+    level: String,
+    source: String,
+    query: String,
+    offset: usize,
+    limit: usize,
+) -> Result<log::Page, String> {
+    let store = log_store()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        store.page(&level, &source, &query, offset, limit.min(200))
+    })
+    .await
+    .map_err(|_| "Log reader failed")?
+}
+#[tauri::command]
+pub fn logs_clear() -> Result<(), String> {
+    log_store()?.clear()
+}
+#[tauri::command]
+pub fn logs_reveal() -> Result<(), String> {
+    log::reveal(log_store()?)
+}
+/// Copies log text the Logs page composed to the clipboard.
+#[tauri::command]
+pub fn logs_copy(text: String) -> Result<(), String> {
+    platform::NativeDesktop::default().copy(&text)
+}
 #[tauri::command]
 pub fn history_copy(state: State<'_, AppState>, id: i64, raw: bool) -> Result<(), String> {
     let entry = history::get(&state.data, id)?;
@@ -724,6 +885,14 @@ pub async fn download(app: AppHandle, id: String) -> Result<(), String> {
         }
         inner.downloading = true;
     }
+    log::info(
+        "download",
+        &format!(
+            "Downloading {} ({})",
+            wanted.iter().map(|m| m.name).collect::<Vec<_>>().join(", "),
+            megabytes(wanted.iter().map(|m| m.size).sum())
+        ),
+    );
     let result = tauri::async_runtime::spawn_blocking({
         let app = app.clone();
         move || {
@@ -744,7 +913,18 @@ pub async fn download(app: AppHandle, id: String) -> Result<(), String> {
     .map_err(|_| "Model download worker failed".to_string())
     .and_then(|r| r);
     app.state::<AppState>().inner.lock().unwrap().downloading = false;
+    match &result {
+        Ok(()) => log::info(
+            "download",
+            &format!("Downloaded {id} and verified its checksum"),
+        ),
+        Err(error) => log::error("download", &format!("Download of {id} failed: {error}")),
+    }
     result
+}
+/// `466 MB`, rounded to the nearest megabyte.
+fn megabytes(bytes: u64) -> String {
+    format!("{} MB", (bytes + 500_000) / 1_000_000)
 }
 #[tauri::command]
 pub fn credential(endpoint: String, secret: Option<String>) -> Result<(), String> {
@@ -765,6 +945,16 @@ pub fn credential(endpoint: String, secret: Option<String>) -> Result<(), String
 }
 pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let data = app.path().app_local_data_dir()?;
+    log::init(&data);
+    log::info(
+        "app",
+        &format!(
+            "Conch {} started on {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ),
+    );
     let settings = storage::load(&data)?;
     let workers = if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("workers")
@@ -800,10 +990,15 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             stopped: None,
             recorded_seconds: 0,
             indicator_notice: None,
+            permissions: None,
         }),
     });
     app.manage(crate::update::Tracker::new());
     if let Err(error) = crate::indicator::setup(app.handle()) {
+        log::error(
+            "app",
+            &format!("The recording indicator is unavailable: {error}"),
+        );
         app.state::<AppState>().inner.lock().unwrap().error = error;
     }
     let supported_session = !cfg!(target_os = "linux")
@@ -824,10 +1019,12 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             .register(settings.hotkey.as_str())
             .is_err()
     {
+        log::error("app", "Global hotkey unavailable");
         app.state::<AppState>().inner.lock().unwrap().error =
             "Global hotkey unavailable; use the recording controls".into();
     }
     if let Err(error) = crate::tray::setup(app.handle()) {
+        log::error("app", &format!("The menu bar icon is unavailable: {error}"));
         app.state::<AppState>().inner.lock().unwrap().error = error;
     }
     crate::update::watch(app.handle());
@@ -840,10 +1037,19 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         })
         .ok();
         let mut roots: Vec<PathBuf> = vec![];
+        let mut logged_failure = String::new();
         loop {
-            if let Err(error) = refresh_now(&handle) {
-                handle.state::<AppState>().inner.lock().unwrap().error =
-                    format!("Index refresh failed: {error}");
+            match refresh_now(&handle) {
+                Ok(()) => logged_failure.clear(),
+                Err(error) => {
+                    // The loop retries every 30 seconds; log a failure once.
+                    if logged_failure != error {
+                        log::error("index", &format!("Index refresh failed: {error}"));
+                        logged_failure = error.clone();
+                    }
+                    handle.state::<AppState>().inner.lock().unwrap().error =
+                        format!("Index refresh failed: {error}");
+                }
             }
             if let Some(watcher) = watcher.as_mut() {
                 let current: Vec<_> = handle
@@ -892,6 +1098,7 @@ pub fn shortcut(
     match action {
         Some("start") => {
             if let Err(error) = start(app.clone()) {
+                log::warn("dictation", &error);
                 let state = app.state::<AppState>();
                 let mut inner = state.inner.lock().unwrap();
                 inner.indicator_notice = Some((Instant::now(), error.clone()));
@@ -1172,5 +1379,86 @@ mod tests {
         );
         recognizer = "small.en";
         assert!(recognition_model(dir.path(), recognizer).is_err());
+    }
+    #[test]
+    fn the_first_permission_reading_is_stated_and_later_ones_report_changes() {
+        let granted = (true, "granted".to_string());
+        let first = permission_changes(None, &granted);
+        assert_eq!(
+            first,
+            [(
+                log::Level::Info,
+                "Accessibility access is granted and microphone access is granted".to_string()
+            )]
+        );
+        assert!(permission_changes(Some(&granted), &granted).is_empty());
+        let lost = (false, "granted".to_string());
+        assert_eq!(
+            permission_changes(Some(&granted), &lost),
+            [(
+                log::Level::Warn,
+                "Accessibility access was turned off".to_string()
+            )]
+        );
+        assert_eq!(
+            permission_changes(Some(&lost), &granted),
+            [(
+                log::Level::Info,
+                "Accessibility access was granted".to_string()
+            )]
+        );
+        let denied = (true, "denied".to_string());
+        assert_eq!(
+            permission_changes(Some(&granted), &denied),
+            [(
+                log::Level::Warn,
+                "Microphone access changed to denied".to_string()
+            )]
+        );
+        let granted_again = (true, "granted".to_string());
+        assert_eq!(
+            permission_changes(Some(&denied), &granted_again),
+            [(
+                log::Level::Info,
+                "Microphone access changed to granted".to_string()
+            )]
+        );
+    }
+    #[test]
+    fn an_index_is_logged_once_and_again_only_when_its_contents_change() {
+        let index = |terms: usize, skipped: usize| index::Index {
+            entries: (0..terms)
+                .map(|n| core::Vocabulary {
+                    text: format!("term{n}"),
+                    file: "a.rs".into(),
+                    repository: "r".into(),
+                })
+                .collect(),
+            skipped,
+            incomplete: false,
+            available: true,
+        };
+        let stored = |terms: usize, skipped: usize| storage::IndexStatus {
+            available: true,
+            incomplete: false,
+            skipped,
+            entries: terms,
+        };
+        assert_eq!(
+            index_message("conch", None, &index(4212, 38)).as_deref(),
+            Some("Indexed conch: 4,212 terms, 38 symbol extractions skipped")
+        );
+        assert_eq!(
+            index_message("conch", None, &index(1, 0)).as_deref(),
+            Some("Indexed conch: 1 term")
+        );
+        assert_eq!(
+            index_message("conch", Some(&stored(4212, 38)), &index(4212, 38)),
+            None
+        );
+        assert_eq!(
+            index_message("conch", Some(&stored(4212, 38)), &index(4213, 38)).as_deref(),
+            Some("Indexed conch: 4,213 terms, 38 symbol extractions skipped")
+        );
     }
 }
