@@ -1,3 +1,4 @@
+use crate::lock::Locked;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -142,7 +143,7 @@ impl Log {
             return;
         };
         line.push('\n');
-        let _guard = self.writer.lock().unwrap();
+        let _guard = self.writer.locked();
         if let Err(error) = self.append(line.as_bytes()) {
             eprintln!("Cannot write the log: {error}");
         }
@@ -188,7 +189,7 @@ impl Log {
     ) -> Result<Page, String> {
         // Hold the writer lock so a rollover cannot land between the two files.
         let (mut entries, bytes) = {
-            let _guard = self.writer.lock().unwrap();
+            let _guard = self.writer.locked();
             let bytes: u64 = [self.rolled(), self.path()]
                 .iter()
                 .filter_map(|path| std::fs::metadata(path).ok())
@@ -229,7 +230,7 @@ impl Log {
         })
     }
     pub fn clear(&self) -> Result<(), String> {
-        let _guard = self.writer.lock().unwrap();
+        let _guard = self.writer.locked();
         for path in [self.path(), self.rolled()] {
             match std::fs::remove_file(path) {
                 Ok(()) => (),

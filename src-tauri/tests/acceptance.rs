@@ -24,11 +24,10 @@ fn snapshot_isolates_selection_and_survives_settings_changes_and_removal() {
         ..Default::default()
     };
     storage::save(data.path(), &settings).unwrap();
-    let snapshot = storage::snapshot(data.path(), &settings).unwrap();
+    let snapshot = storage::snapshot(&settings, &storage::indexes(data.path()).unwrap());
     settings.repositories[0].selected = false;
     assert!(
-        storage::snapshot(data.path(), &settings)
-            .unwrap()
+        storage::snapshot(&settings, &storage::indexes(data.path()).unwrap())
             .mappings
             .is_empty()
     );
@@ -37,8 +36,7 @@ fn snapshot_isolates_selection_and_survives_settings_changes_and_removal() {
     storage::save(data.path(), &settings).unwrap();
     assert!(storage::indexes(data.path()).unwrap().is_empty());
     assert!(
-        storage::snapshot(data.path(), &settings)
-            .unwrap()
+        storage::snapshot(&settings, &storage::indexes(data.path()).unwrap())
             .mappings
             .is_empty()
     );
@@ -354,12 +352,12 @@ fn vocabulary_snapshots_exclude_unselected_and_missing_repositories_and_keep_pri
         &index::scan(beta.path(), "b", &[]).unwrap(),
     )
     .unwrap();
-    let captured = storage::snapshot(data.path(), &settings).unwrap();
+    let captured = storage::snapshot(&settings, &storage::indexes(data.path()).unwrap());
     assert!(captured.vocabulary.iter().any(|v| v.text == "AlphaOnly"));
     assert!(!captured.vocabulary.iter().any(|v| v.repository == "b"));
     settings.repositories[0].root = alpha.path().join("missing");
     settings.repositories[1].selected = true;
-    let next = storage::snapshot(data.path(), &settings).unwrap();
+    let next = storage::snapshot(&settings, &storage::indexes(data.path()).unwrap());
     assert!(!next.vocabulary.iter().any(|v| v.repository == "a"));
     assert!(next.vocabulary.iter().any(|v| v.text == "BetaOnly"));
     assert!(captured.vocabulary.iter().any(|v| v.text == "AlphaOnly"));

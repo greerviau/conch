@@ -3,7 +3,11 @@ use crate::{
     index::Index,
 };
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Repository {
     pub id: String,
@@ -59,11 +63,35 @@ impl Default for Settings {
         }
     }
 }
+/// The `user_version` of the current schema. Version 1 keeps each index's
+/// status in columns, so reading the status does not parse the entries.
+const SCHEMA: i64 = 1;
 pub fn open(dir: &Path) -> Result<rusqlite::Connection, String> {
     std::fs::create_dir_all(dir).map_err(|_| "Cannot create local data directory")?;
-    let db = rusqlite::Connection::open(dir.join("conch.sqlite3"))
+    let mut db = rusqlite::Connection::open(dir.join("conch.sqlite3"))
         .map_err(|_| "Cannot open local database")?;
-    db.execute_batch("CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS indexes (repository TEXT PRIMARY KEY, value TEXT NOT NULL, refreshed INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, raw TEXT NOT NULL, text TEXT NOT NULL);").map_err(|_| "Cannot initialize database")?;
+    let version = |db: &rusqlite::Connection| -> Result<i64, String> {
+        db.query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(|_| "Cannot read database version".into())
+    };
+    if version(&db)? >= SCHEMA {
+        return Ok(db);
+    }
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|_| "Cannot initialize database")?;
+    if version(&tx)? < SCHEMA {
+        // Indexes are rebuilt from the repositories, so an older table is dropped.
+        tx.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, raw TEXT NOT NULL, text TEXT NOT NULL);
+             DROP TABLE IF EXISTS indexes;
+             CREATE TABLE indexes (repository TEXT PRIMARY KEY, value TEXT NOT NULL, refreshed INTEGER NOT NULL, available INTEGER NOT NULL, incomplete INTEGER NOT NULL, skipped INTEGER NOT NULL, entries INTEGER NOT NULL);
+             PRAGMA user_version = {SCHEMA};"
+        ))
+        .map_err(|_| "Cannot initialize database")?;
+    }
+    tx.commit().map_err(|_| "Cannot initialize database")?;
     Ok(db)
 }
 pub fn load(dir: &Path) -> Result<Settings, String> {
@@ -121,50 +149,50 @@ pub fn save(dir: &Path, settings: &Settings) -> Result<(), String> {
 pub fn put_index(dir: &Path, repository: &str, index: &Index) -> Result<(), String> {
     open(dir)?
         .execute(
-            "INSERT OR REPLACE INTO indexes VALUES (?1,?2,unixepoch())",
+            "INSERT OR REPLACE INTO indexes VALUES (?1,?2,unixepoch(),?3,?4,?5,?6)",
             rusqlite::params![
                 repository,
-                serde_json::to_string(index).map_err(|_| "Cannot encode index")?
+                serde_json::to_string(index).map_err(|_| "Cannot encode index")?,
+                index.available,
+                index.incomplete,
+                index.skipped as i64,
+                index.entries.len() as i64
             ],
         )
         .map_err(|_| "Cannot save index")?;
     Ok(())
 }
-pub fn indexes(dir: &Path) -> Result<Vec<(String, Index, i64)>, String> {
+/// Each repository's vocabulary index by repository id.
+pub type Indexes = HashMap<String, Arc<Index>>;
+pub fn indexes(dir: &Path) -> Result<Indexes, String> {
     let db = open(dir)?;
     let mut statement = db
-        .prepare("SELECT repository,value,refreshed FROM indexes")
+        .prepare("SELECT repository,value FROM indexes")
         .map_err(|_| "Cannot read indexes")?;
     let rows = statement
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
         .map_err(|_| "Cannot read indexes")?;
     rows.map(|r| {
-        let (id, json, time) = r.map_err(|_| "Cannot read index")?;
-        Ok((
-            id,
-            serde_json::from_str(&json).map_err(|_| "Invalid index")?,
-            time,
-        ))
+        let (id, json) = r.map_err(|_| "Cannot read index")?;
+        let index = serde_json::from_str(&json).map_err(|_| "Invalid index")?;
+        Ok((id, Arc::new(index)))
     })
     .collect()
 }
-pub fn snapshot(dir: &Path, settings: &Settings) -> Result<Snapshot, String> {
+/// The context snapshot for a recording that starts with `settings`, from the
+/// vocabulary indexes held in memory.
+pub fn snapshot(settings: &Settings, indexes: &Indexes) -> Snapshot {
     let selected: Vec<_> = settings
         .repositories
         .iter()
         .filter(|r| r.selected && r.root.is_dir())
         .map(|r| r.id.as_str())
         .collect();
-    let vocabulary = indexes(dir)?
-        .into_iter()
-        .filter(|(id, index, _)| selected.contains(&id.as_str()) && index.available)
-        .flat_map(|(_, index, _)| index.entries)
+    let vocabulary = selected
+        .iter()
+        .filter_map(|id| indexes.get(*id))
+        .filter(|index| index.available)
+        .flat_map(|index| index.entries.iter().cloned())
         .collect();
     let mappings = settings
         .mappings
@@ -176,66 +204,44 @@ pub fn snapshot(dir: &Path, settings: &Settings) -> Result<Snapshot, String> {
         })
         .cloned()
         .collect();
-    Ok(Snapshot {
+    Snapshot {
         mappings,
         vocabulary,
         cleanup: settings.cleanup.clone(),
         auto_accept: settings.auto_accept_suggestions,
         language: settings.language.clone(),
         recognizer: settings.recognizer.clone(),
-    })
+    }
 }
-/// What the interface shows for a repository index. Deserializing this skips
-/// the vocabulary entries, which are the bulk of the stored JSON.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// What the interface shows for a repository index.
+#[derive(Clone, Debug, Serialize)]
 pub struct IndexStatus {
     pub available: bool,
     pub incomplete: bool,
     pub skipped: usize,
-    #[serde(default, deserialize_with = "count_entries")]
     pub entries: usize,
-}
-/// Counts a JSON list without allocating its elements.
-fn count_entries<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<usize, D::Error> {
-    struct Count;
-    impl<'de> serde::de::Visitor<'de> for Count {
-        type Value = usize;
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a list")
-        }
-        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut list: A) -> Result<usize, A::Error> {
-            let mut count = 0;
-            while list.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                count += 1;
-            }
-            Ok(count)
-        }
-    }
-    deserializer.deserialize_seq(Count)
 }
 pub fn index_status(dir: &Path) -> Result<Vec<(String, IndexStatus, i64)>, String> {
     let db = open(dir)?;
     let mut statement = db
-        .prepare("SELECT repository,value,refreshed FROM indexes")
+        .prepare("SELECT repository,available,incomplete,skipped,entries,refreshed FROM indexes")
         .map_err(|_| "Cannot read indexes")?;
-    let rows = statement
+    statement
         .query_map([], |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
+                r.get(0)?,
+                IndexStatus {
+                    available: r.get(1)?,
+                    incomplete: r.get(2)?,
+                    skipped: r.get::<_, i64>(3)? as usize,
+                    entries: r.get::<_, i64>(4)? as usize,
+                },
+                r.get(5)?,
             ))
         })
-        .map_err(|_| "Cannot read indexes")?;
-    rows.map(|r| {
-        let (id, json, time) = r.map_err(|_| "Cannot read index")?;
-        Ok((
-            id,
-            serde_json::from_str(&json).map_err(|_| "Invalid index")?,
-            time,
-        ))
-    })
-    .collect()
+        .map_err(|_| "Cannot read indexes")?
+        .collect::<Result<_, _>>()
+        .map_err(|_| "Cannot read index".into())
 }
 /// Which indexed terms the repository page lists. A term is a file term when
 /// it is a relative path or a file name; every other term is a declared symbol.
@@ -325,6 +331,71 @@ mod tests {
         assert_eq!(status[0].1.skipped, 3);
     }
     #[test]
+    fn status_is_read_without_parsing_the_stored_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        sample(dir.path());
+        open(dir.path())
+            .unwrap()
+            .execute("UPDATE indexes SET value='not json'", [])
+            .unwrap();
+        let status = index_status(dir.path()).unwrap();
+        assert_eq!(status[0].1.entries, 6);
+        assert!(status[0].1.available && !status[0].1.incomplete);
+    }
+    #[test]
+    fn an_index_table_without_status_columns_is_rebuilt_and_history_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        rusqlite::Connection::open(dir.path().join("conch.sqlite3"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE indexes (repository TEXT PRIMARY KEY, value TEXT NOT NULL, refreshed INTEGER NOT NULL);
+                 INSERT INTO indexes VALUES ('r', '{\"entries\":[],\"skipped\":0,\"incomplete\":false,\"available\":true}', 0);
+                 CREATE TABLE history (id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, raw TEXT NOT NULL, text TEXT NOT NULL);
+                 INSERT INTO history (created, raw, text) VALUES (1, 'raw', 'text');",
+            )
+            .unwrap();
+        assert!(index_status(dir.path()).unwrap().is_empty());
+        assert_eq!(crate::history::revision(dir.path()).unwrap(), 1);
+        sample(dir.path());
+        assert_eq!(index_status(dir.path()).unwrap()[0].1.entries, 6);
+    }
+    #[test]
+    fn the_snapshot_takes_vocabulary_from_selected_available_indexes_in_memory() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = |id: &str, selected: bool| Repository {
+            id: id.into(),
+            root: root.path().into(),
+            selected,
+            exclusions: vec![],
+        };
+        let settings = Settings {
+            repositories: vec![
+                repository("a", true),
+                repository("b", false),
+                repository("c", true),
+            ],
+            ..Default::default()
+        };
+        let index = |text: &str, available: bool| {
+            Arc::new(Index {
+                entries: vec![term(text, "x.ts")],
+                available,
+                ..Default::default()
+            })
+        };
+        let indexes = Indexes::from([
+            ("a".to_string(), index("Alpha", true)),
+            ("b".to_string(), index("Beta", true)),
+            ("c".to_string(), index("Gamma", false)),
+        ]);
+        let texts: Vec<_> = snapshot(&settings, &indexes)
+            .vocabulary
+            .into_iter()
+            .map(|v| v.text)
+            .collect();
+        assert_eq!(texts, ["Alpha"]);
+    }
+    #[test]
     fn automatic_update_checks_are_on_by_default_and_for_settings_saved_before_they_existed() {
         assert!(Settings::default().check_updates);
         let older = r#"{"hotkey":"Control+Space","activation":"push"}"#;
@@ -339,10 +410,9 @@ mod tests {
         assert!(!Settings::default().auto_accept_suggestions);
         let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
         assert!(!older.auto_accept_suggestions);
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!snapshot(dir.path(), &older).unwrap().auto_accept);
+        assert!(!snapshot(&older, &Indexes::new()).auto_accept);
         let on: Settings = serde_json::from_str(r#"{"auto_accept_suggestions":true}"#).unwrap();
-        assert!(snapshot(dir.path(), &on).unwrap().auto_accept);
+        assert!(snapshot(&on, &Indexes::new()).auto_accept);
     }
     #[test]
     fn keeping_history_is_opt_in() {
@@ -484,18 +554,17 @@ mod tests {
             load(dir.path()).unwrap().cleanup.fillers["en"],
             ["um", "er"]
         );
-        let snapshot = snapshot(dir.path(), &loaded).unwrap();
+        let snapshot = snapshot(&loaded, &Indexes::new());
         assert_eq!(snapshot.cleanup.fillers["en"], ["um", "er"]);
     }
     #[test]
     fn the_snapshot_captures_the_language_and_the_model_the_recording_starts_with() {
-        let dir = tempfile::tempdir().unwrap();
         let settings = Settings {
             language: "pt".into(),
             recognizer: "base".into(),
             ..Default::default()
         };
-        let snapshot = snapshot(dir.path(), &settings).unwrap();
+        let snapshot = snapshot(&settings, &Indexes::new());
         assert_eq!(snapshot.language, "pt");
         assert_eq!(snapshot.recognizer, "base");
     }

@@ -1,3 +1,4 @@
+use crate::lock::Locked;
 use crate::{
     audio,
     chunk::Chunker,
@@ -25,6 +26,9 @@ pub struct AppState {
     pub data: PathBuf,
     pub workers: PathBuf,
     pub inner: Mutex<Inner>,
+    /// The stored vocabulary indexes, so a recording starts without reading the
+    /// database. Lock it after `inner` when holding both.
+    pub indexes: Mutex<storage::Indexes>,
 }
 pub struct Inner {
     pub settings: Settings,
@@ -78,7 +82,7 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
     let history_revision = history::revision(&state.data)?;
     let accessibility = platform::permission();
     let microphone: String = platform::microphone_status().into();
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     let permissions = (accessibility, microphone.clone());
     if inner.permissions.as_ref() != Some(&permissions) {
         for (level, message) in permission_changes(inner.permissions.as_ref(), &permissions) {
@@ -147,7 +151,7 @@ pub fn save_settings(
     state: State<'_, AppState>,
     mut settings: Settings,
 ) -> Result<(), String> {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     if inner.session.phase != Phase::Idle {
         return Err("Finish or cancel before saving settings".into());
     }
@@ -190,6 +194,10 @@ pub fn save_settings(
         storage::save(&state.data, &settings)?;
     }
     let changed = inner.settings.recognizer != settings.recognizer;
+    state
+        .indexes
+        .locked()
+        .retain(|id, _| settings.repositories.iter().any(|r| &r.id == id));
     inner.settings = settings;
     drop(inner);
     if changed {
@@ -223,14 +231,14 @@ pub async fn refresh(app: AppHandle) -> Result<(), String> {
 }
 fn refresh_now(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let repositories = state.inner.lock().unwrap().settings.repositories.clone();
+    let repositories = state.inner.locked().settings.repositories.clone();
     for repository in repositories {
         let index = index::scan(&repository.root, &repository.id, &repository.exclusions)?;
         let before = storage::index_status(&state.data)?
             .into_iter()
             .find(|row| row.0 == repository.id)
             .map(|row| row.1);
-        let inner = state.inner.lock().unwrap();
+        let inner = state.inner.locked();
         if inner.settings.repositories.iter().any(|r| {
             r.id == repository.id
                 && r.root == repository.root
@@ -244,6 +252,10 @@ fn refresh_now(app: &AppHandle) -> Result<(), String> {
             if let Some(message) = index_message(&name, before.as_ref(), &index) {
                 log::info("index", &message);
             }
+            state
+                .indexes
+                .locked()
+                .insert(repository.id, Arc::new(index));
         }
     }
     Ok(())
@@ -252,14 +264,14 @@ fn refresh_now(app: &AppHandle) -> Result<(), String> {
 pub fn start(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let (send, receive) = mpsc::channel();
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     if inner.capturing_shortcut {
         return Err("Finish choosing your shortcut before recording".into());
     }
     if cfg!(target_os = "macos") && platform::microphone_status() != "granted" {
         return Err("Enable Conch microphone access in Setup before recording".into());
     }
-    let snapshot = storage::snapshot(&state.data, &inner.settings)?;
+    let snapshot = storage::snapshot(&inner.settings, &state.indexes.locked());
     let model = recognition_model(&state.data, &snapshot.recognizer)?;
     let generation = inner.session.start()?;
     inner.stop = Some(send);
@@ -338,7 +350,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
             receive,
             || {
                 let state = handle.state::<AppState>();
-                let mut inner = state.inner.lock().unwrap();
+                let mut inner = state.inner.locked();
                 if inner.session.generation == generation {
                     inner.audio_ready = true;
                     inner.recording_since = Some(Instant::now());
@@ -365,7 +377,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                     transcriber.push_tail(samples[range].to_vec(), reuse);
                 }
                 {
-                    let mut inner = state.inner.lock().unwrap();
+                    let mut inner = state.inner.locked();
                     if inner.session.generation != generation {
                         return;
                     }
@@ -385,7 +397,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
             Ok(None) => (),
             Err(error) => {
                 log::error("audio", &error);
-                let mut inner = state.inner.lock().unwrap();
+                let mut inner = state.inner.locked();
                 if inner.session.generation == generation {
                     inner.session.cancel();
                     inner.indicator_notice = Some((Instant::now(), error.clone()));
@@ -399,7 +411,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
 }
 #[tauri::command]
 pub fn finish(state: State<'_, AppState>) -> Result<(), String> {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     inner.recorded_seconds = inner
         .recording_since
         .map(|at| at.elapsed().as_secs())
@@ -416,7 +428,7 @@ pub fn finish(state: State<'_, AppState>) -> Result<(), String> {
 pub fn cancel(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let worker = {
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = state.inner.locked();
         inner.session.cancel();
         inner.indicator_notice = None;
         inner.retry = None;
@@ -447,7 +459,7 @@ fn process(
 ) {
     let state = app.state::<AppState>();
     let (worker, model, stopped) = {
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = state.inner.locked();
         if inner.session.generation != generation {
             return;
         }
@@ -503,11 +515,7 @@ fn process(
     let raw = match recognition {
         Ok(raw) if !raw.trim().is_empty() => raw,
         Ok(_) => {
-            failed(
-                app,
-                generation,
-                "No speech recognized".into(),
-            );
+            failed(app, generation, "No speech recognized".into());
             return;
         }
         Err(error) => {
@@ -515,7 +523,7 @@ fn process(
             return;
         }
     };
-    if state.inner.lock().unwrap().session.generation != generation {
+    if state.inner.locked().session.generation != generation {
         return;
     }
     let mut result = core::prepare(&raw, &snapshot);
@@ -541,7 +549,7 @@ fn process(
             note_model_time(&mut watch, &worker);
         }
     }
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     if !inner.session.complete(generation) {
         return;
     }
@@ -718,7 +726,7 @@ fn failed(app: &AppHandle, generation: u64, error: String) {
     };
     log::record(level, "dictation", &error, None);
     let state = app.state::<AppState>();
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     if inner.session.generation == generation {
         inner.session.phase = Phase::Idle;
         inner.indicator_notice = Some((Instant::now(), error.clone()));
@@ -728,7 +736,7 @@ fn failed(app: &AppHandle, generation: u64, error: String) {
 #[tauri::command]
 pub fn retry(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     let (wav, snapshot) = inner.retry.clone().ok_or("No failed recording to retry")?;
     let generation = inner.session.start()?;
     log::info("dictation", "Retrying the last recording");
@@ -744,7 +752,7 @@ pub fn edit(state: State<'_, AppState>, text: String) -> Result<(), String> {
     if text.len() > 100_000 {
         return Err("Result is too long".into());
     }
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     if inner.session.phase != Phase::Idle {
         return Err("Finish or cancel before editing the result".into());
     }
@@ -761,7 +769,7 @@ fn sync_history(data: &std::path::Path, inner: &Inner) -> Result<(), String> {
 }
 #[tauri::command]
 pub fn accept(state: State<'_, AppState>, index: usize, candidate: usize) -> Result<(), String> {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     let result = inner.result.as_mut().ok_or("No result")?;
     core::accept_suggestion(result, index, candidate)?;
     sync_history(&state.data, &inner)
@@ -774,7 +782,7 @@ pub fn accept_always(
     index: usize,
     candidate: usize,
 ) -> Result<(), String> {
-    let mut guard = state.inner.lock().unwrap();
+    let mut guard = state.inner.locked();
     let inner = &mut *guard;
     let result = inner.result.as_mut().ok_or("No result")?;
     let learned = core::mapping_for(result, index, candidate)?;
@@ -794,13 +802,13 @@ pub fn accept_always(
 }
 #[tauri::command]
 pub fn undo(state: State<'_, AppState>, index: usize) -> Result<(), String> {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     core::undo_edit(inner.result.as_mut().ok_or("No result")?, index)?;
     sync_history(&state.data, &inner)
 }
 #[tauri::command]
 pub fn reject(state: State<'_, AppState>, index: usize) -> Result<(), String> {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     let result = inner.result.as_mut().ok_or("No result")?;
     if index >= result.suggestions.len() {
         return Err("Suggestion is unavailable".into());
@@ -810,7 +818,7 @@ pub fn reject(state: State<'_, AppState>, index: usize) -> Result<(), String> {
 }
 #[tauri::command]
 pub fn copy(state: State<'_, AppState>, raw: bool) -> Result<(), String> {
-    let inner = state.inner.lock().unwrap();
+    let inner = state.inner.locked();
     let result = inner.result.as_ref().ok_or("No result")?;
     platform::NativeDesktop::default().copy(if raw { &result.raw } else { &result.text })
 }
@@ -853,7 +861,7 @@ pub async fn logs_page(
 #[tauri::command]
 pub fn logs_note(message: String) {
     let text = bounded_note(&message);
-    if NOTES.lock().unwrap().allow(&text, Instant::now()) {
+    if NOTES.locked().allow(&text, Instant::now()) {
         log::warn("ui", &text);
     }
 }
@@ -933,7 +941,7 @@ pub async fn download(app: AppHandle, id: String) -> Result<(), String> {
     let wanted = inference::missing(&app.state::<AppState>().data, &id)?;
     {
         let state = app.state::<AppState>();
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = state.inner.locked();
         if inner.downloading {
             return Err("A download is already active".into());
         }
@@ -966,7 +974,7 @@ pub async fn download(app: AppHandle, id: String) -> Result<(), String> {
     .await
     .map_err(|_| "Model download worker failed".to_string())
     .and_then(|r| r);
-    app.state::<AppState>().inner.lock().unwrap().downloading = false;
+    app.state::<AppState>().inner.locked().downloading = false;
     match &result {
         Ok(()) => log::info(
             "download",
@@ -1010,6 +1018,8 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         ),
     );
     let settings = storage::load(&data)?;
+    // A stored index that cannot be read is rebuilt by the first refresh.
+    let indexes = storage::indexes(&data).unwrap_or_default();
     let workers = if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("workers")
     } else {
@@ -1046,6 +1056,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             indicator_notice: None,
             permissions: None,
         }),
+        indexes: Mutex::new(indexes),
     });
     app.manage(crate::update::Tracker::new());
     if let Err(error) = crate::indicator::setup(app.handle()) {
@@ -1053,7 +1064,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "app",
             &format!("The recording indicator is unavailable: {error}"),
         );
-        app.state::<AppState>().inner.lock().unwrap().error = error;
+        app.state::<AppState>().inner.locked().error = error;
     }
     let supported_session = !cfg!(target_os = "linux")
         || (std::env::var_os("WAYLAND_DISPLAY").is_none()
@@ -1074,12 +1085,12 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             .is_err()
     {
         log::error("app", "Global hotkey unavailable");
-        app.state::<AppState>().inner.lock().unwrap().error =
+        app.state::<AppState>().inner.locked().error =
             "Global hotkey unavailable; use the recording controls".into();
     }
     if let Err(error) = crate::tray::setup(app.handle()) {
         log::error("app", &format!("The menu bar icon is unavailable: {error}"));
-        app.state::<AppState>().inner.lock().unwrap().error = error;
+        app.state::<AppState>().inner.locked().error = error;
     }
     crate::update::watch(app.handle());
     let handle = app.handle().clone();
@@ -1090,45 +1101,70 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             let _ = send.send(event);
         })
         .ok();
-        let mut roots: Vec<PathBuf> = vec![];
+        let mut schedule = crate::watch::Schedule::default();
+        // Each watched root and whether it existed. A folder that appears or
+        // disappears is watched again and indexed again.
+        let mut roots: Vec<(PathBuf, bool)> = vec![];
+        // The roots as configured and as resolved, since events carry resolved paths.
+        let mut prefixes: Vec<PathBuf> = vec![];
         let mut logged_failure = String::new();
         loop {
-            match refresh_now(&handle) {
-                Ok(()) => logged_failure.clear(),
-                Err(error) => {
-                    // The loop retries every 30 seconds; log a failure once.
-                    if logged_failure != error {
-                        log::error("index", &format!("Index refresh failed: {error}"));
-                        logged_failure = error.clone();
-                    }
-                    handle.state::<AppState>().inner.lock().unwrap().error =
-                        format!("Index refresh failed: {error}");
-                }
-            }
+            let repositories = handle
+                .state::<AppState>()
+                .inner
+                .locked()
+                .settings
+                .repositories
+                .clone();
             if let Some(watcher) = watcher.as_mut() {
-                let current: Vec<_> = handle
-                    .state::<AppState>()
-                    .inner
-                    .lock()
-                    .unwrap()
-                    .settings
-                    .repositories
+                let current: Vec<_> = repositories
                     .iter()
-                    .map(|r| r.root.clone())
+                    .map(|r| (r.root.clone(), r.root.is_dir()))
                     .collect();
                 if roots != current {
-                    for root in &roots {
+                    for (root, _) in &roots {
                         let _ = watcher.unwatch(root);
                     }
-                    for root in &current {
+                    for (root, _) in &current {
                         let _ = watcher.watch(root, notify::RecursiveMode::Recursive);
                     }
+                    prefixes = current
+                        .iter()
+                        .flat_map(|(root, _)| [root.clone()].into_iter().chain(root.canonicalize()))
+                        .collect();
                     roots = current;
+                    schedule.files_changed();
                 }
             }
-            let _ = receive.recv_timeout(Duration::from_secs(30));
-            std::thread::sleep(Duration::from_millis(500));
-            while receive.try_recv().is_ok() {}
+            if schedule.due(&repositories, watcher.is_some(), Instant::now()) {
+                let refreshed = refresh_now(&handle);
+                match &refreshed {
+                    Ok(()) => logged_failure.clear(),
+                    Err(error) => {
+                        // A failed refresh is retried every 30 seconds; log it once.
+                        if &logged_failure != error {
+                            log::error("index", &format!("Index refresh failed: {error}"));
+                            logged_failure = error.clone();
+                        }
+                        handle.state::<AppState>().inner.locked().error =
+                            format!("Index refresh failed: {error}");
+                    }
+                }
+                schedule.refreshed(&repositories, refreshed.is_ok(), Instant::now());
+            }
+            // Settings are read again every two seconds, so an added repository
+            // is indexed without waiting for a file change.
+            if let Ok(event) = receive.recv_timeout(Duration::from_secs(2)) {
+                let mut relevant = crate::watch::relevant(&event, &prefixes);
+                // One save or checkout produces a burst of events.
+                std::thread::sleep(Duration::from_millis(500));
+                while let Ok(event) = receive.try_recv() {
+                    relevant |= crate::watch::relevant(&event, &prefixes);
+                }
+                if relevant {
+                    schedule.files_changed();
+                }
+            }
         }
     });
     Ok(())
@@ -1140,7 +1176,7 @@ pub fn shortcut(
 ) {
     let state = app.state::<AppState>();
     let action = {
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = state.inner.locked();
         if inner.capturing_shortcut {
             return;
         }
@@ -1154,7 +1190,7 @@ pub fn shortcut(
             if let Err(error) = start(app.clone()) {
                 log::warn("dictation", &error);
                 let state = app.state::<AppState>();
-                let mut inner = state.inner.lock().unwrap();
+                let mut inner = state.inner.locked();
                 inner.indicator_notice = Some((Instant::now(), error.clone()));
                 inner.error = error;
             }
@@ -1211,7 +1247,7 @@ pub fn shortcut_capture(
     state: State<'_, AppState>,
     active: bool,
 ) -> Result<(), String> {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     if inner.session.phase != Phase::Idle {
         return Err("Finish or cancel your recording before choosing a shortcut".into());
     }
@@ -1244,7 +1280,7 @@ pub fn shortcut_capture(
 
 #[tauri::command]
 pub fn repair_accessibility(state: State<'_, AppState>) -> Result<(), String> {
-    let inner = state.inner.lock().unwrap();
+    let inner = state.inner.locked();
     if inner.session.phase != Phase::Idle || inner.downloading || inner.capturing_shortcut {
         return Err("Finish active work before repairing Accessibility access".into());
     }
@@ -1253,7 +1289,7 @@ pub fn repair_accessibility(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 pub fn restart_for_accessibility(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     {
-        let inner = state.inner.lock().unwrap();
+        let inner = state.inner.locked();
         if inner.session.phase != Phase::Idle || inner.downloading || inner.capturing_shortcut {
             return Err("Finish active work before restarting Conch".into());
         }
@@ -1268,7 +1304,7 @@ pub fn set_hotkey(
     state: State<'_, AppState>,
     hotkey: String,
 ) -> Result<String, String> {
-    let mut inner = state.inner.lock().unwrap();
+    let mut inner = state.inner.locked();
     if inner.session.phase != Phase::Idle {
         return Err("Finish or cancel your recording before changing the shortcut".into());
     }

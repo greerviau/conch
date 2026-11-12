@@ -217,6 +217,7 @@ impl Transcriber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lock::Locked;
     use std::sync::{Arc, Mutex};
     fn chunk(length: usize) -> Vec<f32> {
         vec![0.0; length]
@@ -227,13 +228,13 @@ mod tests {
         let transcriber = Transcriber::start(
             {
                 let events = events.clone();
-                move || events.lock().unwrap().push("warm".to_string())
+                move || events.locked().push("warm".to_string())
             },
             {
                 let events = events.clone();
                 move |wav, _| {
                     let size = wav.len();
-                    events.lock().unwrap().push(format!("chunk {size}"));
+                    events.locked().push(format!("chunk {size}"));
                     Ok(format!(" text{size} "))
                 }
             },
@@ -241,11 +242,11 @@ mod tests {
         transcriber.push(chunk(100));
         transcriber.push(chunk(200));
         let text = transcriber.finish().unwrap().text;
-        let sizes: Vec<_> = events.lock().unwrap()[1..]
+        let sizes: Vec<_> = events.locked()[1..]
             .iter()
             .map(|e| e.strip_prefix("chunk ").unwrap().to_string())
             .collect();
-        assert_eq!(events.lock().unwrap()[0], "warm");
+        assert_eq!(events.locked()[0], "warm");
         assert_eq!(text, format!("text{} text{}", sizes[0], sizes[1]));
         assert!(sizes[0] < sizes[1]);
     }
@@ -255,14 +256,14 @@ mod tests {
         let transcriber = Transcriber::start(|| (), {
             let calls = calls.clone();
             move |_, _| {
-                *calls.lock().unwrap() += 1;
+                *calls.locked() += 1;
                 Err("worker died".into())
             }
         });
         transcriber.push(chunk(10));
         transcriber.push(chunk(10));
         assert_eq!(transcriber.finish().unwrap_err(), "worker died");
-        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(*calls.locked(), 1);
     }
     #[test]
     fn blank_chunks_add_no_separator() {
@@ -303,7 +304,7 @@ mod tests {
     ) -> impl Fn(Vec<u8>, bool) -> Result<String, String> + use<> {
         let calls = calls.clone();
         move |wav, _| {
-            calls.lock().unwrap().push(wav.len());
+            calls.locked().push(wav.len());
             Ok(format!("text{}", wav.len()))
         }
     }
@@ -317,7 +318,7 @@ mod tests {
         let [speculated] = sizes(&[100])[..] else {
             unreachable!()
         };
-        assert_eq!(*calls.lock().unwrap(), vec![speculated]);
+        assert_eq!(*calls.locked(), vec![speculated]);
         assert_eq!(outcome.text, format!("text{speculated}"));
         assert!(outcome.speculative);
     }
@@ -331,7 +332,7 @@ mod tests {
         let [speculated, tail] = sizes(&[100, 200])[..] else {
             unreachable!()
         };
-        assert_eq!(*calls.lock().unwrap(), vec![speculated, tail]);
+        assert_eq!(*calls.locked(), vec![speculated, tail]);
         assert_eq!(outcome.text, format!("text{tail}"));
         assert!(!outcome.speculative);
     }
@@ -341,7 +342,7 @@ mod tests {
         let transcriber = Transcriber::start(|| (), recording(&calls));
         transcriber.speculate(0..100, chunk(100));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while calls.lock().unwrap().is_empty() {
+        while calls.locked().is_empty() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the speculation never ran"
@@ -354,7 +355,7 @@ mod tests {
         let [speculated, chunked, tail] = sizes(&[100, 300, 50])[..] else {
             unreachable!()
         };
-        assert_eq!(*calls.lock().unwrap(), vec![speculated, chunked, tail]);
+        assert_eq!(*calls.locked(), vec![speculated, chunked, tail]);
         assert_eq!(outcome.text, format!("text{chunked} text{tail}"));
         assert!(!outcome.speculative);
     }
@@ -364,7 +365,7 @@ mod tests {
         let transcriber = Transcriber::start(|| (), {
             let calls = calls.clone();
             move |_, _| {
-                let mut calls = calls.lock().unwrap();
+                let mut calls = calls.locked();
                 *calls += 1;
                 if *calls == 1 {
                     Err("worker died".into())
@@ -378,7 +379,7 @@ mod tests {
         let outcome = transcriber.finish().unwrap();
         assert_eq!(outcome.text, "tail text");
         assert!(!outcome.speculative);
-        assert_eq!(*calls.lock().unwrap(), 2);
+        assert_eq!(*calls.locked(), 2);
     }
     #[test]
     fn a_failed_tail_after_a_speculation_fails_the_recording() {
@@ -395,10 +396,10 @@ mod tests {
             let calls = calls.clone();
             let hold = Mutex::new(hold);
             move |wav, _| {
-                if calls.lock().unwrap().is_empty() {
-                    hold.lock().unwrap().recv().unwrap();
+                if calls.locked().is_empty() {
+                    hold.locked().recv().unwrap();
                 }
-                calls.lock().unwrap().push(wav.len());
+                calls.locked().push(wav.len());
                 Ok(format!("text{}", wav.len()))
             }
         });
@@ -411,7 +412,7 @@ mod tests {
         let [first, newest] = sizes(&[100, 500])[..] else {
             unreachable!()
         };
-        assert_eq!(*calls.lock().unwrap(), vec![first, newest]);
+        assert_eq!(*calls.locked(), vec![first, newest]);
         assert!(outcome.speculative);
         assert_eq!(outcome.text, format!("text{first} text{newest}"));
     }
@@ -421,7 +422,7 @@ mod tests {
         let transcriber = Transcriber::start(|| (), {
             let flags = flags.clone();
             move |wav, speculative| {
-                flags.lock().unwrap().push((wav.len(), speculative));
+                flags.locked().push((wav.len(), speculative));
                 Ok("text".into())
             }
         });
@@ -433,7 +434,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            *flags.lock().unwrap(),
+            *flags.locked(),
             vec![(chunked, false), (speculated, true), (tail, false)]
         );
     }
@@ -443,7 +444,7 @@ mod tests {
     ) -> impl Fn(&str) -> Result<String, String> + Send + use<> {
         let calls = calls.clone();
         move |text| {
-            calls.lock().unwrap().push(text.to_owned());
+            calls.locked().push(text.to_owned());
             Ok(text.to_uppercase())
         }
     }
@@ -476,7 +477,7 @@ mod tests {
             unreachable!()
         };
         let texts = vec![format!("text{a}"), format!("text{b}"), format!("text{c}")];
-        assert_eq!(*cleaned.lock().unwrap(), texts);
+        assert_eq!(*cleaned.locked(), texts);
         assert_eq!(outcome.text, texts.join(" "));
         assert_eq!(outcome.cleaned, Some(Ok(texts.join(" ").to_uppercase())));
     }
@@ -490,9 +491,9 @@ mod tests {
         );
         transcriber.push(chunk(100));
         wait_for("cleaning the chunk", || {
-            (!cleaned.lock().unwrap().is_empty()).then_some(())
+            (!cleaned.locked().is_empty()).then_some(())
         });
-        assert_eq!(*cleaned.lock().unwrap(), vec!["spoken words".to_string()]);
+        assert_eq!(*cleaned.locked(), vec!["spoken words".to_string()]);
         transcriber.push_tail(chunk(100), None);
         assert_eq!(
             transcriber.finish().unwrap().cleaned,
@@ -516,7 +517,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(
-            *cleaned.lock().unwrap(),
+            *cleaned.locked(),
             vec![format!("text{chunked}"), format!("text{speculated}")]
         );
     }
@@ -526,7 +527,7 @@ mod tests {
         let transcriber = Transcriber::start_cleaning(|| (), |_, _| Ok("words".into()), {
             let calls = calls.clone();
             move |_| {
-                *calls.lock().unwrap() += 1;
+                *calls.locked() += 1;
                 Err("cleanup failed".into())
             }
         });
@@ -536,7 +537,7 @@ mod tests {
         let outcome = transcriber.finish().unwrap();
         assert_eq!(outcome.text, "words words words");
         assert_eq!(outcome.cleaned, Some(Err("cleanup failed".into())));
-        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(*calls.locked(), 1);
     }
     #[test]
     fn a_part_that_cleans_to_nothing_adds_no_separator() {
@@ -599,7 +600,7 @@ mod tests {
             {
                 let calls = calls.clone();
                 move |_, _| {
-                    let mut calls = calls.lock().unwrap();
+                    let mut calls = calls.locked();
                     *calls += 1;
                     if *calls == 1 {
                         Ok("first".into())
@@ -612,8 +613,8 @@ mod tests {
                 let hold = Mutex::new(hold);
                 let started = Mutex::new(started_send);
                 move |text| {
-                    started.lock().unwrap().send(()).unwrap();
-                    let _ = hold.lock().unwrap().recv();
+                    started.locked().send(()).unwrap();
+                    let _ = hold.locked().recv();
                     Ok(text.into())
                 }
             },
@@ -643,7 +644,7 @@ mod tests {
             {
                 let calls = calls.clone();
                 move |_, _| {
-                    let mut calls = calls.lock().unwrap();
+                    let mut calls = calls.locked();
                     *calls += 1;
                     match *calls {
                         1 | 2 => Ok(format!("part{calls}")),
@@ -656,9 +657,9 @@ mod tests {
                 let started = Mutex::new(started_send);
                 let cleaned = cleaned.clone();
                 move |text| {
-                    cleaned.lock().unwrap().push(text.to_owned());
-                    let _ = started.lock().unwrap().send(());
-                    let _ = hold.lock().unwrap().recv();
+                    cleaned.locked().push(text.to_owned());
+                    let _ = started.locked().send(());
+                    let _ = hold.locked().recv();
                     Ok(text.into())
                 }
             },
@@ -673,7 +674,7 @@ mod tests {
         let _ = release.send(());
         let _ = release.send(());
         std::thread::sleep(std::time::Duration::from_millis(200));
-        assert_eq!(*cleaned.lock().unwrap(), vec!["part1".to_string()]);
+        assert_eq!(*cleaned.locked(), vec!["part1".to_string()]);
     }
     #[test]
     fn the_parts_of_the_recording_are_returned_in_order() {
