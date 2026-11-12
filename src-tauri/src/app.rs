@@ -229,7 +229,11 @@ pub async fn refresh(app: AppHandle) -> Result<(), String> {
         .await
         .map_err(|_| "Index worker failed")?
 }
+/// Held for a whole refresh, so a manual refresh and the background loop do not
+/// overlap and an older scan cannot replace a newer one.
+static REFRESHING: Mutex<()> = Mutex::new(());
 fn refresh_now(app: &AppHandle) -> Result<(), String> {
+    let _refreshing = REFRESHING.locked();
     let state = app.state::<AppState>();
     let repositories = state.inner.locked().settings.repositories.clone();
     for repository in repositories {
@@ -1105,6 +1109,8 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         // Each watched root and whether it existed. A folder that appears or
         // disappears is watched again and indexed again.
         let mut roots: Vec<(PathBuf, bool)> = vec![];
+        // Whether every existing root is watched. Otherwise the loop polls.
+        let mut watching_all = false;
         // The roots as configured and as resolved, since events carry resolved paths.
         let mut prefixes: Vec<PathBuf> = vec![];
         let mut logged_failure = String::new();
@@ -1125,9 +1131,13 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     for (root, _) in &roots {
                         let _ = watcher.unwatch(root);
                     }
-                    for (root, _) in &current {
-                        let _ = watcher.watch(root, notify::RecursiveMode::Recursive);
-                    }
+                    // A missing root has nothing to index until it appears.
+                    watching_all = current.iter().all(|(root, exists)| {
+                        watcher
+                            .watch(root, notify::RecursiveMode::Recursive)
+                            .is_ok()
+                            || !exists
+                    });
                     prefixes = current
                         .iter()
                         .flat_map(|(root, _)| [root.clone()].into_iter().chain(root.canonicalize()))
@@ -1136,7 +1146,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                     schedule.files_changed();
                 }
             }
-            if schedule.due(&repositories, watcher.is_some(), Instant::now()) {
+            if schedule.due(&repositories, watching_all, Instant::now()) {
                 let refreshed = refresh_now(&handle);
                 match &refreshed {
                     Ok(()) => logged_failure.clear(),
@@ -1154,16 +1164,23 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
             // Settings are read again every two seconds, so an added repository
             // is indexed without waiting for a file change.
-            if let Ok(event) = receive.recv_timeout(Duration::from_secs(2)) {
-                let mut relevant = crate::watch::relevant(&event, &prefixes);
-                // One save or checkout produces a burst of events.
-                std::thread::sleep(Duration::from_millis(500));
-                while let Ok(event) = receive.try_recv() {
-                    relevant |= crate::watch::relevant(&event, &prefixes);
+            let event = match receive.recv_timeout(Duration::from_secs(2)) {
+                Ok(event) => event,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                // Without a watcher the channel is closed and returns at once.
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
                 }
-                if relevant {
-                    schedule.files_changed();
-                }
+            };
+            let mut relevant = crate::watch::relevant(&event, &prefixes);
+            // One save or checkout produces a burst of events.
+            std::thread::sleep(Duration::from_millis(500));
+            while let Ok(event) = receive.try_recv() {
+                relevant |= crate::watch::relevant(&event, &prefixes);
+            }
+            if relevant {
+                schedule.files_changed();
             }
         }
     });
