@@ -11,13 +11,20 @@ import { Updates } from "./Updates";
 import { Row, Toggle } from "./ui";
 import { folderName } from "./types";
 import {
+  LanguageMenu,
   ModelStatus,
   RECOGNIZER_TRADEOFF,
   RecognizerMenu,
-  VOICE_DETECTION_NOTE,
-  recognizerInfo,
+  voiceDetectionNote,
 } from "./ModelChoice";
-import { CLEANUP, VAD, size } from "./models";
+import {
+  cleanupModel,
+  modelForLanguage,
+  recognizerInfo,
+  size,
+  supports,
+  voiceDetection,
+} from "./models";
 import type { Cleanup, Mapping, Settings, View } from "./types";
 
 const TABS = ["Dictation", "History", "Repositories", "Mappings", "Settings"];
@@ -149,7 +156,30 @@ export default function App() {
       })
     )
       setDraft((current) =>
-        current ? { ...current, recognizer: id } : current,
+        current
+          ? {
+              ...current,
+              // The draft can hold an unsaved language that `id` lacks.
+              recognizer: modelForLanguage(view.models, current.language, id),
+            }
+          : current,
+      );
+  }
+  /** Saves the language and the model that supports it, like `chooseRecognizer`. */
+  async function chooseLanguage(code: string) {
+    if (!view) return;
+    const recognizer = modelForLanguage(
+      view.models,
+      code,
+      view.settings.recognizer,
+    );
+    if (
+      await command("save_settings", {
+        settings: { ...view.settings, language: code, recognizer },
+      })
+    )
+      setDraft((current) =>
+        current ? { ...current, language: code, recognizer } : current,
       );
   }
   async function chooseRepository() {
@@ -192,13 +222,15 @@ export default function App() {
       </main>
     );
   const installed = (id: string) =>
-    view.models.some(([model, ready]) => model === id && ready);
+    view.models.some((model) => model.id === id && model.ready);
+  const vad = voiceDetection(view.models);
+  const cleanupMini = cleanupModel(view.models);
   // A recognizer runs with the voice detection model, so both must be on disk.
-  const recognizerReady = (id: string) => installed(id) && installed(VAD.id);
+  const recognizerReady = (id: string) => installed(id) && installed(vad.id);
   const modelInstalled = recognizerReady(view.settings.recognizer);
   const downloadBusy = downloadingId !== null || view.downloading;
-  const draftRecognizer = recognizerInfo(draft.recognizer);
-  const voiceDetectionOnly = installed(draft.recognizer) && !installed(VAD.id);
+  const draftRecognizer = recognizerInfo(view.models, draft.recognizer);
+  const voiceDetectionOnly = installed(draft.recognizer) && !installed(vad.id);
   const microphoneReady =
     view.platform !== "macos" || view.microphone === "granted";
   const needsSetup =
@@ -210,6 +242,13 @@ export default function App() {
   const showWorkspace = canRecord || !!view.result;
   const hasChanges = JSON.stringify(draft) !== JSON.stringify(view.settings);
   const cleanup = draft.cleanup;
+  const autoDetect = draft.language === "auto";
+  const languageName = autoDetect
+    ? "Auto-detect"
+    : (view.languages.find((language) => language.code === draft.language)
+        ?.name ?? draft.language);
+  const managedUnsupported =
+    cleanup.enhanced === "managed" && !supports(cleanupMini, draft.language);
   const updateCleanup = (patch: Partial<Cleanup>) =>
     setDraft({ ...draft, cleanup: { ...cleanup, ...patch } });
   const repositoryName = (id: string) => {
@@ -295,6 +334,10 @@ export default function App() {
           <>
             {needsSetup && (
               <Setup
+                models={view.models}
+                languages={view.languages}
+                language={view.settings.language}
+                onLanguage={(code) => void chooseLanguage(code)}
                 mac={view.platform === "macos"}
                 installed={modelInstalled}
                 recognizer={view.settings.recognizer}
@@ -747,13 +790,27 @@ export default function App() {
             <div className="card rows">
               <Row
                 title="Hesitation tokens"
-                note="Comma separated. Leave blank to remove nothing."
+                note={
+                  autoDetect
+                    ? "Auto-detect removes none, because hesitation words differ by language. Choose a language to edit its list."
+                    : `Comma separated. Leave blank to remove nothing. This list applies to ${languageName} only.`
+                }
               >
                 <input
                   aria-label="Hesitation tokens"
-                  value={cleanup.fillers.join(",")}
+                  disabled={autoDetect}
+                  value={
+                    autoDetect
+                      ? ""
+                      : (cleanup.fillers[draft.language] ?? []).join(",")
+                  }
                   onChange={(e) =>
-                    updateCleanup({ fillers: e.target.value.split(",") })
+                    updateCleanup({
+                      fillers: {
+                        ...cleanup.fillers,
+                        [draft.language]: e.target.value.split(","),
+                      },
+                    })
                   }
                 />
               </Row>
@@ -771,7 +828,11 @@ export default function App() {
               </Row>
               <Row
                 title="Enhanced cleanup"
-                note="Rewrites the transcript with a language model after Basic cleanup."
+                note={`Rewrites the transcript with a language model after Basic cleanup.${
+                  managedUnsupported
+                    ? ` Managed S1-mini supports English only; Conch uses Basic cleanup for ${languageName}. A local or remote endpoint works in any language.`
+                    : ""
+                }`}
               >
                 <select
                   aria-label="Enhanced cleanup"
@@ -791,15 +852,15 @@ export default function App() {
               </Row>
               {cleanup.enhanced === "managed" && (
                 <ModelStatus
-                  ready={installed(CLEANUP.id)}
-                  downloading={downloadingId === CLEANUP.id}
+                  ready={installed(cleanupMini.id)}
+                  downloading={downloadingId === cleanupMini.id}
                   percent={percent}
                   blocked={downloadBusy}
-                  label={CLEANUP.label}
-                  readyText={`${CLEANUP.label} is installed.`}
+                  label={cleanupMini.label}
+                  readyText={`${cleanupMini.label} is installed.`}
                   needText="Managed cleanup needs the optional S1-mini model. Until it is installed, Conch uses Basic cleanup."
-                  button={`Download ${CLEANUP.label}, ${size(CLEANUP)}`}
-                  onDownload={() => void downloadModel(CLEANUP.id)}
+                  button={`Download ${cleanupMini.label}, ${size(cleanupMini)}`}
+                  onDownload={() => void downloadModel(cleanupMini.id)}
                 />
               )}
               {(cleanup.enhanced === "local" ||
@@ -903,8 +964,40 @@ export default function App() {
             </div>
             <h3 className="group">Recognition</h3>
             <div className="card rows">
+              <Row
+                title="Language"
+                note={`The language you speak. Models that cannot recognize it are hidden.${
+                  autoDetect
+                    ? " Auto-detect is less reliable for recordings under a few seconds. The first chunk of a recording with speech sets the language for the rest of it."
+                    : ""
+                }${
+                  draft.language === "en"
+                    ? ""
+                    : ' Spelled-letter matching of acronyms, such as "pod gee see", works for English only.'
+                }`}
+              >
+                <LanguageMenu
+                  languages={view.languages}
+                  models={view.models}
+                  value={draft.language}
+                  disabled={downloadBusy}
+                  onChange={(code) =>
+                    setDraft({
+                      ...draft,
+                      language: code,
+                      recognizer: modelForLanguage(
+                        view.models,
+                        code,
+                        draft.recognizer,
+                      ),
+                    })
+                  }
+                />
+              </Row>
               <Row title="Recognition model" note={RECOGNIZER_TRADEOFF}>
                 <RecognizerMenu
+                  models={view.models}
+                  language={draft.language}
                   value={draft.recognizer}
                   onChange={(id) => setDraft({ ...draft, recognizer: id })}
                   ready={recognizerReady}
@@ -925,10 +1018,14 @@ export default function App() {
                 }
                 button={
                   voiceDetectionOnly
-                    ? `Download ${VAD.label}, ${size(VAD)}`
+                    ? `Download ${vad.label}, ${size(vad)}`
                     : `Download ${draftRecognizer.label}, ${size(draftRecognizer)}`
                 }
-                note={voiceDetectionOnly ? undefined : VOICE_DETECTION_NOTE}
+                note={
+                  voiceDetectionOnly
+                    ? undefined
+                    : voiceDetectionNote(view.models)
+                }
                 onDownload={() => void downloadModel(draft.recognizer)}
               />
             </div>
@@ -938,9 +1035,10 @@ export default function App() {
             <details>
               <summary>Licenses and acknowledgments</summary>
               <p className="note">
-                whisper.cpp and llama.cpp use the MIT license. S1-mini by
-                Superwhisper uses Apache 2.0 with an additional naming
-                condition. Model LICENSE and NOTICE files ship with Conch.
+                whisper.cpp, llama.cpp, and the Whisper models converted from
+                OpenAI's weights use the MIT license. S1-mini by Superwhisper
+                uses Apache 2.0 with an additional naming condition. Model
+                LICENSE and NOTICE files ship with Conch.
               </p>
             </details>
           </>

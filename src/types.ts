@@ -11,7 +11,8 @@ export type Mapping = {
   enabled: boolean;
 };
 export type Cleanup = {
-  fillers: string[];
+  /** Hesitation tokens by language code. */
+  fillers: Record<string, string[]>;
   excluded: string[];
   /** Enhanced cleanup: disabled, managed, local, or remote. */
   enhanced: string;
@@ -31,6 +32,8 @@ export type Settings = {
   /** Input device name. Empty follows the system input. */
   microphone: string;
   recognizer: string;
+  /** ISO code from the language table, or `auto`. */
+  language: string;
   show_overlay: boolean;
   check_updates: boolean;
 };
@@ -65,6 +68,19 @@ export type HistoryEntry = {
   raw: string;
 };
 export type HistoryPage = { items: HistoryEntry[]; total: number };
+/** A model the catalog offers, with whether it is on disk. Engine is null for voice detection. */
+export type ModelView = {
+  id: string;
+  label: string;
+  note: string;
+  /** Bytes. */
+  size: number;
+  engine: "whisper" | "transcribe" | "llama" | null;
+  /** ISO codes of the languages the model recognizes. */
+  languages: string[];
+  ready: boolean;
+};
+export type Language = { code: string; name: string };
 export type View = {
   settings: Settings;
   phase: string;
@@ -73,7 +89,9 @@ export type View = {
   indexes: IndexRow[];
   /** The id of the newest history entry, or 0. */
   history_revision: number;
-  models: [string, boolean][];
+  models: ModelView[];
+  /** Every recognition language, in the order of the Whisper table. */
+  languages: Language[];
   accessibility: boolean;
   installation_path?: string | null;
   platform: string;

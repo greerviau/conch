@@ -54,7 +54,8 @@ pub struct View {
     error: String,
     indexes: Vec<(String, storage::IndexStatus, i64)>,
     history_revision: i64,
-    models: Vec<(String, bool)>,
+    models: Vec<inference::ModelView>,
+    languages: &'static [crate::languages::Language],
     accessibility: bool,
     installation_path: Option<String>,
     platform: String,
@@ -81,10 +82,8 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
         error: inner.error.clone(),
         indexes,
         history_revision,
-        models: inference::MODELS
-            .iter()
-            .map(|m| (m.id.into(), state.data.join(m.name).is_file()))
-            .collect(),
+        models: inference::catalog(&state.data),
+        languages: &crate::languages::LANGUAGES,
         accessibility,
         installation_path: platform::installation_path(),
         platform: std::env::consts::OS.into(),
@@ -105,7 +104,14 @@ fn choices_valid(settings: &Settings) -> bool {
             settings.cleanup.enhanced.as_str(),
             "disabled" | "managed" | "local" | "remote"
         )
-        && inference::recognizer(&settings.recognizer).is_some()
+        && inference::recognizer(&settings.recognizer)
+            .is_some_and(|model| model.supports(&settings.language))
+}
+/// Whether Enhanced cleanup runs on each chunk during the recording. Managed S1-mini supports
+/// English only, so other languages and Auto-detect use Basic, and the final result reports why.
+fn chunk_cleaning(cleanup: &crate::core::Cleanup, language: &str) -> bool {
+    cleanup.enhanced != "disabled"
+        && (cleanup.enhanced != "managed" || inference::managed_cleanup_supported(language))
 }
 /// Local and remote Enhanced cleanup need an allowed endpoint, and a remote
 /// destination needs the user's confirmation.
@@ -231,7 +237,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         return Err("Enable Conch microphone access in Setup before recording".into());
     }
     let snapshot = storage::snapshot(&state.data, &inner.settings)?;
-    let model = recognition_model(&state.data, &inner.settings)?;
+    let model = recognition_model(&state.data, &snapshot.recognizer)?;
     let generation = inner.session.start()?;
     inner.stop = Some(send);
     inner.error.clear();
@@ -255,14 +261,27 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         }
     };
     let recognize = {
-        let workers = state.workers.clone();
-        let hint = core::recognition_hint(&snapshot);
-        let worker = worker.clone();
-        move |wav, _speculative| inference::transcribe(&workers, &model, wav, &hint, &worker, false)
+        // With Auto-detect, the first chunk with speech fixes the language of the rest.
+        let recording = inference::ChunkRecognizer::new(
+            &snapshot.language,
+            &state.workers,
+            &model,
+            &core::recognition_hint(&snapshot),
+            &worker,
+            false,
+        );
+        move |wav, speculative| {
+            if speculative {
+                recording.transcribe_speculative(wav)
+            } else {
+                recording.transcribe(wav)
+            }
+        }
     };
     // Enhanced cleanup runs on each chunk while the recording continues, so
     // only the tail is left to clean after the stop.
-    let transcriber = if snapshot.cleanup.enhanced == "disabled" {
+    let cleaning = chunk_cleaning(&snapshot.cleanup, &snapshot.language);
+    let transcriber = if !cleaning {
         Transcriber::start(warm, recognize)
     } else {
         let (workers, data, snapshot) =
@@ -279,7 +298,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
             })
         })
     };
-    if snapshot.cleanup.enhanced == "managed" {
+    if cleaning && snapshot.cleanup.enhanced == "managed" {
         let workers = state.workers.clone();
         let model = state.data.join(inference::CLEANUP.name);
         std::thread::spawn(move || {
@@ -387,9 +406,9 @@ pub fn cancel(app: AppHandle) -> Result<(), String> {
 }
 /// Path of the selected recognizer once it and the voice detection model are
 /// on disk.
-fn recognition_model(data: &std::path::Path, settings: &Settings) -> Result<PathBuf, String> {
-    let model = inference::recognizer(&settings.recognizer)
-        .ok_or("Choose a recognition model in Settings")?;
+fn recognition_model(data: &std::path::Path, recognizer: &str) -> Result<PathBuf, String> {
+    let model =
+        inference::recognizer(recognizer).ok_or("Choose a recognition model in Settings")?;
     if !inference::missing(data, model.id)?.is_empty() {
         return Err("Download the recognition model before recording".into());
     }
@@ -410,7 +429,7 @@ fn process(
         }
         (
             inner.worker.clone(),
-            recognition_model(&state.data, &inner.settings),
+            recognition_model(&state.data, &snapshot.recognizer),
             inner.stopped.take(),
         )
     };
@@ -437,6 +456,7 @@ fn process(
                 &model,
                 wav,
                 &core::recognition_hint(&snapshot),
+                &snapshot.language,
                 &worker,
                 false,
             )
@@ -633,7 +653,7 @@ pub fn accept_always(
     let known = inner.settings.mappings.iter().any(|m| {
         m.repository == learned.repository
             && m.replacement == learned.replacement
-            && m.phrase.eq_ignore_ascii_case(&learned.phrase)
+            && core::same_phrase(&m.phrase, &learned.phrase)
     });
     if !known {
         let mut settings = inner.settings.clone();
@@ -1073,6 +1093,40 @@ mod tests {
         assert!(!choices_valid(&settings));
     }
     #[test]
+    fn managed_cleanup_runs_on_chunks_only_for_a_language_it_supports() {
+        let with = |mode: &str| core::Cleanup {
+            enhanced: mode.into(),
+            ..Default::default()
+        };
+        assert!(chunk_cleaning(&with("managed"), "en"));
+        assert!(!chunk_cleaning(&with("managed"), "fr"));
+        assert!(!chunk_cleaning(&with("managed"), "auto"));
+        assert!(chunk_cleaning(&with("local"), "fr"));
+        assert!(chunk_cleaning(&with("remote"), "auto"));
+        assert!(!chunk_cleaning(&with("disabled"), "en"));
+    }
+    #[test]
+    fn the_language_must_be_one_the_model_supports() {
+        let with = |recognizer: &str, language: &str| {
+            choices_valid(&Settings {
+                recognizer: recognizer.into(),
+                language: language.into(),
+                ..Default::default()
+            })
+        };
+        assert!(with("small.en", "en"));
+        assert!(!with("small.en", "fr"));
+        assert!(!with("small.en", "auto"));
+        assert!(with("small", "fr"));
+        assert!(with("small", "en"));
+        assert!(with("large-v3-turbo", "auto"));
+        assert!(with("large-v3-turbo", "yue"));
+        assert!(!with("small", "yue"));
+        assert!(!with("tiny", "yue"));
+        assert!(!with("small", "xx"));
+        assert!(!with("small", ""));
+    }
+    #[test]
     fn enhanced_cleanup_is_disabled_or_one_of_three_providers() {
         let mut settings = Settings::default();
         for choice in ["disabled", "managed", "local", "remote"] {
@@ -1106,20 +1160,17 @@ mod tests {
     #[test]
     fn recording_needs_the_selected_recognizer_and_the_voice_detection_model() {
         let dir = tempfile::tempdir().unwrap();
-        let mut settings = Settings {
-            recognizer: "base.en".into(),
-            ..Default::default()
-        };
-        let error = recognition_model(dir.path(), &settings).unwrap_err();
+        let mut recognizer = "base.en";
+        let error = recognition_model(dir.path(), recognizer).unwrap_err();
         assert!(error.starts_with("Download the recognition model"));
         std::fs::write(dir.path().join(inference::RECOGNIZERS[1].name), b"x").unwrap();
-        assert!(recognition_model(dir.path(), &settings).is_err());
+        assert!(recognition_model(dir.path(), recognizer).is_err());
         std::fs::write(dir.path().join(inference::VAD.name), b"x").unwrap();
         assert_eq!(
-            recognition_model(dir.path(), &settings).unwrap(),
+            recognition_model(dir.path(), recognizer).unwrap(),
             dir.path().join("ggml-base.en.bin")
         );
-        settings.recognizer = "small.en".into();
-        assert!(recognition_model(dir.path(), &settings).is_err());
+        recognizer = "small.en";
+        assert!(recognition_model(dir.path(), recognizer).is_err());
     }
 }

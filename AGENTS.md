@@ -8,13 +8,13 @@ Use the glossary's terms verbatim and update the spec and glossary when a decisi
 
 - `src/`: React interface with Vitest component tests beside each file. `App.tsx` holds the top bar, Dictation, and Settings; `Repositories.tsx`, `Terms.tsx`, and `Mappings.tsx` are the other pages. `Setup.tsx` and `PasteAccess.tsx` are the setup checklist, `RecordingIndicator.tsx` and `Spiral.tsx` the floating indicator, `style.css` the light and dark themes.
 - `src-tauri/src/app.rs`: Tauri commands, shared state, the recording flow, and `process` (recognition result to delivery).
-- `src-tauri/src/inference.rs`: worker pool (`acquire`, `preload`, `reap_idle_within`, `shutdown`, `reap_orphans`), recognizer and cleanup requests, model downloads.
+- `src-tauri/src/inference.rs`: model catalog (`Model` with engine and languages; `catalog` feeds `view`), worker pool (`acquire`, `preload`, `reap_idle_within`, `shutdown`, `reap_orphans`), recognizer and cleanup requests, model downloads. `languages.rs`: the recognition language table.
 - `src-tauri/src/chunk.rs`: splits a growing recording at pauses. `pipeline.rs`: recognizes chunks on a background thread. `audio.rs`: microphone capture and WAV encoding.
-- `src-tauri/src/core.rs`: mappings, masking, Basic cleanup, suggestions, recognition hint, result edits. `spoken.rs`: sound-alike matching of identifiers against recognizer output. `index.rs`, `storage.rs`: repository vocabulary and SQLite.
+- `src-tauri/src/core.rs`: mappings, masking, Basic cleanup, suggestions, recognition hint, result edits. `spoken.rs`: sound-alike matching of identifiers against recognizer output. `fold.rs`: the case folding and word characters that mapping and identifier matching share. `index.rs`, `storage.rs`: repository vocabulary and SQLite.
 - `src-tauri/src/platform.rs`, `macos.m`, `windows.rs`: focused-field detection, paste, permissions. `delivery.rs`: the copy-then-paste decision.
 - `src-tauri/src/update.rs`: update check, install, and restart with `tauri-plugin-updater`. `scripts/check-version.mjs`, `scripts/verify-signing.sh`, and `.github/workflows/release.yml` publish releases. `scripts/install.sh` is the one-line installer; it finds assets by name (`Conch_aarch64.app.tar.gz`, `*_amd64.AppImage`), so renaming them breaks it.
 - `src-tauri/src/tray.rs`: menu bar icon, state display, show and hide of the main window. `indicator.rs`: floating recording indicator.
-- `scripts/`: runtime build (`build-runtimes.py`), brand assets, `setup-local-signing.sh`, `bundle-local.sh`.
+- `scripts/`: runtime build (`build-runtimes.py`), brand assets, `setup-local-signing.sh`, `bundle-local.sh`, `measure-auto-detect.py` (language detection measurements with its `auto-detect-samples.json`).
 - `docs/validation/`: evidence and measurements. Do not state a result there that was not observed.
 
 ## Commands

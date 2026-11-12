@@ -33,7 +33,7 @@ fn main() {
 
     let wav = conch_lib::audio::wav(&samples).unwrap();
     let started = Instant::now();
-    let whole = inference::transcribe(&workers, &model, wav, "", &worker, false).unwrap();
+    let whole = inference::transcribe(&workers, &model, wav, "", "en", &worker, false).unwrap();
     if let Ok(dir) = std::env::var("CONCH_LATENCY_DUMP") {
         std::fs::write(format!("{dir}/whole.txt"), &whole).unwrap();
     }
@@ -45,7 +45,7 @@ fn main() {
 
     let transcriber = Transcriber::start(|| (), {
         let (workers, model, worker) = (workers.clone(), model.clone(), worker.clone());
-        move |wav, _| inference::transcribe(&workers, &model, wav, "", &worker, false)
+        move |wav, _| inference::transcribe(&workers, &model, wav, "", "en", &worker, false)
     });
     let mut chunker = Chunker::default();
     let step = rate / 10;
@@ -78,7 +78,7 @@ fn main() {
         let (workers, model, worker) = (workers.clone(), model.clone(), recognize_worker.clone());
         Transcriber::start(
             || (),
-            move |wav, _| inference::transcribe(&workers, &model, wav, "", &worker, false),
+            move |wav, _| inference::transcribe(&workers, &model, wav, "", "en", &worker, false),
         )
     };
     let transcriber = start(&worker);

@@ -86,7 +86,7 @@ fn main() {
             samples.extend(std::iter::repeat_n(0.0, rate * 6 / 10));
             let transcriber = Transcriber::start(|| (), {
                 let (workers, model, worker) = (workers.clone(), model.clone(), worker.clone());
-                move |wav, _| inference::transcribe(&workers, &model, wav, "", &worker, false)
+                move |wav, _| inference::transcribe(&workers, &model, wav, "", "en", &worker, false)
             });
             let mut chunker = Chunker::default();
             let (mut chunks, step) = (0, rate / 10);
@@ -149,7 +149,7 @@ fn main() {
             || (),
             {
                 let (workers, model, worker) = (workers.clone(), model.clone(), worker.clone());
-                move |wav, _| inference::transcribe(&workers, &model, wav, "", &worker, false)
+                move |wav, _| inference::transcribe(&workers, &model, wav, "", "en", &worker, false)
             },
             {
                 let (workers, data, snapshot, worker) = (

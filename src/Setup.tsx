@@ -3,11 +3,12 @@ import { Check } from "./icons";
 import {
   DownloadProgress,
   RECOGNIZER_TRADEOFF,
+  LanguageMenu,
   RecognizerMenu,
-  VOICE_DETECTION_NOTE,
-  recognizerInfo,
+  voiceDetectionNote,
 } from "./ModelChoice";
-import { DEFAULT_RECOGNIZER, VAD, size } from "./models";
+import { recognizerInfo, size, voiceDetection } from "./models";
+import type { Language, ModelView } from "./types";
 import { useEffect, useRef, useState } from "react";
 
 export function shortcutLabel(value: string, mac = false) {
@@ -21,7 +22,11 @@ export function shortcutLabel(value: string, mac = false) {
 }
 export function Setup({
   installed,
-  recognizer = DEFAULT_RECOGNIZER,
+  models,
+  languages,
+  language,
+  onLanguage,
+  recognizer,
   onRecognizer,
   ready,
   voiceOnly = false,
@@ -45,8 +50,16 @@ export function Setup({
   busy = false,
 }: {
   installed: boolean;
+  /** The model catalog from `view`. */
+  models: ModelView[];
+  /** Every recognition language, from `view`. */
+  languages: Language[];
+  /** The saved recognition language. */
+  language: string;
+  /** Saves a different recognition language. */
+  onLanguage?: (code: string) => void;
   /** The saved recognition model. */
-  recognizer?: string;
+  recognizer: string;
   /** Saves a different recognition model. */
   onRecognizer?: (id: string) => void;
   /** Whether a model can record now. Defaults to the saved model alone. */
@@ -78,7 +91,8 @@ export function Setup({
   busy?: boolean;
 }) {
   const [changing, setChanging] = useState(false);
-  const model = recognizerInfo(recognizer);
+  const model = recognizerInfo(models, recognizer);
+  const vad = voiceDetection(models);
   const isReady = ready ?? ((id: string) => installed && id === recognizer);
   const microphoneReady = microphone === "system" || microphone === "granted";
   const copyOnly = clipboardOnly || !autoPaste;
@@ -93,18 +107,30 @@ export function Setup({
       <div className={`step model${installed && !changing ? " settled" : ""}`}>
         <Step done={installed} number={1} />
         <div>
-          <h3>English recognition</h3>
+          <h3>Speech recognition</h3>
           {installed && !changing ? (
             <p>{model.label} is installed. Speech stays on this device.</p>
           ) : (
             <>
               <p>
                 {voiceOnly
-                  ? `Conch now also needs a ${size(VAD)} voice detection model so silence is not turned into words. No account or payment required.`
+                  ? `Conch now also needs a ${size(vad)} voice detection model so silence is not turned into words. No account or payment required.`
                   : "Choose a speech model to download once. No account or payment required."}
               </p>
               <div className="picker">
+                <LanguageMenu
+                  languages={languages}
+                  models={models}
+                  value={language}
+                  disabled={downloading}
+                  onChange={(code) => {
+                    onLanguage?.(code);
+                    setChanging(false);
+                  }}
+                />
                 <RecognizerMenu
+                  models={models}
+                  language={language}
                   value={recognizer}
                   disabled={downloading}
                   ready={isReady}
@@ -120,7 +146,7 @@ export function Setup({
                     onClick={onDownload}
                   >
                     {voiceOnly
-                      ? `Download ${VAD.label}, ${size(VAD)}`
+                      ? `Download ${vad.label}, ${size(vad)}`
                       : `Download ${model.label}, ${size(model)}`}
                   </button>
                 )}
@@ -131,7 +157,7 @@ export function Setup({
                 !installed && (
                   <p className="tradeoff">
                     {RECOGNIZER_TRADEOFF}
-                    {voiceOnly ? "" : ` ${VOICE_DETECTION_NOTE}`}
+                    {voiceOnly ? "" : ` ${voiceDetectionNote(models)}`}
                   </p>
                 )
               )}

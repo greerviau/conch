@@ -86,7 +86,7 @@ impl Setup {
         move |wav, speculative| {
             let started = origin.elapsed();
             let seconds = wav.len() / 32_000;
-            let text = inference::transcribe(&workers, &model, wav, "", &worker, false);
+            let text = inference::transcribe(&workers, &model, wav, "", "en", &worker, false);
             if let Some(trace) = &trace {
                 trace.lock().unwrap().push(format!(
                     "{} of {seconds} s audio: {:.2} s to {:.2} s",
