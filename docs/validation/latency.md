@@ -142,4 +142,9 @@ A recognition failure drops the parts still queued for cleaning and does not wai
 - The `cleanup_latency` run without `after` also cleans the whole text once after the stop to compare texts. That request reuses the prompt cache of the per-chunk request, so its time (356 to 1039 ms) is too low for the earlier flow; the `after` run is the comparison.
 - Four requests at once on `llama-server --parallel 4` took 481 ms for four 21 to 25 token sentences against 857 ms for the 92-token text in one request (1.8 times faster, not 4 times). The worker runs one slot, where the four requests took 943 ms. This is not used.
 
+Two status lines from the installed build with per-chunk cleaning, both single-sentence dictations of about 8 to 10 s with no chunk, read 898 ms (recognition 190 ms, speculative and still running at the stop; cleanup 635 ms) and 932 ms (recognition 306 ms; cleanup 542 ms).
+The same two texts took 289 ms on an idle `llama-server` started the way Conch starts it (50 ms for the 33 to 35 uncached prompt tokens, 237 ms for 25 to 26 generated tokens), and `inference::enhanced` added under 10 ms around the request, so the 542 to 635 ms in the application is 250 to 350 ms more than the server needs here. The cause is not found.
+What was measured and could add to it: a server idle for 45 s took 100 ms more on the prompt (50 to 155 ms), and the first request after a server start took 360 to 730 ms in two runs.
+The status line now ends the cleanup stage with the model's own prompt and generation time, and Conch sends the model one token when recording starts. Neither has been measured in the installed application.
+
 Not measured: real speech and pauses, other cleanup providers (a remote endpoint adds a round trip per part), the status-line stage times in the installed app, and whether a chunk cleaned without its neighbours reads worse on real text than the whole text cleaned at once.

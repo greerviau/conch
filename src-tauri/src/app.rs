@@ -283,7 +283,9 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         let workers = state.workers.clone();
         let model = state.data.join(inference::CLEANUP.name);
         std::thread::spawn(move || {
-            let _ = inference::preload(&workers, &model, Kind::Llama, &cleanup_worker, false);
+            if inference::preload(&workers, &model, Kind::Llama, &cleanup_worker, false).is_ok() {
+                inference::warm_cleanup(&workers, &model, &cleanup_worker);
+            }
         });
     }
     let handle = app.clone();
@@ -448,6 +450,7 @@ fn process(
     }
     if cleaned.is_some() {
         watch.lap("cleanup");
+        note_model_time(&mut watch, &worker);
     }
     let raw = match recognition {
         Ok(raw) if !raw.trim().is_empty() => raw,
@@ -484,6 +487,7 @@ fn process(
         apply_enhanced(&mut result, outcome, &snapshot);
         if !cleaned_during_recording {
             watch.lap("cleanup");
+            note_model_time(&mut watch, &worker);
         }
     }
     let mut inner = state.inner.lock().unwrap();
@@ -516,6 +520,13 @@ fn process(
     }
     inner.result = Some(result);
     inner.retry = None;
+}
+/// Shows the time the cleanup model reported for its latest request next to
+/// the cleanup stage, so a slow model shows apart from slow work around it.
+fn note_model_time(watch: &mut Stopwatch, worker: &inference::Worker) {
+    if let Some(time) = inference::cleanup_model_time(worker) {
+        watch.note(format!("model {} ms", time.as_millis()));
+    }
 }
 /// The cleaning done during the recording, unless a mapping or a quotation
 /// spans two parts. Each part was masked alone, so such a span was not

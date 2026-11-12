@@ -6,6 +6,7 @@ pub struct Stopwatch {
     began: Instant,
     last: Instant,
     stages: Vec<(&'static str, Duration)>,
+    notes: Vec<Option<String>>,
 }
 impl Stopwatch {
     pub fn start(at: Instant) -> Self {
@@ -13,6 +14,7 @@ impl Stopwatch {
             began: at,
             last: at,
             stages: vec![],
+            notes: vec![],
         }
     }
     /// Ends the current stage under `stage`.
@@ -23,14 +25,25 @@ impl Stopwatch {
     pub fn lap_at(&mut self, stage: &'static str, now: Instant) {
         self.stages
             .push((stage, now.saturating_duration_since(self.last)));
+        self.notes.push(None);
         self.last = now;
+    }
+    /// Adds a remark to the stage just ended, shown in parentheses after it.
+    pub fn note(&mut self, text: String) {
+        if let Some(last) = self.notes.last_mut() {
+            *last = Some(text);
+        }
     }
     /// `Stop to text 412 ms (capture 12 ms, recognition 350 ms, ...)`.
     pub fn summary(&self) -> String {
         let stages: Vec<String> = self
             .stages
             .iter()
-            .map(|(stage, took)| format!("{stage} {} ms", took.as_millis()))
+            .zip(&self.notes)
+            .map(|((stage, took), note)| match note {
+                Some(note) => format!("{stage} {} ms ({note})", took.as_millis()),
+                None => format!("{stage} {} ms", took.as_millis()),
+            })
             .collect();
         format!(
             "Stop to text {} ms ({})",
@@ -52,6 +65,19 @@ mod tests {
         assert_eq!(
             watch.summary(),
             "Stop to text 412 ms (capture 12 ms, recognition 350 ms, delivery 50 ms)"
+        );
+    }
+    #[test]
+    fn a_note_follows_the_stage_it_was_added_to() {
+        let start = Instant::now();
+        let mut watch = Stopwatch::start(start);
+        watch.lap_at("recognition", start + Duration::from_millis(100));
+        watch.lap_at("cleanup", start + Duration::from_millis(600));
+        watch.note("model 290 ms".into());
+        watch.lap_at("delivery", start + Duration::from_millis(620));
+        assert_eq!(
+            watch.summary(),
+            "Stop to text 620 ms (recognition 100 ms, cleanup 500 ms (model 290 ms), delivery 20 ms)"
         );
     }
     #[test]

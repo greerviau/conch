@@ -67,6 +67,7 @@ fn main() {
         false,
     )
     .unwrap();
+    inference::warm_cleanup(&workers, &data.join(inference::CLEANUP.name), &worker);
     let after = args.get(6).is_some_and(|mode| mode == "after");
     let mut paths: Vec<PathBuf> = std::fs::read_dir(&args[4])
         .unwrap()
@@ -189,6 +190,7 @@ fn main() {
         let done = transcriber.finish().unwrap();
         let (waited, recognized) = (stopped.elapsed(), done.recognized_at - stopped);
         let chunked = done.cleaned.clone().unwrap();
+        let model_time_of_tail = inference::cleanup_model_time(&worker);
         // What the app did before: one cleanup of the whole text after the stop.
         let started = Instant::now();
         let single = inference::enhanced(CleanupRequest {
@@ -211,6 +213,10 @@ fn main() {
             1000.0 * recognized.as_secs_f32(),
             1000.0 * (waited - recognized).as_secs_f32(),
             1000.0 * single_took.as_secs_f32()
+        );
+        println!(
+            "    model time of the last per-chunk request: {:?}",
+            model_time_of_tail
         );
         if let (Ok(chunked), Ok(single)) = (chunked, single) {
             compared += 1;

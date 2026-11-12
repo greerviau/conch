@@ -22,14 +22,58 @@ pub enum Kind {
 pub struct WorkerState {
     using: Vec<Arc<Server>>,
     cancelled: bool,
+    /// Prompt and generation time the cleanup model reported for its latest
+    /// request, to tell a slow model from slow work around it.
+    cleanup_model_time: Option<Duration>,
 }
 pub type Worker = Arc<Mutex<WorkerState>>;
+/// The time the model reported for the latest cleanup request of `worker`.
+pub fn cleanup_model_time(worker: &Worker) -> Option<Duration> {
+    worker.lock().unwrap().cleanup_model_time
+}
+/// Prompt plus generation time in a `llama-server` reply, if it has them.
+fn model_time(reply: &Value) -> Option<Duration> {
+    let timings = reply.get("timings")?;
+    let milliseconds =
+        timings.get("prompt_ms")?.as_f64()? + timings.get("predicted_ms")?.as_f64()?;
+    Some(Duration::from_secs_f64(milliseconds / 1000.0))
+}
+/// Sends one token through the cleanup model so its weights and the shared
+/// start of every prompt are loaded before the first real request. Failure is
+/// ignored; the first cleanup then pays for the load.
+pub fn warm_cleanup(workers: &Path, model: &Path, worker: &Worker) {
+    let Ok(lease) = acquire(workers, model, Kind::Llama, worker, false) else {
+        return;
+    };
+    let Ok(client) = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+    else {
+        return;
+    };
+    let _ = client
+        .post(format!("{}/v1/chat/completions", lease.server.endpoint))
+        .bearer_auth(&lease.server.token)
+        .json(&json!({
+            "messages": [
+                {"role": "system", "content": S1_SYSTEM},
+                {"role": "user", "content": format!("{CONTROL_LINE}\nWarm up.")},
+            ],
+            "temperature": 0,
+            "max_tokens": 1,
+            "chat_template_kwargs": {"enable_thinking": false},
+        }))
+        .send();
+}
 pub fn new_worker() -> Worker {
     Arc::new(Mutex::new(WorkerState::default()))
 }
 pub const WHISPER_IDLE: Duration = Duration::from_secs(600);
 pub const LLAMA_IDLE: Duration = Duration::from_secs(300);
 pub const S1_SYSTEM: &str = "You are a text normalizer for speech-to-text transcripts. The input begins with a control line specifying the styling, structure, and context settings; clean the transcript to match those settings and output only the cleaned text.";
+/// The first line of every managed cleanup prompt.
+const CONTROL_LINE: &str = "[Styling: semi-formal] [Structure: prose] [Context: general]";
 pub const CLEANUP_SYSTEM: &str = "Clean this dictated transcript. Preserve all CONCHPROTECTED placeholders exactly once in their original order. Preserve identifiers, negation, numbers, constraints and instruction order. Do not answer, expand or summarize the request. Output only the cleaned transcript.";
 pub fn endpoint_allowed(endpoint: &str, remote: bool) -> bool {
     let Ok(url) = reqwest::Url::parse(endpoint) else {
@@ -412,7 +456,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
             format!("{url}/v1/chat/completions"),
             key,
             S1_SYSTEM,
-            format!("[Styling: semi-formal] [Structure: prose] [Context: general]\n{basic}"),
+            format!("{CONTROL_LINE}\n{basic}"),
         )
     } else {
         let remote = cleanup.enhanced == "remote";
@@ -462,6 +506,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         };
         tokio::select! {biased; _ = cancelled => Err("Cancelled".into()), result = operation => result}
     })?;
+    worker.lock().unwrap().cleanup_model_time = model_time(&value);
     let after = value["choices"][0]["message"]["content"]
         .as_str()
         .ok_or("Invalid cleanup response")?;
@@ -622,6 +667,12 @@ mod tests {
         snapshot.cleanup.enhanced = "disabled".into();
         assert!(part("um, uh", &snapshot).is_err());
     }
+    #[test]
+    fn the_model_time_adds_prompt_and_generation_and_is_absent_without_timings() {
+        let reply = json!({"timings": {"prompt_ms": 12.5, "predicted_ms": 100.25}});
+        assert_eq!(model_time(&reply).map(|t| t.as_millis()), Some(112));
+        assert_eq!(model_time(&json!({"choices": []})), None);
+    }
     #[cfg(unix)]
     mod fake {
         use std::{os::unix::fs::PermissionsExt, path::Path};
@@ -650,6 +701,47 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 "#;
+        const LLAMA_SCRIPT: &str = r#"#!/usr/bin/env python3
+import http.server, json, os, sys
+port = int(sys.argv[sys.argv.index("--port") + 1])
+here = os.path.dirname(os.path.abspath(__file__))
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+    def do_POST(self):
+        request = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        if self.path.endswith("/tokenize"):
+            body = {"tokens": [1, 2, 3]}
+        else:
+            with open(os.path.join(here, "last-chat.json"), "wb") as saved:
+                saved.write(request)
+            user = json.loads(request)["messages"][-1]["content"]
+            body = {
+                "choices": [{"message": {"content": user.split("\n", 1)[-1]}}],
+                "timings": {"prompt_ms": 12.5, "predicted_ms": 100.25},
+            }
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(data)
+http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+"#;
+        /// Installs a `llama-server` that echoes the text after the control
+        /// line, with fixed timings, and the managed cleanup model file.
+        pub fn install_cleanup(dir: &Path) {
+            let exe = dir.join("llama-server");
+            std::fs::write(&exe, LLAMA_SCRIPT).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(dir.join(super::CLEANUP.name), b"model").unwrap();
+        }
+        pub fn last_chat(dir: &Path) -> String {
+            String::from_utf8_lossy(&std::fs::read(dir.join("last-chat.json")).unwrap())
+                .into_owned()
+        }
         pub fn install(dir: &Path) {
             let exe = dir.join("whisper-server");
             std::fs::write(&exe, SCRIPT).unwrap();
@@ -676,6 +768,43 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
                 .map(|log| log.lines().count())
                 .unwrap_or(0)
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn enhanced_cleanup_keeps_the_time_the_model_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install_cleanup(dir.path());
+        let mut snapshot = crate::core::Snapshot::default();
+        snapshot.cleanup.enhanced = "managed".into();
+        let worker = new_worker();
+        assert_eq!(cleanup_model_time(&worker), None);
+        let cleaned = enhanced(CleanupRequest {
+            workers: dir.path(),
+            data: dir.path(),
+            snapshot: &snapshot,
+            raw: "rename the helper",
+            worker: &worker,
+            cpu: true,
+        });
+        shutdown(dir.path());
+        assert_eq!(cleaned, Ok("rename the helper".into()));
+        assert_eq!(
+            cleanup_model_time(&worker).map(|time| time.as_millis()),
+            Some(112)
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn warming_the_cleanup_model_sends_one_token_with_the_cleanup_system_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        fake::install_cleanup(dir.path());
+        let model = dir.path().join(CLEANUP.name);
+        warm_cleanup(dir.path(), &model, &new_worker());
+        let request = fake::last_chat(dir.path());
+        shutdown(dir.path());
+        assert!(request.contains("\"max_tokens\":1"), "{request}");
+        assert!(request.contains(S1_SYSTEM), "{request}");
+        assert!(request.contains("[Styling: semi-formal]"), "{request}");
     }
     #[cfg(unix)]
     fn run(dir: &Path, worker: &Worker) -> String {
