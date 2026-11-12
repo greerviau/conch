@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -35,6 +35,15 @@ pub struct Page {
     /// Size of the log files on disk.
     pub bytes: u64,
 }
+
+/// An absolute Unix path with at least one directory, after a space, quote,
+/// bracket, `=`, or `,` (or at the start). That boundary keeps `http://host/a`
+/// and a lone `/inference` out. Group 2 is the file name.
+static UNIX_PATH: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"(^|[\s'"(\[=,])/(?:[\w.@+-]+/)+([\w.@+-]*)"#).unwrap());
+/// An absolute Windows path with at least one directory. Group 1 is the file name.
+static WINDOWS_PATH: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r#"[A-Za-z]:\\(?:[^\\\s'"]+\\)+([^\\\s'"]*)"#).unwrap());
 
 /// Size at which `conch.log` rolls over to `conch.log.1`, which replaces the
 /// previous `conch.log.1`. The two files hold about 4 MB.
@@ -82,17 +91,24 @@ impl Log {
     pub fn revision(&self) -> u64 {
         self.revision.load(Ordering::Relaxed)
     }
+    /// Writes the home directory as `~` and reduces every other absolute path
+    /// to `.../file name`, so a log shared for a bug report names no private
+    /// directory.
     fn scrub(&self, text: &str) -> String {
-        let Some(home) = &self.home else {
-            return text.to_owned();
+        let text = match &self.home {
+            Some(home) => {
+                let text = text
+                    .replace(&format!("{home}/"), "~/")
+                    .replace(&format!("{home}\\"), "~\\");
+                match text.strip_suffix(home.as_str()) {
+                    Some(rest) => format!("{rest}~"),
+                    None => text,
+                }
+            }
+            None => text.to_owned(),
         };
-        let text = text
-            .replace(&format!("{home}/"), "~/")
-            .replace(&format!("{home}\\"), "~\\");
-        match text.strip_suffix(home.as_str()) {
-            Some(rest) => format!("{rest}~"),
-            None => text,
-        }
+        let text = UNIX_PATH.replace_all(&text, "${1}.../${2}");
+        WINDOWS_PATH.replace_all(&text, ".../${1}").into_owned()
     }
     /// Appends an entry. A failure to write is reported on stderr and never
     /// reaches the caller, because logging must not break dictation.
@@ -154,7 +170,16 @@ impl Log {
         offset: usize,
         limit: usize,
     ) -> Result<Page, String> {
-        let mut entries = self.read();
+        // Hold the writer lock so a rollover cannot land between the two files.
+        let (mut entries, bytes) = {
+            let _guard = self.writer.lock().unwrap();
+            let bytes: u64 = [self.rolled(), self.path()]
+                .iter()
+                .filter_map(|path| std::fs::metadata(path).ok())
+                .map(|meta| meta.len())
+                .sum();
+            (self.read(), bytes)
+        };
         entries.reverse();
         let all = entries.len();
         let mut sources: Vec<String> = entries.iter().map(|e| e.source.clone()).collect();
@@ -179,11 +204,6 @@ impl Log {
             })
             .collect();
         let total = matching.len();
-        let bytes = [self.rolled(), self.path()]
-            .iter()
-            .filter_map(|path| std::fs::metadata(path).ok())
-            .map(|meta| meta.len())
-            .sum();
         Ok(Page {
             items: matching.into_iter().skip(offset).take(limit).collect(),
             total,
@@ -458,5 +478,68 @@ mod tests {
         assert_ne!(added, start);
         log.clear().unwrap();
         assert_ne!(log.revision(), added);
+    }
+    #[test]
+    fn a_path_outside_the_home_directory_is_reduced_to_its_file_name() {
+        let (_dir, log) = log(1 << 20);
+        log.record(
+            Level::Warn,
+            "recognizer",
+            "loading '/mnt/data/models/small.en.bin' failed and C:\\Users\\bob\\Data\\x.bin too",
+            Some("see /opt/app/bin/tool, /Users/alex/Projects/app/main.rs, and (/var/log/conch/a.log)"),
+        );
+        let entry = &list(&log).items[0];
+        assert_eq!(
+            entry.message,
+            "loading '.../small.en.bin' failed and .../x.bin too"
+        );
+        assert_eq!(
+            entry.detail.as_deref(),
+            Some("see .../tool, ~/Projects/app/main.rs, and (.../a.log)")
+        );
+    }
+
+    #[test]
+    fn a_url_or_a_single_slash_word_is_not_taken_for_a_path() {
+        let (_dir, log) = log(1 << 20);
+        log.record(
+            Level::Info,
+            "update",
+            "GET http://127.0.0.1:8765/v1/models failed; POST /inference returned 500 for /tmp",
+            None,
+        );
+        assert_eq!(
+            list(&log).items[0].message,
+            "GET http://127.0.0.1:8765/v1/models failed; POST /inference returned 500 for /tmp"
+        );
+    }
+
+    #[test]
+    fn a_page_read_during_a_rollover_never_misses_the_rolled_file() {
+        let (_dir, log) = log(400);
+        let log = std::sync::Arc::new(log);
+        let writer = {
+            let log = log.clone();
+            std::thread::spawn(move || {
+                for n in 0..4000 {
+                    log.record(Level::Info, "app", &format!("{n}"), None);
+                }
+            })
+        };
+        let mut reads = 0;
+        while !writer.is_finished() {
+            let page = log.page("all", "all", "", 0, 1000).unwrap();
+            let seen: Vec<i64> = page
+                .items
+                .iter()
+                .map(|e| e.message.parse().unwrap())
+                .collect();
+            for pair in seen.windows(2) {
+                assert_eq!(pair[0], pair[1] + 1, "a gap in {seen:?}");
+            }
+            reads += 1;
+        }
+        writer.join().unwrap();
+        assert!(reads > 0);
     }
 }

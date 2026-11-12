@@ -848,6 +848,12 @@ pub async fn logs_page(
     .await
     .map_err(|_| "Log reader failed")?
 }
+/// Logs an error the interface showed for a failed command, so the Logs page
+/// holds what the error banner reported.
+#[tauri::command]
+pub fn logs_note(message: String) {
+    log::warn("ui", &message);
+}
 #[tauri::command]
 pub fn logs_clear() -> Result<(), String> {
     log_store()?.clear()

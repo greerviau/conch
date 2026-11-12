@@ -110,6 +110,16 @@ pub fn endpoint_allowed(endpoint: &str, remote: bool) -> bool {
 struct Tail {
     lines: std::collections::VecDeque<String>,
 }
+/// Whether a line of worker output may reach the log. Workers can print the
+/// text they process (the llama server does at debug verbosity), so only lines
+/// from the recognizer's own libraries are kept, and a cleanup worker's output
+/// never is.
+fn loggable(kind: Kind, line: &str) -> bool {
+    static LIBRARY: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^(?:ggml_|GGML_|whisper_|error:|ERROR|fatal|terminate called)").unwrap()
+    });
+    kind == Kind::Whisper && LIBRARY.is_match(line.trim_start())
+}
 const TAIL_LINES: usize = 20;
 const TAIL_WIDTH: usize = 300;
 impl Tail {
@@ -167,6 +177,15 @@ impl Server {
             Kind::Llama => "cleanup",
         }
     }
+    /// Stops the worker on purpose and logs the reason once. A worker that was
+    /// already stopped is not logged again.
+    fn stop_for(&self, reason: &str) {
+        let first = !self.killed.swap(true, Ordering::SeqCst);
+        self.kill();
+        if first {
+            log::info(self.source(), &format!("Stopped {}: {reason}", self.name));
+        }
+    }
     fn kill(&self) {
         self.killed.store(true, Ordering::SeqCst);
         let mut child = self.child.lock().unwrap();
@@ -215,8 +234,7 @@ pub fn reap_idle_within(within: &Path, whisper: Duration, llama: Duration) {
         };
         if server.busy.load(Ordering::SeqCst) == 0 && server.used.lock().unwrap().elapsed() >= limit
         {
-            server.kill();
-            log::info(server.source(), &format!("Stopped idle {}", server.name));
+            server.stop_for("it was idle");
             *guard = None;
         }
     }
@@ -228,7 +246,7 @@ pub fn reap_idle(within: &Path) {
 pub fn shutdown(within: &Path) {
     for slot in slots(within) {
         if let Some(server) = slot.lock().unwrap().take() {
-            server.kill();
+            server.stop_for("Conch is exiting or installing an update");
         }
     }
 }
@@ -257,7 +275,7 @@ pub fn stop(worker: &Worker) {
         std::mem::take(&mut state.using)
     };
     for server in using {
-        server.kill();
+        server.stop_for("the recording was cancelled");
     }
 }
 /// Starts the worker for a recording while the user is still speaking, so the
@@ -313,7 +331,7 @@ fn acquire(
     let mut state = worker.lock().unwrap();
     if state.cancelled {
         drop(state);
-        server.kill();
+        server.stop_for("the recording was cancelled");
         return Err("Cancelled".into());
     }
     state.using.push(server);
@@ -398,7 +416,10 @@ fn launch(
             let mut line = Vec::new();
             // Drain the pipe for as long as the worker runs, or it blocks on a full pipe.
             while reader.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
-                tail.lock().unwrap().push(&String::from_utf8_lossy(&line));
+                let text = String::from_utf8_lossy(&line);
+                if loggable(kind, &text) {
+                    tail.lock().unwrap().push(&text);
+                }
                 line.clear();
             }
             drained.store(true, Ordering::SeqCst);
@@ -2158,7 +2179,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     fn a_worker_that_exits_after_starting_is_logged_but_one_we_stop_is_not() {
         logged();
         let dir = tempfile::tempdir().unwrap();
-        fake::install_crashing(dir.path(), "worker crash marker 9f2e");
+        fake::install_crashing(dir.path(), "ggml_abort: crash marker 9f2e");
         preload(
             dir.path(),
             &dir.path().join("model.bin"),
@@ -2200,5 +2221,88 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         shutdown(quiet.path());
         std::thread::sleep(Duration::from_millis(500));
         assert_eq!(entries("recognizer", "exited unexpectedly").len(), before);
+    }
+    #[test]
+    fn only_library_diagnostics_from_the_recognizer_reach_the_log() {
+        for line in [
+            "ggml_metal_init: failed to allocate buffer",
+            "whisper_init_from_file_with_params_no_state: loading model from 'm.bin'",
+            "GGML_ASSERT(ctx != NULL) failed",
+            "error: failed to load model",
+            "terminate called after throwing an instance of 'std::bad_alloc'",
+        ] {
+            assert!(loggable(Kind::Whisper, line), "{line}");
+            assert!(!loggable(Kind::Llama, line), "the cleanup worker: {line}");
+        }
+        for line in [
+            "[00:00:00.000 --> 00:00:02.000]  rename the helper to fetchUser",
+            "Parsed message: {\"role\":\"user\",\"content\":\"hello there\"}",
+            "srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 200",
+            "rename the helper",
+        ] {
+            assert!(!loggable(Kind::Whisper, line), "{line}");
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_worker_keeps_library_lines_and_drops_lines_that_may_be_text() {
+        logged();
+        let dir = tempfile::tempdir().unwrap();
+        fake::install_dying(
+            dir.path(),
+            "ggml_init failed: bad model 4b7a\n[00:00 --> 00:02]  call me at 555 0100 4b7a",
+        );
+        assert!(
+            preload(
+                dir.path(),
+                &dir.path().join("model.bin"),
+                Kind::Whisper,
+                &new_worker(),
+                true,
+            )
+            .is_err()
+        );
+        let found = entries("recognizer", "bad model 4b7a");
+        assert_eq!(found.len(), 1, "{found:?}");
+        let detail = found[0].detail.as_ref().unwrap();
+        assert!(detail.contains("ggml_init failed: bad model 4b7a"));
+        assert!(!detail.contains("555 0100"), "{detail}");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_worker_logs_why() {
+        logged();
+        // Other tests stop workers too, so each reason is checked for an increase.
+        let stopped = |reason: &str| {
+            entries("recognizer", &format!("Stopped whisper-server: {reason}")).len()
+        };
+        let quit = tempfile::tempdir().unwrap();
+        fake::install(quit.path());
+        let before = stopped("Conch is exiting");
+        preload(
+            quit.path(),
+            &quit.path().join("model.bin"),
+            Kind::Whisper,
+            &new_worker(),
+            true,
+        )
+        .unwrap();
+        shutdown(quit.path());
+        assert!(stopped("Conch is exiting") > before);
+        let cancelled = tempfile::tempdir().unwrap();
+        fake::install(cancelled.path());
+        let worker = new_worker();
+        let before = stopped("the recording was cancelled");
+        preload(
+            cancelled.path(),
+            &cancelled.path().join("model.bin"),
+            Kind::Whisper,
+            &worker,
+            true,
+        )
+        .unwrap();
+        stop(&worker);
+        assert!(stopped("the recording was cancelled") > before);
+        shutdown(cancelled.path());
     }
 }

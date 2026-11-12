@@ -553,6 +553,31 @@ it("links an error the app reported to the Logs page", async () => {
     await screen.findByText(/never contain audio, transcripts, result text/),
   ).toBeTruthy();
 });
+it("logs a failed command and links its error banner to the Logs page", async () => {
+  view.microphone = "granted";
+  install("tiny.en", "silero-vad");
+  const base = ipc.getMockImplementation()!;
+  ipc.mockImplementation(
+    async (name: string, args?: Record<string, unknown>) => {
+      if (name === "start")
+        throw "Enable Conch microphone access in Setup before recording";
+      return base(name, args);
+    },
+  );
+  render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Start recording" }),
+  );
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Enable Conch microphone access");
+  expect(ipc).toHaveBeenCalledWith("logs_note", {
+    message: "Enable Conch microphone access in Setup before recording",
+  });
+  fireEvent.click(within(alert).getByRole("button", { name: "View logs" }));
+  expect(
+    await screen.findByText(/never contain audio, transcripts, result text/),
+  ).toBeTruthy();
+});
 it("shows the installed version and checks for updates on request", async () => {
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));

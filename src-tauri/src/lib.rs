@@ -48,6 +48,7 @@ pub fn run() {
             app::history_delete,
             app::history_clear,
             app::logs_page,
+            app::logs_note,
             app::logs_clear,
             app::logs_reveal,
             app::logs_copy,

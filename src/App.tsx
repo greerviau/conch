@@ -37,6 +37,12 @@ const TABS = [
   "Logs",
 ];
 
+/** Records a failed command in the log, so the error banner's link to Logs has an entry to show. */
+function noted(error: unknown) {
+  const message = String(error);
+  invoke("logs_note", { message }).catch(() => undefined);
+  return message;
+}
 export default function App() {
   const [view, setView] = useState<View>();
   const [draft, setDraft] = useState<Settings>();
@@ -54,7 +60,7 @@ export default function App() {
     try {
       await invoke("shortcut_capture", { active });
     } catch (error) {
-      setError(String(error));
+      setError(noted(error));
       throw error;
     }
   }, []);
@@ -120,7 +126,7 @@ export default function App() {
         );
       return true;
     } catch (e) {
-      setError(String(e));
+      setError(noted(e));
       return false;
     }
   }
@@ -211,7 +217,7 @@ export default function App() {
             : current,
         );
     } catch (e) {
-      setError(String(e));
+      setError(noted(e));
     }
   }
   async function saveEdit() {
@@ -330,19 +336,14 @@ export default function App() {
       <main className="page">
         {(error || view.error) && (
           <div role="alert" className="error">
-            {error || view.error}
-            {!error && (
-              <>
-                {" "}
-                <button
-                  className="link"
-                  style={{ color: "inherit" }}
-                  onClick={() => setTab("Logs")}
-                >
-                  View logs
-                </button>
-              </>
-            )}
+            {error || view.error}{" "}
+            <button
+              className="link"
+              style={{ color: "inherit" }}
+              onClick={() => setTab("Logs")}
+            >
+              View logs
+            </button>
           </div>
         )}
         {notice && (

@@ -166,8 +166,7 @@ export function Logs({
     <div className="logs">
       <p className="intro">
         What Conch did and why, newest first. Logs never contain audio,
-        transcripts, result text, or source text, and paths show as{" "}
-        <code>~/...</code>.
+        transcripts, result text, or source text, and paths are shortened.
       </p>
       {error && (
         <div role="alert" className="error">
