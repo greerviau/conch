@@ -37,9 +37,11 @@ The recorded synthetic runs show 0.04-0.27 s of inference for short inputs on Me
 
 The chunk measurement above covers a 120 s recording. A dictation shorter than about 9 s is a single tail, because a chunk needs 8 s of audio and a 1 s pause.
 That tail was recognized in full after the stop, so it took the full request time: 0.6 s for a clip of about 5 s on `small.en` (`recognition-models.md` and the `default` rows below).
-Speculative recognition addresses it. A second change, per-request `whisper-server` settings, was shipped and then removed because it made later requests lose text (see the last section).
+Two changes were tried and are off or removed: speculative recognition is off because it can make the stop slower (see "Regression check"), and per-request `whisper-server` settings were removed because they made later requests lose text (see "Request settings for short audio (removed)"). Cleaning each chunk during the recording is the change that stays (see "Enhanced cleanup during the recording").
 
-### Speculative recognition
+### Speculative recognition (off)
+
+The code stays (`Chunker::settle`, `Chunker::settled`, `Transcriber::speculate`), tested, behind `SPECULATE` in `app.rs`, which is `false`.
 
 Once speech is followed by 0.3 s of silence, `Chunker::settle` offers the audio since the last chunk and `Transcriber::speculate` recognizes it while the recording continues.
 When the recording stops with no further speech, `Chunker::settled` lets the tail reuse that text.
@@ -148,3 +150,21 @@ What was measured and could add to it: a server idle for 45 s took 100 ms more o
 The status line now ends the cleanup stage with the model's own prompt and generation time, and Conch sends the model one token when recording starts. Neither has been measured in the installed application.
 
 Not measured: real speech and pauses, other cleanup providers (a remote endpoint adds a round trip per part), the status-line stage times in the installed app, and whether a chunk cleaned without its neighbours reads worse on real text than the whole text cleaned at once.
+
+## Regression check
+
+The question was whether the changes only improve the wait after the stop. `examples/regression_check.rs` runs the same synthetic dictations through the flow before this work (chunks recognized during the recording, one cleanup of the whole text after the stop) and through the current flow, in alternating order, at twice real time, with `small.en` and managed S1-mini on an Apple M1. The clips and pauses are synthetic (`say` voices); real speech is not covered.
+
+| Clips | Flow now | Runs | Stop to cleaned text, median before to now | Slower by more than 150 ms | Recognized text |
+| --- | --- | --- | --- | --- | --- |
+| 20 clips of 17 to 32 s with pauses of 1.1 to 1.7 s, stop 0.15 or 0.8 s after the last word | speculation and per-chunk cleaning | 40 | 1689 to 944 ms | 0 | same word error rate (10.9%), no lost words, identical cleaned text |
+| 16 clips of a 16 s dictation, a pause of 0.35 or 0.5 s, a short last phrase, stop 0.1 or 0.2 s after it | speculation and per-chunk cleaning | 32 | 1884 to 2207 ms | 23 (worst +881 ms) | same, identical cleaned text |
+| the same 16 clips | per-chunk cleaning only | 32 | 1910 to 1889 ms | 2 (+222 ms and +211 ms, and runs up to 241 ms faster) | same, identical cleaned text |
+| the same 20 clips with pauses | per-chunk cleaning only | 40 | 1604 to 928 ms | 0 | same, identical cleaned text |
+
+The second row is the regression: a speculation of the 16 s of audio before the pause was still recognizing when the key was released, and `whisper-server` cannot cancel a request, so the tail waited for it. Speculation is therefore off. The pattern (a pause, a short last phrase, a quick release) was built to trigger it; how often real dictations do is not measured.
+With speculation on, the clips with a 0.8 s stop gap recognized 206 to 443 ms sooner in all 20 runs, which is what is given up; with a 0.15 s gap the recognition time was unchanged on average (+4 ms, three runs slower and three faster by more than 60 ms).
+Run-to-run noise of one request on the same clip was about 0.1 to 0.2 s (a 12 s request took 0.75 to 1.00 s), so single differences below that are not results.
+Bringing speculation back needs a way to stop a stale speculation at once (for example a separate `whisper-server` for speculation that is killed when the key is released after more speech), and a run of this check without a slower case. Two requests on one GPU do not help by themselves, because the work is not smaller.
+The earlier recognition-time measurements for speculation above were taken before this check.
+

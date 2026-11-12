@@ -80,9 +80,6 @@ Recordings stop after 180 seconds.
 Conch starts the recognizer when recording starts and recognizes each finished chunk while you keep speaking.
 A chunk ends at the first pause of one second after 8 seconds of audio, or at the quietest point once 25 seconds are pending.
 Only the audio after the last chunk remains to be recognized when you stop.
-When speech is followed by 0.3 seconds of silence, Conch recognizes the audio after the last chunk without waiting for the stop.
-If you stop without speaking again, Conch uses that text and the stop needs no recognition.
-If you speak again first, Conch discards it and recognizes the audio after the stop as usual.
 If a chunk fails, Conch recognizes the whole recording once.
 The status line under the result ends with the time from the stop to the text and how long each stage took: capture, recognition, preparation, cleanup, and delivery. Cleanup is the wait for the tail's cleaning when chunks were cleaned during the recording; it appears only with Enhanced cleanup. With Managed S1-mini it also shows the time the model reported for its latest request, for example `cleanup 542 ms (model 290 ms)`, so a slow model shows apart from slow work around it. When recording starts, Conch sends the model one token so it is loaded before the first cleanup.
 Workers stay running between recordings and stop after 10 minutes (recognizer) or 5 minutes (managed cleanup) without use.

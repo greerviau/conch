@@ -306,7 +306,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
             |samples| {
                 if let Some(range) = chunker.poll(samples) {
                     transcriber.push(samples[range].to_vec());
-                } else if let Some(range) = chunker.settle(samples) {
+                } else if SPECULATE && let Some(range) = chunker.settle(samples) {
                     transcriber.speculate(range.clone(), samples[range].to_vec());
                 }
             },
@@ -314,7 +314,11 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         let state = handle.state::<AppState>();
         match captured {
             Ok(Some(audio::Captured { wav, samples })) => {
-                let reuse = chunker.settled(&samples);
+                let reuse = if SPECULATE {
+                    chunker.settled(&samples)
+                } else {
+                    None
+                };
                 if let Some(range) = chunker.tail(&samples) {
                     transcriber.push_tail(samples[range].to_vec(), reuse);
                 }
@@ -521,6 +525,14 @@ fn process(
     inner.result = Some(result);
     inner.retry = None;
 }
+/// Whether the recording flow recognizes the audio since the last chunk
+/// before the stop (`Chunker::settle`, `Transcriber::speculate`). It is off:
+/// a speculation still running at the stop delays the tail, because
+/// `whisper-server` cannot cancel a request. With a pause of 0.35 to 0.5 s, a
+/// short last phrase and a quick release, it raised the median wait for the
+/// cleaned text from 1884 to 2207 ms (23 of 32 runs more than 150 ms slower).
+/// See `docs/validation/latency.md`.
+const SPECULATE: bool = false;
 /// Shows the time the cleanup model reported for its latest request next to
 /// the cleanup stage, so a slow model shows apart from slow work around it.
 fn note_model_time(watch: &mut Stopwatch, worker: &inference::Worker) {
