@@ -105,3 +105,38 @@ An `audio_ctx` frame is 20 ms. Each row adds to the one above it, so `audio_ctx`
 
 Not measured: real human speech, real microphones and rooms, other languages, `language=auto`, the multilingual models, and `tiny.en`.
 Rerun the table on recordings of your own voice with `--clips <folder>` (a `name.wav` and `name.txt` pair per clip) before relying on it. `--model` takes any Whisper model file, and `--language` sets the language sent with each request.
+
+## Enhanced cleanup during the recording
+
+After the request settings were removed, Enhanced cleanup was the largest stage after the stop: 436 ms and 909 ms in two status lines from the installed app (71% to 72% of 603 ms and 1279 ms).
+The managed S1-mini worker (`llama-server`, Apple M1) generates the cleaned text token by token at about 9.6 ms per token, and the time grows linearly with it:
+
+| Output tokens | Cleanup request |
+| --- | --- |
+| 25 | 248 ms |
+| 59 | 576 ms |
+| 79 | 750 ms |
+| 110 | 1112 ms |
+
+The prompt is cached after the first request (1 token evaluated, about 10 ms) and `/tokenize` takes 1 to 2 ms, so the time is the generation of the rewritten text.
+About 100 tokens per second on the GPU and 85 on the CPU (`--gpu-layers 0`) suggest that decoding is limited by memory bandwidth, so the worker's threads and layers are not a lever (moderate confidence).
+
+Conch now cleans each chunk and the tail as soon as it is recognized (`Transcriber::start_cleaning`, a second thread behind the recognizer).
+After the stop only the tail's cleaning is left, and a failure of any part gives Basic cleanup for the whole result.
+`examples/cleanup_latency.rs` fed the 16 long synthetic dictations (10 to 30 s, 0.4 to 0.9 s pauses between sentences, 0.6 s of quiet before the stop, `small.en`, managed S1-mini) at real time, once with per-chunk cleaning and once with the earlier flow (`after`: one cleanup of the whole text after the stop). One run per clip.
+
+| Dictation | Chunks | Per-chunk cleaning, stop to text | One cleanup after the stop |
+| --- | --- | --- | --- |
+| `Alex-5s` (29 s) | 1 | 543 ms | 1307 ms |
+| `Daniel-5s` (30 s) | 1 | 801 ms | 1433 ms |
+| `Karen-5s` (29 s) | 1 | 628 ms | 1322 ms |
+| `Samantha-5s` (27 s) | 1 | 410 ms | 1145 ms |
+| 12 clips of 10 to 24 s | 0 | 816 to 1926 ms (median 1410 ms) | 696 to 1938 ms (median 1257 ms) |
+
+- A dictation with a chunk saves about 0.6 to 0.8 s: the wait is the tail's recognition and its cleaning, about 170 to 370 ms and 240 to 440 ms in these runs.
+- A dictation without a chunk gains nothing, and the two columns differ only by run-to-run variation. A chunk needs 8 s of audio and a pause of 1 s, and the pauses between the sentences of these clips are shorter, so only the five-sentence clips had one. Recognition of the 10 to 24 s tail (0.3 to 1.0 s) now dominates those dictations.
+- The cleaned text of the per-chunk run equalled the whole-text cleanup of the same raw text in 16 of 16 dictations, but 12 of them had a single part, so only the 4 dictations with a chunk compare per-chunk with whole-text cleaning; their word error rate against the spoken words was the same (12.1% over all 16).
+- The `cleanup_latency` run without `after` also cleans the whole text once after the stop to compare texts. That request reuses the prompt cache of the per-chunk request, so its time (356 to 1039 ms) is too low for the earlier flow; the `after` run is the comparison.
+- Four requests at once on `llama-server --parallel 4` took 481 ms for four 21 to 25 token sentences against 857 ms for the 92-token text in one request (1.8 times faster, not 4 times). The worker runs one slot, where the four requests took 943 ms. This is not used.
+
+Not measured: real speech and pauses, other cleanup providers (a remote endpoint adds a round trip per part), the status-line stage times in the installed app, and whether a chunk cleaned without its neighbours reads worse on real text than the whole text cleaned at once.

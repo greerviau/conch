@@ -19,7 +19,8 @@ impl Stopwatch {
     pub fn lap(&mut self, stage: &'static str) {
         self.lap_at(stage, Instant::now());
     }
-    fn lap_at(&mut self, stage: &'static str, now: Instant) {
+    /// Ends the current stage under `stage` at `now`.
+    pub fn lap_at(&mut self, stage: &'static str, now: Instant) {
         self.stages
             .push((stage, now.saturating_duration_since(self.last)));
         self.last = now;

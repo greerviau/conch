@@ -363,6 +363,19 @@ pub struct CleanupRequest<'a> {
     pub worker: &'a Worker,
     pub cpu: bool,
 }
+/// Enhanced cleanup of one part of a dictation. A part that Basic cleanup
+/// empties, such as "um, uh", contributes no text instead of failing the
+/// whole dictation.
+pub fn enhanced_part(request: CleanupRequest<'_>) -> Result<String, String> {
+    let cleanup = &request.snapshot.cleanup;
+    if cleanup.enhanced != "disabled" && !request.raw.contains("CONCHPROTECTED") {
+        let masked = core::mask(request.raw, request.snapshot);
+        if core::basic(&masked.text, cleanup).trim().is_empty() {
+            return Ok(String::new());
+        }
+    }
+    enhanced(request)
+}
 pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
     let CleanupRequest {
         workers,
@@ -586,6 +599,28 @@ mod tests {
     }
     fn silence(seconds: usize) -> Vec<u8> {
         crate::audio::wav(&vec![0.0; seconds * 16_000]).unwrap()
+    }
+    #[test]
+    fn a_part_that_basic_cleanup_empties_cleans_to_nothing_without_a_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut snapshot = crate::core::Snapshot::default();
+        snapshot.cleanup.enhanced = "managed".into();
+        let part = |raw: &str, snapshot: &crate::core::Snapshot| {
+            enhanced_part(CleanupRequest {
+                workers: dir.path(),
+                data: dir.path(),
+                snapshot,
+                raw,
+                worker: &new_worker(),
+                cpu: true,
+            })
+        };
+        assert_eq!(part("um, uh", &snapshot), Ok(String::new()));
+        // A part with words reaches the worker, which is not installed here.
+        assert!(part("rename the helper", &snapshot).is_err());
+        // Disabled cleanup stays an error for every part.
+        snapshot.cleanup.enhanced = "disabled".into();
+        assert!(part("um, uh", &snapshot).is_err());
     }
     #[cfg(unix)]
     mod fake {

@@ -248,21 +248,37 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     drop(inner);
     std::thread::spawn(platform::prepare);
     let cleanup_worker = worker.clone();
-    let transcriber = Transcriber::start(
-        {
-            let (workers, model, worker) = (state.workers.clone(), model.clone(), worker.clone());
-            move || {
-                let _ = inference::preload(&workers, &model, Kind::Whisper, &worker, false);
-            }
-        },
-        {
-            let workers = state.workers.clone();
-            let hint = core::recognition_hint(&snapshot);
-            move |wav, _speculative| {
-                inference::transcribe(&workers, &model, wav, &hint, &worker, false)
-            }
-        },
-    );
+    let warm = {
+        let (workers, model, worker) = (state.workers.clone(), model.clone(), worker.clone());
+        move || {
+            let _ = inference::preload(&workers, &model, Kind::Whisper, &worker, false);
+        }
+    };
+    let recognize = {
+        let workers = state.workers.clone();
+        let hint = core::recognition_hint(&snapshot);
+        let worker = worker.clone();
+        move |wav, _speculative| inference::transcribe(&workers, &model, wav, &hint, &worker, false)
+    };
+    // Enhanced cleanup runs on each chunk while the recording continues, so
+    // only the tail is left to clean after the stop.
+    let transcriber = if snapshot.cleanup.enhanced == "disabled" {
+        Transcriber::start(warm, recognize)
+    } else {
+        let (workers, data, snapshot) =
+            (state.workers.clone(), state.data.clone(), snapshot.clone());
+        let worker = worker.clone();
+        Transcriber::start_cleaning(warm, recognize, move |part| {
+            inference::enhanced_part(inference::CleanupRequest {
+                workers: &workers,
+                data: &data,
+                snapshot: &snapshot,
+                raw: part,
+                worker: &worker,
+                cpu: false,
+            })
+        })
+    };
     if snapshot.cleanup.enhanced == "managed" {
         let workers = state.workers.clone();
         let model = state.data.join(inference::CLEANUP.name);
@@ -397,11 +413,16 @@ fn process(
         watch.lap("capture");
     }
     let mut speculative = false;
+    // Enhanced cleanup of each chunk, when it ran during the recording.
+    let mut cleaned = None;
+    let mut recognized_at = None;
     // Chunks were recognized during the recording. If that failed, recognize
     // the whole recording once, as Retry does.
     let recognition = match chunked.map(Transcriber::finish) {
         Some(Ok(done)) => {
             speculative = done.speculative;
+            cleaned = done.cleaned;
+            recognized_at = Some(done.recognized_at);
             Ok(done.text)
         }
         _ => model.and_then(|model| {
@@ -415,11 +436,19 @@ fn process(
             )
         }),
     };
-    watch.lap(if speculative {
+    let recognition_stage = if speculative {
         "recognition (speculative)"
     } else {
         "recognition"
-    });
+    };
+    match recognized_at {
+        // Cleaning the tail ran after this and ends at `finish`.
+        Some(at) => watch.lap_at(recognition_stage, at),
+        None => watch.lap(recognition_stage),
+    }
+    if cleaned.is_some() {
+        watch.lap("cleanup");
+    }
     let raw = match recognition {
         Ok(raw) if !raw.trim().is_empty() => raw,
         Ok(_) => {
@@ -441,25 +470,21 @@ fn process(
     let mut result = core::prepare(&raw, &snapshot);
     watch.lap("preparation");
     if snapshot.cleanup.enhanced != "disabled" {
-        match inference::enhanced(inference::CleanupRequest {
-            workers: &state.workers,
-            data: &state.data,
-            snapshot: &snapshot,
-            raw: &raw,
-            worker: &worker,
-            cpu: false,
-        }) {
-            Ok(text) => {
-                result.text = text;
-                result.edits.clear();
-                result.suggestions = core::suggestions(&result.text, &snapshot);
-                core::auto_accept(&mut result, &snapshot);
-                result.status =
-                    "Enhanced cleanup completed; semantic equivalence is unverified".into();
-            }
-            Err(error) => result.status = error,
+        let cleaned_during_recording = cleaned.is_some();
+        let outcome = cleaned.unwrap_or_else(|| {
+            inference::enhanced(inference::CleanupRequest {
+                workers: &state.workers,
+                data: &state.data,
+                snapshot: &snapshot,
+                raw: &raw,
+                worker: &worker,
+                cpu: false,
+            })
+        });
+        apply_enhanced(&mut result, outcome, &snapshot);
+        if !cleaned_during_recording {
+            watch.lap("cleanup");
         }
-        watch.lap("cleanup");
     }
     let mut inner = state.inner.lock().unwrap();
     if !inner.session.complete(generation) {
@@ -491,6 +516,24 @@ fn process(
     }
     inner.result = Some(result);
     inner.retry = None;
+}
+/// Puts the outcome of Enhanced cleanup into the prepared result: the cleaned
+/// text on success, or the Basic text and the reason on failure.
+fn apply_enhanced(
+    result: &mut core::ResultText,
+    outcome: Result<String, String>,
+    snapshot: &Snapshot,
+) {
+    match outcome {
+        Ok(text) => {
+            result.text = text;
+            result.edits.clear();
+            result.suggestions = core::suggestions(&result.text, snapshot);
+            core::auto_accept(result, snapshot);
+            result.status = "Enhanced cleanup completed; semantic equivalence is unverified".into();
+        }
+        Err(error) => result.status = error,
+    }
 }
 fn failed(app: &AppHandle, generation: u64, error: String) {
     let state = app.state::<AppState>();
@@ -939,6 +982,26 @@ pub fn set_hotkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn enhanced_cleanup_replaces_the_prepared_text_and_a_failure_keeps_it() {
+        let snapshot = Snapshot::default();
+        let mut result = core::prepare("hello world", &snapshot);
+        apply_enhanced(&mut result, Ok("Hello, world.".into()), &snapshot);
+        assert_eq!(result.text, "Hello, world.");
+        assert!(result.edits.is_empty());
+        assert_eq!(
+            result.status,
+            "Enhanced cleanup completed; semantic equivalence is unverified"
+        );
+        let mut result = core::prepare("hello world", &snapshot);
+        apply_enhanced(
+            &mut result,
+            Err("Cleanup failed; using Basic".into()),
+            &snapshot,
+        );
+        assert_eq!(result.text, "hello world");
+        assert_eq!(result.status, "Cleanup failed; using Basic");
+    }
     #[test]
     fn settings_must_name_an_offered_recognition_model() {
         let mut settings = Settings::default();

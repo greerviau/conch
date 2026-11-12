@@ -36,6 +36,10 @@ Excluded literal terms stay as dictated.
 Enhanced cleanup is Disabled until you choose Managed S1-mini, Local endpoint, or Remote endpoint.
 Managed S1-mini asks for the 484 MB download; until it is installed, Conch uses Basic cleanup.
 Settings saved by an earlier version start with Enhanced cleanup Disabled.
+With Enhanced cleanup on, Conch cleans each finished chunk while you keep speaking, so after you stop only the audio after the last chunk is left to recognize and clean.
+A dictation without a chunk, one that never pauses for a second after 8 seconds, is cleaned whole after the stop.
+A part that Basic cleanup leaves empty adds nothing to the result.
+If cleaning any part fails, the whole result gets Basic cleanup and the status line gives the reason.
 
 ## Microphone and paste
 
@@ -78,7 +82,7 @@ When speech is followed by 0.3 seconds of silence, Conch recognizes the audio af
 If you stop without speaking again, Conch uses that text and the stop needs no recognition.
 If you speak again first, Conch discards it and recognizes the audio after the stop as usual.
 If a chunk fails, Conch recognizes the whole recording once.
-The status line under the result ends with the time from the stop to the text and how long each stage took: capture, recognition, preparation, cleanup (Enhanced cleanup only), and delivery.
+The status line under the result ends with the time from the stop to the text and how long each stage took: capture, recognition, preparation, cleanup, and delivery. Cleanup is the wait for the tail's cleaning when chunks were cleaned during the recording; it appears only with Enhanced cleanup.
 Workers stay running between recordings and stop after 10 minutes (recognizer) or 5 minutes (managed cleanup) without use.
 Conch stops workers left by a crashed earlier run when it starts.
 
