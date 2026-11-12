@@ -10,7 +10,6 @@ fn snapshot_isolates_selection_and_survives_settings_changes_and_removal() {
     let repository = Repository {
         id: "r".into(),
         root: root.path().into(),
-        selected: true,
         exclusions: vec![],
     };
     let mut settings = Settings {
@@ -23,9 +22,10 @@ fn snapshot_isolates_selection_and_survives_settings_changes_and_removal() {
         }],
         ..Default::default()
     };
+    settings.active_mut().repositories = vec!["r".into()];
     storage::save(data.path(), &settings).unwrap();
     let snapshot = storage::snapshot(&settings, &storage::indexes(data.path()).unwrap());
-    settings.repositories[0].selected = false;
+    settings.active_mut().repositories.clear();
     assert!(
         storage::snapshot(&settings, &storage::indexes(data.path()).unwrap())
             .mappings
@@ -89,8 +89,10 @@ fn local_endpoint_receives_only_masked_transcript_and_fixed_instruction() {
             r#"{"choices":[{"message":{"content":"Do not change CONCHPROTECTED0X before 12."}}]}"#;
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
     });
-    let mut snapshot = Snapshot::default();
-    snapshot.cleanup.enhanced = "local".into();
+    let mut snapshot = Snapshot {
+        enhanced: "local".into(),
+        ..Default::default()
+    };
     snapshot.cleanup.endpoint = endpoint;
     snapshot.mappings.push(Mapping {
         phrase: "secret class".into(),
@@ -114,8 +116,10 @@ fn local_endpoint_receives_only_masked_transcript_and_fixed_instruction() {
 #[test]
 fn disabled_remote_cleanup_makes_no_request_and_cancellation_prevents_launch() {
     let data = tempfile::tempdir().unwrap();
-    let mut snapshot = Snapshot::default();
-    snapshot.cleanup.enhanced = "remote".into();
+    let mut snapshot = Snapshot {
+        enhanced: "remote".into(),
+        ..Default::default()
+    };
     snapshot.cleanup.endpoint = "https://127.0.0.1:1".into();
     let worker = inference::new_worker();
     assert_eq!(
@@ -221,8 +225,10 @@ fn offline_workers_recognize_and_clean_without_a_model_server_install() {
         .unwrap();
         assert_eq!(text, "", "non-speech audio produced text");
     }
-    let mut snapshot = Snapshot::default();
-    snapshot.cleanup.enhanced = "managed".into();
+    let snapshot = Snapshot {
+        enhanced: "managed".into(),
+        ..Default::default()
+    };
     let result = inference::enhanced(inference::CleanupRequest {
         workers: &workers,
         data: &data,
@@ -248,8 +254,10 @@ fn managed_download_installs_verified_model_without_persisting_audio_or_transcri
 #[test]
 fn pre_cancelled_external_cleanup_does_not_start_a_request() {
     let data = tempfile::tempdir().unwrap();
-    let mut snapshot = Snapshot::default();
-    snapshot.cleanup.enhanced = "local".into();
+    let mut snapshot = Snapshot {
+        enhanced: "local".into(),
+        ..Default::default()
+    };
     snapshot.cleanup.endpoint = "http://127.0.0.1:1/v1/chat/completions".into();
     let worker = inference::new_worker();
     inference::stop(&worker);
@@ -291,8 +299,10 @@ fn cancellation_drops_an_in_flight_endpoint_request() {
     let (send, result) = mpsc::channel();
     let job = std::thread::spawn(move || {
         let data = tempfile::tempdir().unwrap();
-        let mut snapshot = Snapshot::default();
-        snapshot.cleanup.enhanced = "local".into();
+        let mut snapshot = Snapshot {
+            enhanced: "local".into(),
+            ..Default::default()
+        };
         snapshot.cleanup.endpoint = endpoint;
         let outcome = inference::enhanced(inference::CleanupRequest {
             workers: data.path(),
@@ -328,18 +338,17 @@ fn vocabulary_snapshots_exclude_unselected_and_missing_repositories_and_keep_pri
             Repository {
                 id: "a".into(),
                 root: alpha.path().into(),
-                selected: true,
                 exclusions: vec![],
             },
             Repository {
                 id: "b".into(),
                 root: beta.path().into(),
-                selected: false,
                 exclusions: vec![],
             },
         ],
         ..Default::default()
     };
+    settings.active_mut().repositories = vec!["a".into()];
     storage::put_index(
         data.path(),
         "a",
@@ -356,7 +365,7 @@ fn vocabulary_snapshots_exclude_unselected_and_missing_repositories_and_keep_pri
     assert!(captured.vocabulary.iter().any(|v| v.text == "AlphaOnly"));
     assert!(!captured.vocabulary.iter().any(|v| v.repository == "b"));
     settings.repositories[0].root = alpha.path().join("missing");
-    settings.repositories[1].selected = true;
+    settings.active_mut().repositories.push("b".into());
     let next = storage::snapshot(&settings, &storage::indexes(data.path()).unwrap());
     assert!(!next.vocabulary.iter().any(|v| v.repository == "a"));
     assert!(next.vocabulary.iter().any(|v| v.text == "BetaOnly"));

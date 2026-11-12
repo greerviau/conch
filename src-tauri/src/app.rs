@@ -7,7 +7,7 @@ use crate::{
     history, index,
     inference::{self, Kind, Worker},
     log,
-    pipeline::Transcriber,
+    pipeline::{self, Transcriber},
     platform,
     session::{Phase, Session},
     storage::{self, Settings},
@@ -52,6 +52,42 @@ pub struct Inner {
     pub indicator_notice: Option<(Instant, String)>,
     /// The last Accessibility and microphone readings, so a change is logged once.
     pub permissions: Option<(bool, String)>,
+    /// The recording in progress, while it is recording.
+    pub live: Option<Live>,
+    /// Whether the recording indicator lists the profiles.
+    pub indicator_menu: bool,
+}
+impl Inner {
+    pub fn new(settings: Settings) -> Self {
+        Self {
+            settings,
+            session: Session::default(),
+            result: None,
+            history_id: None,
+            error: String::new(),
+            stop: None,
+            worker: inference::new_worker(),
+            retry: None,
+            downloading: false,
+            capturing_shortcut: false,
+            paused_shortcut: None,
+            audio_ready: false,
+            level: Arc::new(AtomicU32::new(0)),
+            recording_since: None,
+            stopped: None,
+            recorded_seconds: 0,
+            indicator_notice: None,
+            permissions: None,
+            live: None,
+            indicator_menu: false,
+        }
+    }
+}
+/// The recording in progress: the snapshot it uses now and the way to switch it
+/// to another profile.
+pub struct Live {
+    pub snapshot: Snapshot,
+    pub switcher: pipeline::Switcher,
 }
 #[derive(Serialize)]
 pub struct View {
@@ -116,24 +152,26 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
 /// Whether every enumerated setting holds a value Conch offers.
 fn choices_valid(settings: &Settings) -> bool {
     matches!(settings.activation.as_str(), "push" | "toggle")
-        && matches!(
-            settings.cleanup.enhanced.as_str(),
-            "disabled" | "managed" | "local" | "remote"
-        )
-        && inference::recognizer(&settings.recognizer)
-            .is_some_and(|model| model.supports(&settings.language))
+        && !settings.profiles.is_empty()
+        && settings.profiles.iter().all(profile_valid)
+}
+fn profile_valid(profile: &storage::Profile) -> bool {
+    !profile.name.trim().is_empty()
+        && storage::ENHANCED.contains(&profile.enhanced.as_str())
+        && inference::recognizer(&profile.recognizer)
+            .is_some_and(|model| model.supports(&profile.language))
 }
 /// Whether Enhanced cleanup runs on each chunk during the recording. Managed S1-mini supports
 /// English only, so other languages and Auto-detect use Basic, and the final result reports why.
-fn chunk_cleaning(cleanup: &crate::core::Cleanup, language: &str) -> bool {
-    cleanup.enhanced != "disabled"
-        && (cleanup.enhanced != "managed" || inference::managed_cleanup_supported(language))
+fn chunk_cleaning(enhanced: &str, language: &str) -> bool {
+    enhanced != "disabled"
+        && (enhanced != "managed" || inference::managed_cleanup_supported(language))
 }
 /// Local and remote Enhanced cleanup need an allowed endpoint, and a remote
 /// destination needs the user's confirmation.
-fn check_enhanced(cleanup: &crate::core::Cleanup) -> Result<(), String> {
-    let remote = cleanup.enhanced == "remote";
-    if matches!(cleanup.enhanced.as_str(), "local" | "remote")
+fn check_enhanced(enhanced: &str, cleanup: &crate::core::Cleanup) -> Result<(), String> {
+    let remote = enhanced == "remote";
+    if matches!(enhanced, "local" | "remote")
         && !inference::endpoint_allowed(&cleanup.endpoint, remote)
     {
         return Err(
@@ -161,7 +199,12 @@ pub fn save_settings(
     if !choices_valid(&settings) {
         return Err("Invalid settings".into());
     }
-    check_enhanced(&settings.cleanup)?;
+    for profile in &mut settings.profiles {
+        check_enhanced(&profile.enhanced, &settings.cleanup)?;
+        if profile.id.is_empty() {
+            profile.id = uuid::Uuid::new_v4().to_string();
+        }
+    }
     for repository in &mut settings.repositories {
         if !repository.root.is_absolute() {
             return Err("Repository roots must be absolute paths".into());
@@ -175,6 +218,7 @@ pub fn save_settings(
             .as_ref()
             .is_none_or(|id| settings.repositories.iter().any(|r| &r.id == id))
     });
+    storage::normalize(&mut settings);
     let shortcuts = app
         .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
         .is_some();
@@ -193,7 +237,17 @@ pub fn save_settings(
     } else {
         storage::save(&state.data, &settings)?;
     }
-    let changed = inner.settings.recognizer != settings.recognizer;
+    let models = |settings: &Settings| {
+        let mut ids: Vec<_> = settings
+            .profiles
+            .iter()
+            .map(|p| p.recognizer.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    let changed = models(&inner.settings) != models(&settings);
     state
         .indexes
         .locked()
@@ -276,76 +330,35 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         return Err("Enable Conch microphone access in Setup before recording".into());
     }
     let snapshot = storage::snapshot(&inner.settings, &state.indexes.locked());
-    let model = recognition_model(&state.data, &snapshot.recognizer)?;
+    let worker = inference::new_worker();
+    let (model, recognize, clean) = recognition_for(&state, &snapshot, &worker)?;
     let generation = inner.session.start()?;
     inner.stop = Some(send);
     inner.error.clear();
     inner.retry = None;
-    inner.worker = inference::new_worker();
+    inner.worker = worker.clone();
     inner.audio_ready = false;
     inner.recording_since = None;
     inner.stopped = None;
     inner.indicator_notice = None;
+    inner.indicator_menu = false;
     let microphone = inner.settings.microphone.clone();
     let level = inner.level.clone();
     level.store(0, std::sync::atomic::Ordering::Relaxed);
-    let worker = inner.worker.clone();
-    drop(inner);
-    std::thread::spawn(platform::prepare);
-    let cleanup_worker = worker.clone();
     let warm = {
         let (workers, model, worker) = (state.workers.clone(), model.clone(), worker.clone());
         move || {
             let _ = inference::preload(&workers, &model, Kind::Whisper, &worker, false);
         }
     };
-    let recognize = {
-        // With Auto-detect, the first chunk with speech fixes the language of the rest.
-        let recording = inference::ChunkRecognizer::new(
-            &snapshot.language,
-            &state.workers,
-            &model,
-            &core::recognition_hint(&snapshot),
-            &worker,
-            false,
-        );
-        move |wav, speculative| {
-            if speculative {
-                recording.transcribe_speculative(wav)
-            } else {
-                recording.transcribe(wav)
-            }
-        }
-    };
-    // Enhanced cleanup runs on each chunk while the recording continues, so
-    // only the tail is left to clean after the stop.
-    let cleaning = chunk_cleaning(&snapshot.cleanup, &snapshot.language);
-    let transcriber = if !cleaning {
-        Transcriber::start(warm, recognize)
-    } else {
-        let (workers, data, snapshot) =
-            (state.workers.clone(), state.data.clone(), snapshot.clone());
-        let worker = worker.clone();
-        Transcriber::start_cleaning(warm, recognize, move |part| {
-            inference::enhanced_part(inference::CleanupRequest {
-                workers: &workers,
-                data: &data,
-                snapshot: &snapshot,
-                raw: part,
-                worker: &worker,
-                cpu: false,
-            })
-        })
-    };
-    if cleaning && snapshot.cleanup.enhanced == "managed" {
-        let workers = state.workers.clone();
-        let model = state.data.join(inference::CLEANUP.name);
-        std::thread::spawn(move || {
-            if inference::preload(&workers, &model, Kind::Llama, &cleanup_worker, false).is_ok() {
-                inference::warm_cleanup(&workers, &model, &cleanup_worker);
-            }
-        });
-    }
+    let transcriber = Transcriber::with(warm, recognize, clean);
+    inner.live = Some(Live {
+        snapshot: snapshot.clone(),
+        switcher: transcriber.switcher(),
+    });
+    drop(inner);
+    std::thread::spawn(platform::prepare);
+    warm_cleanup(&state, &snapshot, &worker);
     let handle = app.clone();
     std::thread::spawn(move || {
         let mut chunker = Chunker::default();
@@ -380,7 +393,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                 if let Some(range) = chunker.tail(&samples) {
                     transcriber.push_tail(samples[range].to_vec(), reuse);
                 }
-                {
+                let snapshot = {
                     let mut inner = state.inner.locked();
                     if inner.session.generation != generation {
                         return;
@@ -394,8 +407,12 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                         inner.stopped = Some(Instant::now());
                     }
                     inner.stop = None;
+                    // A profile switch during the recording replaced the snapshot.
+                    let snapshot = inner.live.take().map_or(snapshot, |live| live.snapshot);
+                    inner.indicator_menu = false;
                     inner.retry = Some((wav.clone(), snapshot.clone()));
-                }
+                    snapshot
+                };
                 process(&handle, generation, wav, snapshot, Some(transcriber));
             }
             Ok(None) => (),
@@ -404,6 +421,8 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                 let mut inner = state.inner.locked();
                 if inner.session.generation == generation {
                     inner.session.cancel();
+                    inner.live = None;
+                    inner.indicator_menu = false;
                     inner.indicator_notice = Some((Instant::now(), error.clone()));
                     inner.error = error;
                     inner.stop = None;
@@ -436,6 +455,8 @@ pub fn cancel(app: AppHandle) -> Result<(), String> {
         inner.session.cancel();
         inner.indicator_notice = None;
         inner.retry = None;
+        inner.live = None;
+        inner.indicator_menu = false;
         if let Some(stop) = inner.stop.take() {
             let _ = stop.send(false);
         }
@@ -443,6 +464,130 @@ pub fn cancel(app: AppHandle) -> Result<(), String> {
     };
     inference::stop(&worker);
     Ok(())
+}
+/// Makes `id` the active profile. A recording in progress switches to it, and
+/// the audio heard so far is recognized again with it in the background.
+/// `from_indicator` returns focus to the app being dictated into, in case the
+/// click on the recording indicator activated Conch.
+#[tauri::command]
+pub fn choose_profile(
+    state: State<'_, AppState>,
+    id: String,
+    from_indicator: Option<bool>,
+) -> Result<(), String> {
+    let switched = switch_profile(&state, &id);
+    if from_indicator.unwrap_or(false) {
+        platform::return_focus();
+    }
+    switched
+}
+pub fn switch_profile(state: &AppState, id: &str) -> Result<(), String> {
+    let mut inner = state.inner.locked();
+    let profile = inner
+        .settings
+        .profiles
+        .iter()
+        .find(|p| p.id == id)
+        .ok_or("That profile no longer exists")?
+        .clone();
+    if inner.session.phase == Phase::Processing {
+        return Err("Wait for the result before switching profiles".into());
+    }
+    let mut settings = inner.settings.clone();
+    settings.active_profile = profile.id.clone();
+    let recording = inner.session.phase == Phase::Recording && inner.live.is_some();
+    let switch = if recording {
+        let snapshot = storage::snapshot(&settings, &state.indexes.locked());
+        let (_, recognize, clean) = recognition_for(state, &snapshot, &inner.worker)
+            .map_err(|_| format!("Download the recognition model of {} first", profile.name))?;
+        Some((snapshot, recognize, clean))
+    } else {
+        None
+    };
+    storage::save(&state.data, &settings)?;
+    inner.settings = settings;
+    inner.indicator_menu = false;
+    if let Some((snapshot, recognize, clean)) = switch
+        && let Some(live) = inner.live.as_mut()
+    {
+        live.switcher.switch(recognize, clean);
+        live.snapshot = snapshot.clone();
+        let worker = inner.worker.clone();
+        drop(inner);
+        log::info(
+            "dictation",
+            "Switched the recording to another profile; recognizing the audio so far again",
+        );
+        warm_cleanup(state, &snapshot, &worker);
+    }
+    Ok(())
+}
+/// Opens or closes the profile list on the recording indicator. It opens only
+/// while recording with more than one profile.
+#[tauri::command]
+pub fn indicator_menu(state: State<'_, AppState>, open: bool) {
+    let mut inner = state.inner.locked();
+    inner.indicator_menu =
+        open && inner.session.phase == Phase::Recording && inner.settings.profiles.len() > 1;
+}
+/// The recognition model, chunk recognizer, and chunk cleaner a recording uses
+/// with `snapshot`. Fails when the model is not installed.
+fn recognition_for(
+    state: &AppState,
+    snapshot: &Snapshot,
+    worker: &Worker,
+) -> Result<(PathBuf, pipeline::Recognizer, Option<pipeline::Cleaner>), String> {
+    let model = recognition_model(&state.data, &snapshot.recognizer)?;
+    // With Auto-detect, the first chunk with speech fixes the language of the rest.
+    let recording = inference::ChunkRecognizer::new(
+        &snapshot.language,
+        &state.workers,
+        &model,
+        &core::recognition_hint(snapshot),
+        worker,
+        false,
+    );
+    let recognize: pipeline::Recognizer = Box::new(move |wav, speculative| {
+        if speculative {
+            recording.transcribe_speculative(wav)
+        } else {
+            recording.transcribe(wav)
+        }
+    });
+    // Enhanced cleanup runs on each chunk while the recording continues, so
+    // only the tail is left to clean after the stop.
+    let clean: Option<pipeline::Cleaner> = chunk_cleaning(&snapshot.enhanced, &snapshot.language)
+        .then(|| {
+            let (workers, data, snapshot, worker) = (
+                state.workers.clone(),
+                state.data.clone(),
+                snapshot.clone(),
+                worker.clone(),
+            );
+            Box::new(move |part: &str| {
+                inference::enhanced_part(inference::CleanupRequest {
+                    workers: &workers,
+                    data: &data,
+                    snapshot: &snapshot,
+                    raw: part,
+                    worker: &worker,
+                    cpu: false,
+                })
+            }) as pipeline::Cleaner
+        });
+    Ok((model, recognize, clean))
+}
+/// Loads managed S1-mini while the user speaks, when the recording cleans with it.
+fn warm_cleanup(state: &AppState, snapshot: &Snapshot, worker: &Worker) {
+    if chunk_cleaning(&snapshot.enhanced, &snapshot.language) && snapshot.enhanced == "managed" {
+        let (workers, worker) = (state.workers.clone(), worker.clone());
+        let model = state.data.join(inference::CLEANUP.name);
+        std::thread::spawn(move || {
+            if inference::preload(&workers, &model, Kind::Llama, &worker, false).is_ok() {
+                inference::warm_cleanup(&workers, &model, &worker);
+            }
+        });
+    }
 }
 /// Path of the selected recognizer once it and the voice detection model are
 /// on disk.
@@ -532,7 +677,7 @@ fn process(
     }
     let mut result = core::prepare(&raw, &snapshot);
     watch.lap("preparation");
-    if snapshot.cleanup.enhanced != "disabled" {
+    if snapshot.enhanced != "disabled" {
         let cleaned_during_recording = cleaned.is_some();
         let outcome = cleaned.unwrap_or_else(|| {
             inference::enhanced(inference::CleanupRequest {
@@ -1040,26 +1185,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.manage(AppState {
         data,
         workers,
-        inner: Mutex::new(Inner {
-            settings: settings.clone(),
-            session: Session::default(),
-            result: None,
-            history_id: None,
-            error: String::new(),
-            stop: None,
-            worker: inference::new_worker(),
-            retry: None,
-            downloading: false,
-            capturing_shortcut: false,
-            paused_shortcut: None,
-            audio_ready: false,
-            level: Arc::new(AtomicU32::new(0)),
-            recording_since: None,
-            stopped: None,
-            recorded_seconds: 0,
-            indicator_notice: None,
-            permissions: None,
-        }),
+        inner: Mutex::new(Inner::new(settings.clone())),
         indexes: Mutex::new(indexes),
     });
     app.manage(crate::update::Tracker::new());
@@ -1396,35 +1522,47 @@ mod tests {
         assert_eq!(result.status, "Cleanup failed; using Basic");
     }
     #[test]
-    fn settings_must_name_an_offered_recognition_model() {
+    fn every_profile_must_name_an_offered_recognition_model() {
         let mut settings = Settings::default();
         assert!(choices_valid(&settings));
+        settings.profiles.push(storage::Profile {
+            id: "second".into(),
+            name: "Second".into(),
+            ..Default::default()
+        });
         for id in ["base.en", "small.en"] {
-            settings.recognizer = id.into();
+            settings.profiles[1].recognizer = id.into();
             assert!(choices_valid(&settings));
         }
-        settings.recognizer = "large-v3".into();
+        settings.profiles[1].recognizer = "large-v3".into();
+        assert!(!choices_valid(&settings));
+    }
+    #[test]
+    fn settings_need_a_profile_and_every_profile_a_name() {
+        let mut settings = Settings::default();
+        settings.profiles[0].name = "  ".into();
+        assert!(!choices_valid(&settings));
+        settings.profiles.clear();
         assert!(!choices_valid(&settings));
     }
     #[test]
     fn managed_cleanup_runs_on_chunks_only_for_a_language_it_supports() {
-        let with = |mode: &str| core::Cleanup {
-            enhanced: mode.into(),
-            ..Default::default()
-        };
-        assert!(chunk_cleaning(&with("managed"), "en"));
-        assert!(!chunk_cleaning(&with("managed"), "fr"));
-        assert!(!chunk_cleaning(&with("managed"), "auto"));
-        assert!(chunk_cleaning(&with("local"), "fr"));
-        assert!(chunk_cleaning(&with("remote"), "auto"));
-        assert!(!chunk_cleaning(&with("disabled"), "en"));
+        assert!(chunk_cleaning("managed", "en"));
+        assert!(!chunk_cleaning("managed", "fr"));
+        assert!(!chunk_cleaning("managed", "auto"));
+        assert!(chunk_cleaning("local", "fr"));
+        assert!(chunk_cleaning("remote", "auto"));
+        assert!(!chunk_cleaning("disabled", "en"));
     }
     #[test]
     fn the_language_must_be_one_the_model_supports() {
         let with = |recognizer: &str, language: &str| {
             choices_valid(&Settings {
-                recognizer: recognizer.into(),
-                language: language.into(),
+                profiles: vec![storage::Profile {
+                    recognizer: recognizer.into(),
+                    language: language.into(),
+                    ..Default::default()
+                }],
                 ..Default::default()
             })
         };
@@ -1444,32 +1582,29 @@ mod tests {
     fn enhanced_cleanup_is_disabled_or_one_of_three_providers() {
         let mut settings = Settings::default();
         for choice in ["disabled", "managed", "local", "remote"] {
-            settings.cleanup.enhanced = choice.into();
+            settings.profiles[0].enhanced = choice.into();
             assert!(choices_valid(&settings), "{choice}");
         }
         for choice in ["", "off", "basic", "enhanced"] {
-            settings.cleanup.enhanced = choice.into();
+            settings.profiles[0].enhanced = choice.into();
             assert!(!choices_valid(&settings), "{choice}");
         }
     }
     #[test]
     fn only_local_and_remote_cleanup_need_a_valid_endpoint() {
         let mut cleanup = crate::core::Cleanup::default();
-        assert!(check_enhanced(&cleanup).is_ok());
-        cleanup.enhanced = "managed".into();
-        assert!(check_enhanced(&cleanup).is_ok());
-        cleanup.enhanced = "local".into();
-        assert!(check_enhanced(&cleanup).is_err());
+        assert!(check_enhanced("disabled", &cleanup).is_ok());
+        assert!(check_enhanced("managed", &cleanup).is_ok());
+        assert!(check_enhanced("local", &cleanup).is_err());
         cleanup.endpoint = "http://127.0.0.1:8080/v1/chat/completions".into();
-        assert!(check_enhanced(&cleanup).is_ok());
-        cleanup.enhanced = "remote".into();
+        assert!(check_enhanced("local", &cleanup).is_ok());
         cleanup.endpoint = "https://api.example.com/v1/chat/completions".into();
         assert!(
-            check_enhanced(&cleanup).is_err(),
+            check_enhanced("remote", &cleanup).is_err(),
             "remote needs confirmation"
         );
         cleanup.remote_enabled = true;
-        assert!(check_enhanced(&cleanup).is_ok());
+        assert!(check_enhanced("remote", &cleanup).is_ok());
     }
     #[test]
     fn recording_needs_the_selected_recognizer_and_the_voice_detection_model() {
@@ -1587,5 +1722,68 @@ mod tests {
             .count();
         assert_eq!(allowed, NOTE_PER_MINUTE);
         assert!(limiter.allow("error again", start + Duration::from_secs(62)));
+    }
+    /// App state over a temp data directory with a Default and a Tiny profile.
+    fn profiled(dir: &std::path::Path) -> AppState {
+        let mut settings = Settings::default();
+        settings.profiles.push(storage::Profile {
+            id: "quick".into(),
+            name: "Quick".into(),
+            recognizer: "tiny.en".into(),
+            ..Default::default()
+        });
+        AppState {
+            data: dir.into(),
+            workers: dir.join("workers"),
+            inner: Mutex::new(Inner::new(settings)),
+            indexes: Mutex::new(storage::Indexes::new()),
+        }
+    }
+    #[test]
+    fn choosing_a_profile_between_recordings_saves_it_as_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = profiled(dir.path());
+        switch_profile(&state, "quick").unwrap();
+        assert_eq!(state.inner.locked().settings.active_profile, "quick");
+        assert_eq!(storage::load(dir.path()).unwrap().active_profile, "quick");
+        assert!(switch_profile(&state, "missing").is_err());
+    }
+    #[test]
+    fn a_profile_cannot_change_while_the_result_is_prepared() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = profiled(dir.path());
+        {
+            let mut inner = state.inner.locked();
+            inner.session.start().unwrap();
+            inner.session.finish();
+        }
+        assert!(switch_profile(&state, "quick").is_err());
+        assert_eq!(state.inner.locked().settings.active_profile, "default");
+    }
+    #[test]
+    fn a_recording_switches_to_the_chosen_profile_once_its_model_is_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = profiled(dir.path());
+        let transcriber = Transcriber::start(|| (), |_, _| Ok(String::new()));
+        {
+            let mut inner = state.inner.locked();
+            inner.session.start().unwrap();
+            inner.live = Some(Live {
+                snapshot: storage::snapshot(&inner.settings, &storage::Indexes::new()),
+                switcher: transcriber.switcher(),
+            });
+        }
+        let error = switch_profile(&state, "quick").unwrap_err();
+        assert_eq!(error, "Download the recognition model of Quick first");
+        assert_eq!(state.inner.locked().settings.active_profile, "default");
+        let tiny = inference::recognizer("tiny.en").unwrap();
+        std::fs::write(dir.path().join(tiny.name), b"x").unwrap();
+        std::fs::write(dir.path().join(inference::VAD.name), b"x").unwrap();
+        switch_profile(&state, "quick").unwrap();
+        let inner = state.inner.locked();
+        assert_eq!(inner.settings.active_profile, "quick");
+        assert_eq!(inner.live.as_ref().unwrap().snapshot.recognizer, "tiny.en");
+        drop(inner);
+        assert!(transcriber.finish().is_ok());
     }
 }

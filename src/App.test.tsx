@@ -19,24 +19,21 @@ const events = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(
     async (
-      _name: string,
+      name: string,
       callback: (event: { payload: [number, number] }) => void,
     ) => {
-      events.progress = callback;
+      if (name === "model-progress") events.progress = callback;
       return () => {};
     },
   ),
 }));
 const fixture = () => ({
   settings: {
-    repositories: [],
+    repositories: [] as { id: string; root: string; exclusions: string[] }[],
     mappings: [],
     hotkey: "Control+Space",
     activation: "push",
-    recognizer: "tiny.en",
-    language: "en",
     auto_paste: true,
-    auto_accept_suggestions: false,
     keep_history: false,
     microphone: "",
     show_overlay: true,
@@ -44,11 +41,22 @@ const fixture = () => ({
     cleanup: {
       fillers: { en: ["um", "uh"] } as Record<string, string[]>,
       excluded: [],
-      enhanced: "disabled",
       endpoint: "",
       model: "",
       remote_enabled: false,
     },
+    profiles: [
+      {
+        id: "default",
+        name: "Default",
+        language: "en",
+        recognizer: "tiny.en",
+        enhanced: "disabled",
+        repositories: [] as string[],
+        auto_accept: false,
+      },
+    ],
+    active_profile: "default",
   },
   phase: "idle",
   result: null as null | ReturnType<typeof suggestionResult>,
@@ -163,7 +171,7 @@ it("tells a copy that has the recognizer but not voice detection that one small 
   );
 });
 it("names the saved recognition model on the setup download", async () => {
-  view.settings.recognizer = "small.en";
+  view.settings.profiles[0].recognizer = "small.en";
   render(<App />);
   fireEvent.click(
     await screen.findByRole("button", {
@@ -182,7 +190,7 @@ it("saves a recognition model picked on the setup card at once, without the Sett
   );
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({ recognizer: "small.en" }),
+      settings: profileWith({ recognizer: "small.en" }),
     }),
   );
   expect(
@@ -206,7 +214,7 @@ it("keeps unsaved Settings edits when the setup card saves a recognition model",
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("save_settings", {
       settings: expect.objectContaining({
-        recognizer: "base.en",
+        profiles: [expect.objectContaining({ recognizer: "base.en" })],
         cleanup: expect.objectContaining({ fillers: { en: ["um", "uh"] } }),
       }),
     }),
@@ -216,6 +224,7 @@ it("keeps unsaved Settings edits when the setup card saves a recognition model",
     ((await screen.findByLabelText("Hesitation tokens")) as HTMLInputElement)
       .value,
   ).toBe("um, uh, er");
+  await openProfiles();
   expect(
     (
       screen.getByRole("combobox", {
@@ -227,7 +236,7 @@ it("keeps unsaved Settings edits when the setup card saves a recognition model",
 it("lets the user choose a larger recognition model, download it, and save the choice", async () => {
   install("tiny.en", "silero-vad");
   render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await openProfiles();
   const choice = (await screen.findByRole("combobox", {
     name: "Recognition model",
   })) as HTMLSelectElement;
@@ -253,14 +262,14 @@ it("lets the user choose a larger recognition model, download it, and save the c
   fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({ recognizer: "small.en" }),
+      settings: profileWith({ recognizer: "small.en" }),
     }),
   );
 });
 it("offers no download for a recognition model that is already installed", async () => {
   install("tiny.en", "base.en", "silero-vad");
   render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await openProfiles();
   fireEvent.change(
     await screen.findByRole("combobox", { name: "Recognition model" }),
     { target: { value: "base.en" } },
@@ -269,6 +278,11 @@ it("offers no download for a recognition model that is already installed", async
 });
 const openSettings = async () =>
   fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+const openProfiles = async () =>
+  fireEvent.click(await screen.findByRole("button", { name: "Profiles" }));
+/** Saved settings whose only profile matches `patch`. */
+const profileWith = (patch: Record<string, unknown>) =>
+  expect.objectContaining({ profiles: [expect.objectContaining(patch)] });
 const savedSettings = async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
   await waitFor(() =>
@@ -286,7 +300,7 @@ it("has no cleanup mode: Basic cleanup always runs and blank hesitation tokens r
 });
 it("turns Enhanced cleanup off by default and offers the S1-mini download only for the managed choice", async () => {
   render(<App />);
-  await openSettings();
+  await openProfiles();
   const choice = (await screen.findByRole("combobox", {
     name: "Enhanced cleanup",
   })) as HTMLSelectElement;
@@ -310,11 +324,11 @@ it("turns Enhanced cleanup off by default and offers the S1-mini download only f
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("download", { id: "s1-mini" }),
   );
-  expect((await savedSettings()).cleanup.enhanced).toBe("managed");
+  expect((await savedSettings()).profiles[0].enhanced).toBe("managed");
 });
 it("asks for an endpoint when Enhanced cleanup uses a local or remote model", async () => {
   render(<App />);
-  await openSettings();
+  await openProfiles();
   const choice = await screen.findByRole("combobox", {
     name: "Enhanced cleanup",
   });
@@ -420,6 +434,8 @@ it("shows recording progress without interactive controls in the overlay", () =>
         hint: "Release shortcut to finish",
         level: 0.8,
         seconds: 65,
+        profile: "",
+        profiles: [],
       }}
     />,
   );
@@ -482,7 +498,7 @@ it("saves the choice to stop checking for updates automatically", async () => {
 });
 it("saves the Auto-accept choice", async () => {
   render(<App />);
-  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await openProfiles();
   const toggle = await screen.findByRole("checkbox", {
     name: "Auto-accept repository suggestions",
   });
@@ -491,7 +507,7 @@ it("saves the Auto-accept choice", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({ auto_accept_suggestions: true }),
+      settings: profileWith({ auto_accept: true }),
     }),
   );
 });
@@ -648,6 +664,8 @@ it("shows only an animation and the timer while recording", () => {
         hint: "Release",
         level: 0.5,
         seconds: 7,
+        profile: "",
+        profiles: [],
       }}
     />,
   );
@@ -668,6 +686,8 @@ it("swaps the bars for the drawing shell while processing", () => {
         hint: "",
         level: 0,
         seconds: 9,
+        profile: "",
+        profiles: [],
       }}
     />,
   );
@@ -687,6 +707,8 @@ it("shows the message of a delivery notice", () => {
         hint: "",
         level: 0,
         seconds: 0,
+        profile: "",
+        profiles: [],
       }}
     />,
   );
@@ -794,10 +816,11 @@ const models = () => screen.queryByRole("heading", { name: "Local models" });
 it("has no separate list of local models; every download sits beside its menu", async () => {
   install("tiny.en", "silero-vad");
   render(<App />);
-  await openSettings();
+  await openProfiles();
   await screen.findByRole("combobox", { name: "Recognition model" });
   expect(models()).toBeNull();
   expect(screen.queryByRole("button", { name: "Download" })).toBeNull();
+  await openSettings();
   expect(screen.getByText("Licenses and acknowledgments")).toBeTruthy();
   expect(screen.getByText(/core dictation works offline/i)).toBeTruthy();
 });
@@ -814,7 +837,7 @@ it("builds the recognition model menu from the models the view returns", async (
     ready: false,
   });
   render(<App />);
-  await openSettings();
+  await openProfiles();
   const menu = (await screen.findByRole("combobox", {
     name: "Recognition model",
   })) as HTMLSelectElement;
@@ -839,7 +862,7 @@ const menuOptions = (name: string) =>
   );
 it("lists Auto-detect first, then English, then every other language by name", async () => {
   render(<App />);
-  await openSettings();
+  await openProfiles();
   const menu = (await screen.findByRole("combobox", {
     name: "Language",
   })) as HTMLSelectElement;
@@ -869,7 +892,7 @@ it("offers Auto-detect only while a multilingual model exists", async () => {
     (model) => model.engine !== "whisper" || model.languages.length === 1,
   );
   render(<App />);
-  await openSettings();
+  await openProfiles();
   await screen.findByRole("combobox", { name: "Language" });
   expect(menuOptions("Language").map((option) => option.value)).not.toContain(
     "auto",
@@ -877,7 +900,7 @@ it("offers Auto-detect only while a multilingual model exists", async () => {
 });
 it("switches an English-only model to Small when Auto-detect is chosen and keeps a multilingual one", async () => {
   render(<App />);
-  await openSettings();
+  await openProfiles();
   await chooseLanguage("auto");
   expect(
     menuOptions("Recognition model").map((option) => option.value),
@@ -905,8 +928,8 @@ it("switches an English-only model to Small when Auto-detect is chosen and keeps
     ).value,
   ).toBe("base");
   const saved = await savedSettings();
-  expect(saved.language).toBe("auto");
-  expect(saved.recognizer).toBe("base");
+  expect(saved.profiles[0].language).toBe("auto");
+  expect(saved.profiles[0].recognizer).toBe("base");
 });
 it("chooses Auto-detect on the setup card and saves it with a multilingual model at once", async () => {
   render(<App />);
@@ -915,16 +938,13 @@ it("chooses Auto-detect on the setup card and saves it with a multilingual model
   });
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({
-        language: "auto",
-        recognizer: "small",
-      }),
+      settings: profileWith({ language: "auto", recognizer: "small" }),
     }),
   );
 });
 it("shows only the models that support the chosen language and switches an unsupported model to Small", async () => {
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
     target: { value: "fr" },
   });
@@ -951,12 +971,18 @@ it("edits the hesitation tokens of the selected language and keeps the other lis
   await screen.findByLabelText("Hesitation tokens");
   expect(tokens().value).toBe("um,uh");
   expect(tokens().disabled).toBe(false);
-  await chooseLanguage("fr");
+  const language = async (code: string) => {
+    await openProfiles();
+    await chooseLanguage(code);
+    await openSettings();
+    await screen.findByLabelText("Hesitation tokens");
+  };
+  await language("fr");
   expect(tokens().value).toBe("");
   fireEvent.change(tokens(), { target: { value: "euh,ben" } });
-  await chooseLanguage("en");
+  await language("en");
   expect(tokens().value).toBe("um,uh");
-  await chooseLanguage("fr");
+  await language("fr");
   expect(tokens().value).toBe("euh,ben");
   const saved = await savedSettings();
   expect(saved.cleanup.fillers).toEqual({
@@ -965,10 +991,10 @@ it("edits the hesitation tokens of the selected language and keeps the other lis
   });
 });
 it("shows Auto-detect in the Language menu when that is the saved language", async () => {
-  view.settings.language = "auto";
-  view.settings.recognizer = "small";
+  view.settings.profiles[0].language = "auto";
+  view.settings.profiles[0].recognizer = "small";
   render(<App />);
-  await openSettings();
+  await openProfiles();
   const menu = (await screen.findByRole("combobox", {
     name: "Language",
   })) as HTMLSelectElement;
@@ -990,7 +1016,7 @@ it("shows Auto-detect in the Language menu when that is the saved language", asy
 });
 it("warns that Auto-detect is less reliable for short recordings and says the first chunk sets the language", async () => {
   render(<App />);
-  await openSettings();
+  await openProfiles();
   await screen.findByRole("combobox", { name: "Language" });
   expect(screen.queryByText(/auto-detect is less reliable/i)).toBeNull();
   await chooseLanguage("auto");
@@ -1003,8 +1029,8 @@ it("warns that Auto-detect is less reliable for short recordings and says the fi
   expect(screen.queryByText(/auto-detect is less reliable/i)).toBeNull();
 });
 it("disables the Hesitation tokens row for Auto-detect and says why", async () => {
-  view.settings.language = "auto";
-  view.settings.recognizer = "small";
+  view.settings.profiles[0].language = "auto";
+  view.settings.profiles[0].recognizer = "small";
   render(<App />);
   await openSettings();
   await screen.findByLabelText("Hesitation tokens");
@@ -1014,7 +1040,7 @@ it("disables the Hesitation tokens row for Auto-detect and says why", async () =
 });
 it("says that managed S1-mini cleanup and spelled-letter matching are English only", async () => {
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(
     await screen.findByRole("combobox", { name: "Enhanced cleanup" }),
     { target: { value: "managed" } },
@@ -1033,19 +1059,19 @@ it("says that managed S1-mini cleanup and spelled-letter matching are English on
   expect(screen.queryByText(/spelled-letter matching/i)).toBeNull();
 });
 it("explains the Basic cleanup fallback for Auto-detect when managed cleanup is chosen", async () => {
-  view.settings.language = "auto";
-  view.settings.recognizer = "small";
-  view.settings.cleanup.enhanced = "managed";
+  view.settings.profiles[0].language = "auto";
+  view.settings.profiles[0].recognizer = "small";
+  view.settings.profiles[0].enhanced = "managed";
   render(<App />);
-  await openSettings();
+  await openProfiles();
   expect(
     await screen.findByText(/managed s1-mini supports english only/i),
   ).toBeTruthy();
 });
 it("switches to Large Turbo for Cantonese, the only model that has it", async () => {
-  view.settings.recognizer = "small";
+  view.settings.profiles[0].recognizer = "small";
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
     target: { value: "yue" },
   });
@@ -1062,7 +1088,7 @@ it("switches to Large Turbo for Cantonese, the only model that has it", async ()
 });
 it("keeps a valid language and model pair when the setup card saves a model while Settings holds an unsaved language", async () => {
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
     target: { value: "fr" },
   });
@@ -1073,13 +1099,10 @@ it("keeps a valid language and model pair when the setup card saves a model whil
   );
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({
-        language: "en",
-        recognizer: "base.en",
-      }),
+      settings: profileWith({ language: "en", recognizer: "base.en" }),
     }),
   );
-  await openSettings();
+  await openProfiles();
   expect(
     (screen.getByRole("combobox", { name: "Language" }) as HTMLSelectElement)
       .value,
@@ -1095,14 +1118,14 @@ it("keeps a valid language and model pair when the setup card saves a model whil
     ipc.mock.calls.filter(([name]) => name === "save_settings");
   await waitFor(() => expect(saves()).toHaveLength(2));
   const saved = saves()[1][1].settings as typeof view.settings;
-  expect(saved.language).toBe("fr");
-  expect(saved.recognizer).toBe("small");
+  expect(saved.profiles[0].language).toBe("fr");
+  expect(saved.profiles[0].recognizer).toBe("small");
 });
 it("keeps the model when it supports the new language and saves the language with it", async () => {
-  view.settings.language = "fr";
-  view.settings.recognizer = "base";
+  view.settings.profiles[0].language = "fr";
+  view.settings.profiles[0].recognizer = "base";
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
     target: { value: "de" },
   });
@@ -1114,13 +1137,13 @@ it("keeps the model when it supports the new language and saves the language wit
     ).value,
   ).toBe("base");
   const saved = await savedSettings();
-  expect(saved.language).toBe("de");
-  expect(saved.recognizer).toBe("base");
+  expect(saved.profiles[0].language).toBe("de");
+  expect(saved.profiles[0].recognizer).toBe("base");
 });
 it("switches to Small (English) when the language returns to English and the model lacks it", async () => {
   view.models.find((model) => model.id === "tiny.en")!.languages = ["fr"];
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
     target: { value: "fr" },
   });
@@ -1142,10 +1165,7 @@ it("chooses the language on the setup card and saves it with its model at once",
   });
   await waitFor(() =>
     expect(ipc).toHaveBeenCalledWith("save_settings", {
-      settings: expect.objectContaining({
-        language: "fr",
-        recognizer: "small",
-      }),
+      settings: profileWith({ language: "fr", recognizer: "small" }),
     }),
   );
   expect(
@@ -1157,7 +1177,7 @@ it("chooses the language on the setup card and saves it with its model at once",
 it("marks installed recognition models in the menu and confirms the selected one is installed", async () => {
   install("tiny.en", "base.en", "silero-vad");
   render(<App />);
-  await openSettings();
+  await openProfiles();
   const menu = (await screen.findByRole("combobox", {
     name: "Recognition model",
   })) as HTMLSelectElement;
@@ -1186,7 +1206,7 @@ it("shows download progress next to the model menu and then confirms the install
   let release = () => {};
   holdDownload = new Promise((resolve) => (release = resolve));
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(
     await screen.findByRole("combobox", { name: "Recognition model" }),
     { target: { value: "small.en" } },
@@ -1224,7 +1244,7 @@ it("shows download progress next to the model menu and then confirms the install
 it("shows S1-mini progress and its installed state under Enhanced cleanup", async () => {
   holdDownload = new Promise(() => {});
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(
     await screen.findByRole("combobox", { name: "Enhanced cleanup" }),
     { target: { value: "managed" } },
@@ -1241,7 +1261,7 @@ it("shows S1-mini progress and its installed state under Enhanced cleanup", asyn
 it("confirms S1-mini is installed once Managed cleanup is chosen", async () => {
   install("s1-mini");
   render(<App />);
-  await openSettings();
+  await openProfiles();
   fireEvent.change(
     await screen.findByRole("combobox", { name: "Enhanced cleanup" }),
     { target: { value: "managed" } },
@@ -1253,11 +1273,153 @@ it("confirms S1-mini is installed once Managed cleanup is chosen", async () => {
 it("tells a copy with the recognizer but no voice detection that one small download is missing", async () => {
   install("tiny.en");
   render(<App />);
-  await openSettings();
+  await openProfiles();
   expect(
     await screen.findByRole("button", {
       name: "Download Voice detection (Silero), 0.9 MB",
     }),
   ).toBeTruthy();
   expect(screen.queryByText(/Tiny \(English\) is installed/)).toBeNull();
+});
+const twoProfiles = () => {
+  view.settings.repositories = [
+    { id: "r1", root: "/work/conch", exclusions: [] },
+    { id: "r2", root: "/work/homelab", exclusions: [] },
+  ];
+  view.settings.profiles.push({
+    id: "code",
+    name: "conch",
+    language: "en",
+    recognizer: "tiny.en",
+    enhanced: "disabled",
+    repositories: ["r1"],
+    auto_accept: true,
+  });
+  view.settings.active_profile = "code";
+};
+const ready = () => {
+  view.microphone = "granted";
+  view.accessibility = true;
+  install("tiny.en", "silero-vad");
+};
+it("shows the repository chips without a profile switcher while there is one profile", async () => {
+  ready();
+  view.settings.repositories = [
+    { id: "r1", root: "/work/conch", exclusions: [] },
+  ];
+  render(<App />);
+  expect(await screen.findByLabelText("Repository context")).toBeTruthy();
+  expect(screen.getByRole("checkbox", { name: "conch" })).toBeTruthy();
+  expect(screen.queryByRole("radiogroup", { name: "Profile" })).toBeNull();
+});
+it("switches the profile from the Dictation page at once and shows its repositories", async () => {
+  ready();
+  twoProfiles();
+  render(<App />);
+  const group = await screen.findByRole("radiogroup", { name: "Profile" });
+  const options = within(group).getAllByRole("radio");
+  expect(options.map((o) => o.textContent)).toEqual(["Default", "conch"]);
+  expect(options[1].getAttribute("aria-checked")).toBe("true");
+  expect(
+    screen.getByText(/Tiny \(English\), Basic only, 1 repository/),
+  ).toBeTruthy();
+  const conch = screen.getByRole("checkbox", {
+    name: "conch",
+  }) as HTMLInputElement;
+  expect(conch.checked).toBe(true);
+  fireEvent.click(options[0]);
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("choose_profile", { id: "default" }),
+  );
+});
+it("saves a repository chip to the active profile only", async () => {
+  ready();
+  twoProfiles();
+  render(<App />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: "homelab" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", expect.anything()),
+  );
+  const saved = ipc.mock.calls.find(([name]) => name === "save_settings")![1]
+    .settings as typeof view.settings;
+  expect(saved.profiles.map((p) => p.repositories)).toEqual([[], ["r1", "r2"]]);
+});
+it("adds, renames, activates, and deletes profiles on the Profiles page", async () => {
+  render(<App />);
+  await openProfiles();
+  expect(screen.queryByRole("button", { name: "Delete profile" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "+ New profile" }));
+  fireEvent.change(screen.getByLabelText("Profile name"), {
+    target: { value: "Writing" },
+  });
+  fireEvent.change(screen.getByRole("combobox", { name: "Enhanced cleanup" }), {
+    target: { value: "managed" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Make active" }));
+  const list = screen.getByRole("list", { name: "Profiles" });
+  expect(
+    within(list)
+      .getAllByRole("listitem")
+      .map((i) => i.textContent),
+  ).toEqual([
+    "DefaultTiny (English), Basic only, No repositories",
+    "WritingTiny (English), Managed S1-mini, No repositoriesActive",
+  ]);
+  const saved = await savedSettings();
+  expect(saved.profiles.map((p) => [p.name, p.enhanced])).toEqual([
+    ["Default", "disabled"],
+    ["Writing", "managed"],
+  ]);
+  expect(saved.active_profile).toBe(saved.profiles[1].id);
+  fireEvent.click(screen.getByRole("button", { name: "Delete profile" }));
+  expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+});
+it("keeps recognition, Enhanced cleanup, and Auto-accept off the Settings page", async () => {
+  render(<App />);
+  await openSettings();
+  await screen.findByLabelText("Hesitation tokens");
+  expect(
+    screen.queryByRole("combobox", { name: "Recognition model" }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("combobox", { name: "Enhanced cleanup" }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("checkbox", {
+      name: "Auto-accept repository suggestions",
+    }),
+  ).toBeNull();
+  expect(screen.queryByText(/moved to profiles/i)).toBeNull();
+});
+it("gives a new repository to the active profile only", async () => {
+  twoProfiles();
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Repositories" }));
+  fireEvent.click(screen.getByRole("button", { name: "Enter a path instead" }));
+  fireEvent.change(screen.getByLabelText("Repository path"), {
+    target: { value: "/work/skills" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add path" }));
+  const saved = await savedSettings();
+  const added = saved.repositories.find((r) => r.root === "/work/skills")!.id;
+  expect(saved.profiles[0].repositories).toEqual([]);
+  expect(saved.profiles[1].repositories).toEqual(["r1", added]);
+});
+it("saves a model picked on the setup card to the active profile", async () => {
+  twoProfiles();
+  view.settings.profiles[1].recognizer = "base.en";
+  render(<App />);
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Recognition model" }),
+    { target: { value: "small.en" } },
+  );
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", expect.anything()),
+  );
+  const saved = ipc.mock.calls.find(([name]) => name === "save_settings")![1]
+    .settings as typeof view.settings;
+  expect(saved.profiles.map((p) => p.recognizer)).toEqual([
+    "tiny.en",
+    "small.en",
+  ]);
 });

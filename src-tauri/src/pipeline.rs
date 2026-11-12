@@ -19,10 +19,19 @@ enum Job {
         samples: Vec<f32>,
         reuse: Option<Range<usize>>,
     },
+    /// Recognize and clean the recording with another profile from here on,
+    /// starting with the audio already heard.
+    Switch {
+        recognize: Recognizer,
+        clean: Option<Cleaner>,
+    },
+    End,
 }
 
+/// Recognizes one chunk, tail, or speculation given as WAV bytes.
+pub type Recognizer = Box<dyn Fn(Vec<u8>, bool) -> Result<String, String> + Send>;
 /// Cleans the text of one chunk or tail.
-type Cleaner = Box<dyn Fn(&str) -> Result<String, String> + Send>;
+pub type Cleaner = Box<dyn Fn(&str) -> Result<String, String> + Send>;
 
 /// The text of a recording and whether the tail came from a speculation.
 #[derive(Debug)]
@@ -34,8 +43,55 @@ pub struct Recognized {
     /// When the last part was recognized, before its cleaning finished.
     pub recognized_at: std::time::Instant,
     /// The cleaned parts joined, or the first cleaning failure; `None` when the
-    /// transcriber was started without a cleaner.
+    /// recording ends without a cleaner.
     pub cleaned: Option<Result<String, String>>,
+}
+
+/// Cleans parts on its own thread in the order they are sent.
+struct Cleaning {
+    send: mpsc::Sender<String>,
+    thread: JoinHandle<Result<String, String>>,
+    /// Set when the parts sent so far are no longer wanted, so the queued ones are skipped.
+    abandoned: Arc<AtomicBool>,
+}
+impl Cleaning {
+    fn start(clean: Cleaner) -> Self {
+        let (send, receive) = mpsc::channel::<String>();
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::spawn({
+            let abandoned = abandoned.clone();
+            move || {
+                let mut cleaned: Vec<String> = vec![];
+                let mut failure = None;
+                for part in receive {
+                    if failure.is_some() || abandoned.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    match clean(&part) {
+                        Ok(text) if !text.trim().is_empty() => cleaned.push(text.trim().to_owned()),
+                        Ok(_) => (),
+                        Err(error) => failure = Some(error),
+                    }
+                }
+                failure.map_or_else(|| Ok(cleaned.join(" ")), Err)
+            }
+        });
+        Self {
+            send,
+            thread,
+            abandoned,
+        }
+    }
+    /// Stops cleaning without waiting. A cleaning already in progress ends on its own.
+    fn abandon(self) {
+        self.abandoned.store(true, Ordering::Relaxed);
+    }
+    fn finish(self) -> Result<String, String> {
+        drop(self.send);
+        self.thread
+            .join()
+            .unwrap_or_else(|_| Err("Cleanup worker failed".into()))
+    }
 }
 
 /// Recognizes chunks of a recording on a background thread while the
@@ -45,9 +101,22 @@ pub struct Recognized {
 /// The audio since the last chunk can also be recognized speculatively once
 /// speech ends. If the recording then stops without more speech, the tail
 /// reuses that text instead of being recognized again.
+///
+/// A `Switcher` changes the recognizer and cleaner while the recording runs.
+/// The audio already heard is recognized and cleaned again with the new ones,
+/// so the result is the same as if the recording had started with them.
 pub struct Transcriber {
     send: mpsc::Sender<Job>,
     thread: JoinHandle<Result<Recognized, String>>,
+}
+/// Sends a profile switch to a running `Transcriber`. A switch sent after the
+/// recording finished is ignored.
+#[derive(Clone)]
+pub struct Switcher(mpsc::Sender<Job>);
+impl Switcher {
+    pub fn switch(&self, recognize: Recognizer, clean: Option<Cleaner>) {
+        let _ = self.0.send(Job::Switch { recognize, clean });
+    }
 }
 impl Transcriber {
     /// `warm` runs first on the background thread so the recognizer loads while
@@ -58,7 +127,7 @@ impl Transcriber {
         warm: impl FnOnce() + Send + 'static,
         recognize: impl Fn(Vec<u8>, bool) -> Result<String, String> + Send + 'static,
     ) -> Self {
-        Self::spawn(warm, recognize, None)
+        Self::spawn(warm, Box::new(recognize), None)
     }
     /// Like `start`, and `clean` also runs on a second thread on the text of each
     /// chunk and of the tail as soon as it is recognized, so only the tail's
@@ -69,51 +138,37 @@ impl Transcriber {
         recognize: impl Fn(Vec<u8>, bool) -> Result<String, String> + Send + 'static,
         clean: impl Fn(&str) -> Result<String, String> + Send + 'static,
     ) -> Self {
-        Self::spawn(warm, recognize, Some(Box::new(clean)))
+        Self::spawn(warm, Box::new(recognize), Some(Box::new(clean)))
+    }
+    /// Starts with an optional cleaner, as `start` or `start_cleaning` would.
+    pub fn with(
+        warm: impl FnOnce() + Send + 'static,
+        recognize: Recognizer,
+        clean: Option<Cleaner>,
+    ) -> Self {
+        Self::spawn(warm, recognize, clean)
     }
     fn spawn(
         warm: impl FnOnce() + Send + 'static,
-        recognize: impl Fn(Vec<u8>, bool) -> Result<String, String> + Send + 'static,
+        recognize: Recognizer,
         clean: Option<Cleaner>,
     ) -> Self {
         let (send, receive) = mpsc::channel::<Job>();
         let thread = std::thread::spawn(move || {
             warm();
-            // Set when recognition fails, so parts still queued for cleaning are
-            // skipped.
-            let abandoned = Arc::new(AtomicBool::new(false));
-            let cleaner = clean.map(|clean| {
-                let (send, receive) = mpsc::channel::<String>();
-                let thread = std::thread::spawn({
-                    let abandoned = abandoned.clone();
-                    move || {
-                        let mut cleaned: Vec<String> = vec![];
-                        let mut failure = None;
-                        for part in receive {
-                            if failure.is_some() || abandoned.load(Ordering::Relaxed) {
-                                continue;
-                            }
-                            match clean(&part) {
-                                Ok(text) if !text.trim().is_empty() => {
-                                    cleaned.push(text.trim().to_owned())
-                                }
-                                Ok(_) => (),
-                                Err(error) => failure = Some(error),
-                            }
-                        }
-                        failure.map_or_else(|| Ok(cleaned.join(" ")), Err)
-                    }
-                });
-                (send, thread)
-            });
-            let run = |samples: Vec<f32>, speculative: bool| {
-                crate::audio::wav(&samples).and_then(|wav| recognize(wav, speculative))
-            };
+            let mut recognize = recognize;
+            let mut cleaner = clean.map(Cleaning::start);
+            // The final audio of each chunk and of the tail, kept so a switch can
+            // recognize it again.
+            let mut heard: Vec<Vec<f32>> = vec![];
             let mut parts = vec![];
             let mut failure = None;
             let mut speculation: Option<(Range<usize>, String)> = None;
             let mut speculative = false;
             let mut queue = VecDeque::new();
+            let run = |recognize: &Recognizer, samples: &[f32], speculative: bool| {
+                crate::audio::wav(samples).and_then(|wav| recognize(wav, speculative))
+            };
             loop {
                 if queue.is_empty() {
                     match receive.recv() {
@@ -123,74 +178,108 @@ impl Transcriber {
                 }
                 queue.extend(receive.try_iter());
                 let job = queue.pop_front().expect("the queue was filled above");
-                if failure.is_some() {
-                    continue;
-                }
-                // A later speculation or chunk makes this speculation useless,
-                // so do not spend the recognizer on it.
+                // A later speculation, chunk, or switch makes this speculation
+                // useless, so do not spend the recognizer on it.
                 if matches!(job, Job::Speculate { .. })
-                    && queue
-                        .iter()
-                        .any(|next| matches!(next, Job::Speculate { .. } | Job::Chunk(_)))
+                    && queue.iter().any(|next| {
+                        matches!(
+                            next,
+                            Job::Speculate { .. } | Job::Chunk(_) | Job::Switch { .. }
+                        )
+                    })
                 {
                     continue;
                 }
-                let result = match job {
+                let texts: Vec<Result<String, String>> = match job {
+                    Job::End => break,
+                    Job::Switch {
+                        recognize: next,
+                        clean,
+                    } => {
+                        recognize = next;
+                        if let Some(old) = cleaner.take() {
+                            old.abandon();
+                        }
+                        cleaner = clean.map(Cleaning::start);
+                        parts.clear();
+                        failure = None;
+                        speculation = None;
+                        speculative = false;
+                        heard
+                            .iter()
+                            .map(|samples| run(&recognize, samples, false))
+                            .collect()
+                    }
+                    _ if failure.is_some() => {
+                        if let Job::Chunk(samples) | Job::Tail { samples, .. } = job {
+                            heard.push(samples);
+                        }
+                        continue;
+                    }
                     Job::Chunk(samples) => {
                         speculation = None;
-                        run(samples, false)
+                        let text = run(&recognize, &samples, false);
+                        heard.push(samples);
+                        vec![text]
                     }
                     Job::Speculate { range, samples } => {
-                        speculation = run(samples, true).ok().map(|text| (range, text));
+                        speculation = run(&recognize, &samples, true)
+                            .ok()
+                            .map(|text| (range, text));
                         continue;
                     }
                     Job::Tail { samples, reuse } => {
-                        match reuse
+                        let text = match reuse
                             .and_then(|range| speculation.take().filter(|(at, _)| *at == range))
                         {
                             Some((_, text)) => {
                                 speculative = true;
                                 Ok(text)
                             }
-                            None => run(samples, false),
-                        }
+                            None => run(&recognize, &samples, false),
+                        };
+                        heard.push(samples);
+                        vec![text]
                     }
                 };
-                match result {
-                    Ok(text) if !text.trim().is_empty() => {
-                        let text = text.trim().to_owned();
-                        if let Some((send, _)) = &cleaner {
-                            let _ = send.send(text.clone());
-                        }
-                        parts.push(text);
+                for result in texts {
+                    if failure.is_some() {
+                        break;
                     }
-                    Ok(_) => (),
-                    Err(error) => failure = Some(error),
+                    match result {
+                        Ok(text) if !text.trim().is_empty() => {
+                            let text = text.trim().to_owned();
+                            if let Some(cleaning) = &cleaner {
+                                let _ = cleaning.send.send(text.clone());
+                            }
+                            parts.push(text);
+                        }
+                        Ok(_) => (),
+                        Err(error) => failure = Some(error),
+                    }
                 }
             }
             let recognized_at = std::time::Instant::now();
             if let Some(error) = failure {
                 // The recording is recognized again as a whole, so the cleaning
-                // of its parts is not needed. A cleaning already in progress
-                // ends on its own.
-                abandoned.store(true, Ordering::Relaxed);
+                // of its parts is not needed.
+                if let Some(cleaning) = cleaner {
+                    cleaning.abandon();
+                }
                 return Err(error);
             }
-            let cleaned = cleaner.map(|(send, thread)| {
-                drop(send);
-                thread
-                    .join()
-                    .unwrap_or_else(|_| Err("Cleanup worker failed".into()))
-            });
             Ok(Recognized {
                 text: parts.join(" "),
                 parts,
                 speculative,
                 recognized_at,
-                cleaned,
+                cleaned: cleaner.map(Cleaning::finish),
             })
         });
         Self { send, thread }
+    }
+    pub fn switcher(&self) -> Switcher {
+        Switcher(self.send.clone())
     }
     pub fn push(&self, samples: Vec<f32>) {
         let _ = self.send.send(Job::Chunk(samples));
@@ -207,8 +296,9 @@ impl Transcriber {
     pub fn push_tail(&self, samples: Vec<f32>, reuse: Option<Range<usize>>) {
         let _ = self.send.send(Job::Tail { samples, reuse });
     }
+    /// Waits for the jobs sent before it. A switch sent after it is ignored.
     pub fn finish(self) -> Result<Recognized, String> {
-        drop(self.send);
+        let _ = self.send.send(Job::End);
         self.thread
             .join()
             .map_err(|_| "Recognition worker failed".to_string())?
@@ -688,5 +778,84 @@ mod tests {
             transcriber.finish().unwrap().parts,
             vec![format!("text{a}"), format!("text{b}")]
         );
+    }
+    /// Recognizes each request as `<prefix><bytes>`.
+    fn labeled(prefix: &'static str) -> impl Fn(Vec<u8>, bool) -> Result<String, String> + use<> {
+        move |wav, _| Ok(format!("{prefix}{}", wav.len()))
+    }
+    #[test]
+    fn switching_recognizes_the_audio_heard_so_far_again_with_the_new_recognizer() {
+        let transcriber = Transcriber::start(|| (), labeled("a"));
+        let switcher = transcriber.switcher();
+        transcriber.push(chunk(100));
+        transcriber.push(chunk(200));
+        switcher.switch(Box::new(labeled("b")), None);
+        transcriber.push_tail(chunk(50), None);
+        let [first, second, tail] = sizes(&[100, 200, 50])[..] else {
+            unreachable!()
+        };
+        let outcome = transcriber.finish().unwrap();
+        assert_eq!(outcome.text, format!("b{first} b{second} b{tail}"));
+        assert_eq!(outcome.parts.len(), 3);
+    }
+    #[test]
+    fn a_switch_after_the_tail_recognizes_the_tail_again_too() {
+        let transcriber = Transcriber::start(|| (), labeled("a"));
+        let switcher = transcriber.switcher();
+        transcriber.push(chunk(100));
+        transcriber.push_tail(chunk(50), None);
+        switcher.switch(Box::new(labeled("b")), None);
+        let [first, tail] = sizes(&[100, 50])[..] else {
+            unreachable!()
+        };
+        assert_eq!(
+            transcriber.finish().unwrap().text,
+            format!("b{first} b{tail}")
+        );
+    }
+    #[test]
+    fn switching_cleans_every_part_again_with_the_new_cleaner() {
+        let transcriber =
+            Transcriber::start_cleaning(|| (), labeled("t"), |part| Ok(format!("old {part}")));
+        let switcher = transcriber.switcher();
+        transcriber.push(chunk(100));
+        switcher.switch(
+            Box::new(labeled("t")),
+            Some(Box::new(|part: &str| Ok(format!("new {part}")))),
+        );
+        transcriber.push_tail(chunk(50), None);
+        let [first, tail] = sizes(&[100, 50])[..] else {
+            unreachable!()
+        };
+        assert_eq!(
+            transcriber.finish().unwrap().cleaned.unwrap().unwrap(),
+            format!("new t{first} new t{tail}")
+        );
+    }
+    #[test]
+    fn switching_to_a_profile_without_cleaning_returns_no_cleaned_text() {
+        let transcriber =
+            Transcriber::start_cleaning(|| (), labeled("t"), |part| Ok(format!("old {part}")));
+        transcriber.push(chunk(100));
+        transcriber.switcher().switch(Box::new(labeled("t")), None);
+        assert!(transcriber.finish().unwrap().cleaned.is_none());
+    }
+    #[test]
+    fn a_switch_after_a_failed_chunk_recognizes_the_recording_with_the_new_recognizer() {
+        let transcriber = Transcriber::start(|| (), |_, _| Err("worker died".into()));
+        transcriber.push(chunk(100));
+        transcriber.switcher().switch(Box::new(labeled("b")), None);
+        let [first] = sizes(&[100])[..] else {
+            unreachable!()
+        };
+        assert_eq!(transcriber.finish().unwrap().text, format!("b{first}"));
+    }
+    #[test]
+    fn a_switcher_that_outlives_the_recording_does_not_block_finish() {
+        let transcriber = Transcriber::start(|| (), labeled("a"));
+        let switcher = transcriber.switcher();
+        transcriber.push(chunk(10));
+        assert!(transcriber.finish().is_ok());
+        switcher.switch(Box::new(labeled("b")), None);
     }
 }

@@ -2,6 +2,7 @@
 #import <AppKit/AppKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <objc/message.h>
 
 int conch_microphone_status(void) {
     return (int)[AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
@@ -43,6 +44,22 @@ void conch_overlay_visibility(void *window, bool visible) {
     content.layer.cornerRadius = NSHeight(content.bounds) / 2.0;
     content.layer.masksToBounds = YES;
     if (visible) [panel orderFrontRegardless]; else [panel orderOut:nil];
+}
+
+// Lets the indicator take clicks while it lists profiles. Clicks must not
+// activate Conch, or the app being dictated into loses its focused field.
+void conch_overlay_interactive(void *window, bool interactive) {
+    NSWindow *panel = (__bridge NSWindow *)window;
+    panel.ignoresMouseEvents = !interactive;
+    SEL prevents = NSSelectorFromString(@"_setPreventsActivation:");
+    if ([panel respondsToSelector:prevents]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(panel, prevents, interactive);
+    }
+}
+// Activates the application with `pid` again when Conch became active.
+void conch_return_focus(int pid) {
+    if (pid <= 0 || !NSApp.isActive) return;
+    [[NSRunningApplication runningApplicationWithProcessIdentifier:pid] activateWithOptions:0];
 }
 
 int conch_overlay_focus_test(void) {

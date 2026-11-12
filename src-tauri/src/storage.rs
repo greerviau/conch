@@ -12,8 +12,38 @@ use std::{
 pub struct Repository {
     pub id: String,
     pub root: PathBuf,
-    pub selected: bool,
     pub exclusions: Vec<String>,
+}
+/// A named set of the choices a recording uses: the recognition language and
+/// model, Enhanced cleanup, and the repositories that supply context.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Profile {
+    pub id: String,
+    pub name: String,
+    /// ISO code from `languages::LANGUAGES`, or `auto`.
+    pub language: String,
+    /// Id of the recognition model, from `inference::RECOGNIZERS`.
+    pub recognizer: String,
+    /// Enhanced cleanup: `disabled`, `managed`, `local`, or `remote`.
+    pub enhanced: String,
+    /// Ids of the repositories whose vocabulary and mappings a recording uses.
+    pub repositories: Vec<String>,
+    /// Whether a repository suggestion with one candidate is applied without review.
+    pub auto_accept: bool,
+}
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            id: "default".into(),
+            name: "Default".into(),
+            language: "en".into(),
+            recognizer: "small.en".into(),
+            enhanced: "disabled".into(),
+            repositories: vec![],
+            auto_accept: false,
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -25,24 +55,16 @@ pub struct Settings {
     pub activation: String,
     /// Whether to paste into the focused field. Off copies the result only.
     pub auto_paste: bool,
-    /// Whether a repository suggestion with one candidate is applied without review.
-    pub auto_accept_suggestions: bool,
     /// Whether delivered results are saved to the history on disk.
     pub keep_history: bool,
     /// Name of the input device. Empty follows the system input.
     pub microphone: String,
-    /// Id of the recognition model, from `inference::RECOGNIZERS`.
-    #[serde(default = "legacy_recognizer")]
-    pub recognizer: String,
-    /// ISO code from `languages::LANGUAGES`, or `auto`.
-    pub language: String,
     pub show_overlay: bool,
     pub check_updates: bool,
-}
-/// Only Tiny existed before the choice, so settings saved without the field belong to a copy
-/// that has Tiny installed and nothing else. A new install uses `Settings::default` instead.
-fn legacy_recognizer() -> String {
-    "tiny.en".into()
+    /// Never empty once loaded or saved.
+    pub profiles: Vec<Profile>,
+    /// Id of the profile a recording uses.
+    pub active_profile: String,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -53,16 +75,95 @@ impl Default for Settings {
             hotkey: "CommandOrControl+Shift+Space".into(),
             activation: "push".into(),
             auto_paste: true,
-            auto_accept_suggestions: false,
             keep_history: false,
             microphone: String::new(),
-            recognizer: "small.en".into(),
-            language: "en".into(),
             show_overlay: true,
             check_updates: true,
+            profiles: vec![Profile::default()],
+            active_profile: Profile::default().id,
         }
     }
 }
+impl Settings {
+    /// The profile a recording uses: the active one, or the first when the id is unknown.
+    pub fn active(&self) -> &Profile {
+        self.profiles
+            .iter()
+            .find(|p| p.id == self.active_profile)
+            .or(self.profiles.first())
+            .expect("settings keep at least one profile")
+    }
+    pub fn active_mut(&mut self) -> &mut Profile {
+        let index = self
+            .profiles
+            .iter()
+            .position(|p| p.id == self.active_profile)
+            .unwrap_or(0);
+        &mut self.profiles[index]
+    }
+}
+/// Settings saved before profiles held the language, model, Enhanced cleanup,
+/// repository selection, and Auto-accept at the top level. They become one
+/// profile named Default.
+fn profile_before_profiles(json: &serde_json::Value) -> Profile {
+    let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
+    let defaults = Profile::default();
+    Profile {
+        language: text(&json["language"]).unwrap_or(defaults.language),
+        // Only Tiny existed before the model choice, so a copy that saved settings
+        // without one has Tiny installed and nothing else.
+        recognizer: text(&json["recognizer"]).unwrap_or_else(|| "tiny.en".into()),
+        enhanced: text(&json["cleanup"]["enhanced"]).unwrap_or(defaults.enhanced),
+        repositories: json["repositories"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["selected"].as_bool().unwrap_or(false))
+            .filter_map(|r| text(&r["id"]))
+            .collect(),
+        auto_accept: json["auto_accept_suggestions"].as_bool().unwrap_or(false),
+        ..defaults
+    }
+}
+/// Keeps each profile's choices to values this build offers, its repositories to
+/// configured ones, and at least one profile with a valid active id.
+pub fn normalize(settings: &mut Settings) {
+    let known: Vec<String> = settings.repositories.iter().map(|r| r.id.clone()).collect();
+    for profile in &mut settings.profiles {
+        // A model id this build does not offer would make every settings save fail.
+        if crate::inference::recognizer(&profile.recognizer).is_none() {
+            profile.recognizer = Profile::default().recognizer;
+        }
+        if !crate::languages::known(&profile.language) {
+            profile.language = Profile::default().language;
+        }
+        // Keep the language and move to a model that can recognize it. If that
+        // model is not installed, recording asks for the download.
+        if crate::inference::recognizer(&profile.recognizer)
+            .is_some_and(|model| !model.supports(&profile.language))
+            && let Some(model) = crate::inference::smallest_supporting(&profile.language)
+        {
+            profile.recognizer = model.id.into();
+        }
+        if !ENHANCED.contains(&profile.enhanced.as_str()) {
+            profile.enhanced = Profile::default().enhanced;
+        }
+        profile.repositories.retain(|id| known.contains(id));
+        profile.repositories.dedup();
+    }
+    if settings.profiles.is_empty() {
+        settings.profiles.push(Profile::default());
+    }
+    if !settings
+        .profiles
+        .iter()
+        .any(|p| p.id == settings.active_profile)
+    {
+        settings.active_profile = settings.profiles[0].id.clone();
+    }
+}
+/// The Enhanced cleanup choices a profile can hold.
+pub const ENHANCED: [&str; 4] = ["disabled", "managed", "local", "remote"];
 /// The `user_version` of the current schema. Version 1 keeps each index's
 /// status in columns, so reading the status does not parse the entries.
 const SCHEMA: i64 = 1;
@@ -100,24 +201,19 @@ pub fn load(dir: &Path) -> Result<Settings, String> {
         .query_row("SELECT value FROM settings WHERE id=1", [], |r| r.get(0))
         .optional()
         .map_err(|_| "Cannot read settings")?;
-    let mut settings: Settings = json
-        .map(|j| serde_json::from_str(&j).map_err(|_| "Settings are invalid".to_string()))
-        .unwrap_or_else(|| Ok(Settings::default()))?;
-    // A model id this build does not offer would make every settings save fail.
-    if crate::inference::recognizer(&settings.recognizer).is_none() {
-        settings.recognizer = Settings::default().recognizer;
+    let Some(json) = json else {
+        return Ok(Settings::default());
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&json).map_err(|_| "Settings are invalid".to_string())?;
+    let mut settings: Settings =
+        serde_json::from_value(value.clone()).map_err(|_| "Settings are invalid".to_string())?;
+    if value.get("profiles").is_none() {
+        let profile = profile_before_profiles(&value);
+        settings.active_profile = profile.id.clone();
+        settings.profiles = vec![profile];
     }
-    if !crate::languages::known(&settings.language) {
-        settings.language = Settings::default().language;
-    }
-    // Keep the language and move to a model that can recognize it. If that model
-    // is not installed, recording asks for the download.
-    if crate::inference::recognizer(&settings.recognizer)
-        .is_some_and(|model| !model.supports(&settings.language))
-        && let Some(model) = crate::inference::smallest_supporting(&settings.language)
-    {
-        settings.recognizer = model.id.into();
-    }
+    normalize(&mut settings);
     Ok(settings)
 }
 pub fn save(dir: &Path, settings: &Settings) -> Result<(), String> {
@@ -182,10 +278,11 @@ pub fn indexes(dir: &Path) -> Result<Indexes, String> {
 /// The context snapshot for a recording that starts with `settings`, from the
 /// vocabulary indexes held in memory.
 pub fn snapshot(settings: &Settings, indexes: &Indexes) -> Snapshot {
+    let profile = settings.active();
     let selected: Vec<_> = settings
         .repositories
         .iter()
-        .filter(|r| r.selected && r.root.is_dir())
+        .filter(|r| profile.repositories.contains(&r.id) && r.root.is_dir())
         .map(|r| r.id.as_str())
         .collect();
     let vocabulary = selected
@@ -208,9 +305,10 @@ pub fn snapshot(settings: &Settings, indexes: &Indexes) -> Snapshot {
         mappings,
         vocabulary,
         cleanup: settings.cleanup.clone(),
-        auto_accept: settings.auto_accept_suggestions,
-        language: settings.language.clone(),
-        recognizer: settings.recognizer.clone(),
+        enhanced: profile.enhanced.clone(),
+        auto_accept: profile.auto_accept,
+        language: profile.language.clone(),
+        recognizer: profile.recognizer.clone(),
     }
 }
 /// What the interface shows for a repository index.
@@ -359,23 +457,32 @@ mod tests {
         sample(dir.path());
         assert_eq!(index_status(dir.path()).unwrap()[0].1.entries, 6);
     }
+    fn with_profile(profile: Profile) -> Settings {
+        Settings {
+            active_profile: profile.id.clone(),
+            profiles: vec![profile],
+            ..Default::default()
+        }
+    }
+    fn stored(dir: &Path, json: &str) {
+        open(dir)
+            .unwrap()
+            .execute("INSERT OR REPLACE INTO settings VALUES (1, ?1)", [json])
+            .unwrap();
+    }
     #[test]
-    fn the_snapshot_takes_vocabulary_from_selected_available_indexes_in_memory() {
+    fn the_snapshot_takes_vocabulary_from_the_active_profiles_available_indexes_in_memory() {
         let root = tempfile::tempdir().unwrap();
-        let repository = |id: &str, selected: bool| Repository {
+        let repository = |id: &str| Repository {
             id: id.into(),
             root: root.path().into(),
-            selected,
             exclusions: vec![],
         };
-        let settings = Settings {
-            repositories: vec![
-                repository("a", true),
-                repository("b", false),
-                repository("c", true),
-            ],
+        let mut settings = with_profile(Profile {
+            repositories: vec!["a".into(), "c".into()],
             ..Default::default()
-        };
+        });
+        settings.repositories = vec![repository("a"), repository("b"), repository("c")];
         let index = |text: &str, available: bool| {
             Arc::new(Index {
                 entries: vec![term(text, "x.ts")],
@@ -396,6 +503,137 @@ mod tests {
         assert_eq!(texts, ["Alpha"]);
     }
     #[test]
+    fn the_snapshot_uses_the_active_profile_and_ignores_the_others() {
+        let root = tempfile::tempdir().unwrap();
+        let mut settings = Settings {
+            repositories: ["code", "infra"]
+                .map(|id| Repository {
+                    id: id.into(),
+                    root: root.path().into(),
+                    exclusions: vec![],
+                })
+                .to_vec(),
+            mappings: ["code", "infra"]
+                .map(|id| Mapping {
+                    phrase: id.into(),
+                    replacement: id.to_uppercase(),
+                    repository: Some(id.into()),
+                    enabled: true,
+                })
+                .to_vec(),
+            profiles: vec![
+                Profile {
+                    id: "writing".into(),
+                    name: "Writing".into(),
+                    enhanced: "managed".into(),
+                    ..Default::default()
+                },
+                Profile {
+                    id: "code".into(),
+                    name: "Code".into(),
+                    recognizer: "tiny.en".into(),
+                    repositories: vec!["code".into()],
+                    auto_accept: true,
+                    ..Default::default()
+                },
+            ],
+            active_profile: "code".into(),
+            ..Default::default()
+        };
+        let indexes = Indexes::from(["code", "infra"].map(|id| {
+            (
+                id.to_string(),
+                Arc::new(Index {
+                    entries: vec![term(&format!("{id}Term"), "x.ts")],
+                    available: true,
+                    ..Default::default()
+                }),
+            )
+        }));
+        let code = snapshot(&settings, &indexes);
+        assert_eq!(code.recognizer, "tiny.en");
+        assert_eq!(code.enhanced, "disabled");
+        assert!(code.auto_accept);
+        assert_eq!(code.vocabulary[0].text, "codeTerm");
+        assert_eq!(code.vocabulary.len(), 1);
+        assert_eq!(code.mappings.len(), 1);
+        assert_eq!(code.mappings[0].replacement, "CODE");
+        settings.active_profile = "writing".into();
+        let writing = snapshot(&settings, &indexes);
+        assert_eq!(writing.recognizer, "small.en");
+        assert_eq!(writing.enhanced, "managed");
+        assert!(!writing.auto_accept);
+        assert!(writing.vocabulary.is_empty() && writing.mappings.is_empty());
+    }
+    #[test]
+    fn a_new_install_has_one_default_profile_with_small_english_and_no_repositories() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = load(dir.path()).unwrap();
+        assert_eq!(settings.profiles.len(), 1);
+        let profile = settings.active();
+        assert_eq!(profile.name, "Default");
+        assert_eq!(
+            (profile.language.as_str(), profile.recognizer.as_str()),
+            ("en", "small.en")
+        );
+        assert_eq!(profile.enhanced, "disabled");
+        assert!(profile.repositories.is_empty() && !profile.auto_accept);
+    }
+    #[test]
+    fn settings_saved_before_profiles_become_one_default_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        stored(
+            dir.path(),
+            r#"{"repositories":[{"id":"a","root":"/a","selected":true,"exclusions":[]},{"id":"b","root":"/b","selected":false,"exclusions":[]}],"cleanup":{"enhanced":"local","endpoint":"http://127.0.0.1:1/v1"},"auto_accept_suggestions":true,"recognizer":"base","language":"fr","hotkey":"Control+Space"}"#,
+        );
+        let settings = load(dir.path()).unwrap();
+        assert_eq!(settings.profiles.len(), 1);
+        assert_eq!(settings.active_profile, settings.profiles[0].id);
+        assert_eq!(
+            settings.profiles[0],
+            Profile {
+                language: "fr".into(),
+                recognizer: "base".into(),
+                enhanced: "local".into(),
+                repositories: vec!["a".into()],
+                auto_accept: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(settings.cleanup.endpoint, "http://127.0.0.1:1/v1");
+        assert_eq!(settings.hotkey, "Control+Space");
+        assert_eq!(settings.repositories.len(), 2);
+    }
+    #[test]
+    fn settings_saved_before_the_model_choice_keep_tiny_english() {
+        // Only Tiny existed before the choice, so a copy that saved settings then has it installed.
+        let dir = tempfile::tempdir().unwrap();
+        stored(dir.path(), r#"{"hotkey":"Control+Space"}"#);
+        let settings = load(dir.path()).unwrap();
+        assert_eq!(settings.active().recognizer, "tiny.en");
+        assert_eq!(settings.active().language, "en");
+    }
+    #[test]
+    fn loading_keeps_one_profile_a_valid_active_id_and_only_configured_repositories() {
+        let dir = tempfile::tempdir().unwrap();
+        stored(
+            dir.path(),
+            r#"{"profiles":[],"active_profile":"gone","repositories":[]}"#,
+        );
+        let settings = load(dir.path()).unwrap();
+        assert_eq!(settings.profiles, vec![Profile::default()]);
+        assert_eq!(settings.active_profile, "default");
+        stored(
+            dir.path(),
+            r#"{"repositories":[{"id":"a","root":"/a","exclusions":[]}],"profiles":[{"id":"p","name":"P","repositories":["a","gone"],"enhanced":"basic"},{"id":"q","name":"Q"}],"active_profile":"missing"}"#,
+        );
+        let settings = load(dir.path()).unwrap();
+        assert_eq!(settings.active_profile, "p");
+        assert_eq!(settings.profiles[0].repositories, ["a"]);
+        assert_eq!(settings.profiles[0].enhanced, "disabled");
+        assert_eq!(settings.profiles[1].recognizer, "small.en");
+    }
+    #[test]
     fn automatic_update_checks_are_on_by_default_and_for_settings_saved_before_they_existed() {
         assert!(Settings::default().check_updates);
         let older = r#"{"hotkey":"Control+Space","activation":"push"}"#;
@@ -403,16 +641,6 @@ mod tests {
         assert!(loaded.check_updates);
         let off: Settings = serde_json::from_str(r#"{"check_updates":false}"#).unwrap();
         assert!(!off.check_updates);
-    }
-
-    #[test]
-    fn auto_accepting_repository_suggestions_is_opt_in_and_captured_in_the_snapshot() {
-        assert!(!Settings::default().auto_accept_suggestions);
-        let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
-        assert!(!older.auto_accept_suggestions);
-        assert!(!snapshot(&older, &Indexes::new()).auto_accept);
-        let on: Settings = serde_json::from_str(r#"{"auto_accept_suggestions":true}"#).unwrap();
-        assert!(snapshot(&on, &Indexes::new()).auto_accept);
     }
     #[test]
     fn keeping_history_is_opt_in() {
@@ -422,22 +650,6 @@ mod tests {
         let on: Settings = serde_json::from_str(r#"{"keep_history":true}"#).unwrap();
         assert!(on.keep_history);
     }
-    #[test]
-    fn a_new_install_defaults_to_small_en_and_settings_saved_before_the_choice_keep_tiny_en() {
-        assert_eq!(Settings::default().recognizer, "small.en");
-        // Only Tiny existed before the choice, so a copy that saved settings then has it installed.
-        let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
-        assert_eq!(older.recognizer, "tiny.en");
-        let chosen: Settings = serde_json::from_str(r#"{"recognizer":"base.en"}"#).unwrap();
-        assert_eq!(chosen.recognizer, "base.en");
-    }
-
-    #[test]
-    fn a_first_launch_with_no_saved_settings_loads_small_en() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(load(dir.path()).unwrap().recognizer, "small.en");
-    }
-
     #[test]
     fn automatic_paste_is_on_and_the_microphone_follows_the_system_by_default() {
         let defaults = Settings::default();
@@ -451,104 +663,81 @@ mod tests {
         assert!(!chosen.auto_paste);
         assert_eq!(chosen.microphone, "USB");
     }
-
     #[test]
     fn an_unknown_stored_recognizer_loads_as_the_default() {
         let dir = tempfile::tempdir().unwrap();
-        let mut settings = Settings {
+        let mut settings = with_profile(Profile {
             recognizer: "huge".into(),
             ..Default::default()
-        };
+        });
         save(dir.path(), &settings).unwrap();
-        assert_eq!(load(dir.path()).unwrap().recognizer, "small.en");
-        settings.recognizer = "tiny.en".into();
+        assert_eq!(load(dir.path()).unwrap().active().recognizer, "small.en");
+        settings.active_mut().recognizer = "tiny.en".into();
         save(dir.path(), &settings).unwrap();
-        assert_eq!(load(dir.path()).unwrap().recognizer, "tiny.en");
+        assert_eq!(load(dir.path()).unwrap().active().recognizer, "tiny.en");
     }
-
-    #[test]
-    fn a_new_install_and_settings_saved_before_the_language_choice_use_english() {
-        assert_eq!(Settings::default().language, "en");
-        let older: Settings = serde_json::from_str(r#"{"hotkey":"Control+Space"}"#).unwrap();
-        assert_eq!(older.language, "en");
-        let chosen: Settings = serde_json::from_str(r#"{"language":"fr"}"#).unwrap();
-        assert_eq!(chosen.language, "fr");
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(load(dir.path()).unwrap().language, "en");
-    }
-
     #[test]
     fn an_unknown_stored_language_loads_as_english_and_known_ones_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let mut settings = Settings {
+        let mut settings = with_profile(Profile {
             language: "xx".into(),
             ..Default::default()
-        };
+        });
         save(dir.path(), &settings).unwrap();
-        assert_eq!(load(dir.path()).unwrap().language, "en");
+        assert_eq!(load(dir.path()).unwrap().active().language, "en");
         for (code, recognizer) in [
             ("fr", "small"),
             ("auto", "small"),
             ("yue", "large-v3-turbo"),
         ] {
-            settings.language = code.into();
-            settings.recognizer = recognizer.into();
+            settings.active_mut().language = code.into();
+            settings.active_mut().recognizer = recognizer.into();
             save(dir.path(), &settings).unwrap();
             let loaded = load(dir.path()).unwrap();
+            let profile = loaded.active();
             assert_eq!(
-                (loaded.language.as_str(), loaded.recognizer.as_str()),
+                (profile.language.as_str(), profile.recognizer.as_str()),
                 (code, recognizer)
             );
         }
     }
-
     #[test]
     fn a_saved_model_that_lacks_the_saved_language_is_replaced_by_the_smallest_that_has_it() {
         let dir = tempfile::tempdir().unwrap();
+        let saved = |language: &str, recognizer: &str| {
+            save(
+                dir.path(),
+                &with_profile(Profile {
+                    language: language.into(),
+                    recognizer: recognizer.into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+            load(dir.path()).unwrap().active().clone()
+        };
         for (language, recognizer) in [("fr", "small.en"), ("auto", "base.en")] {
-            let settings = Settings {
-                language: language.into(),
-                recognizer: recognizer.into(),
-                ..Default::default()
-            };
-            save(dir.path(), &settings).unwrap();
-            let loaded = load(dir.path()).unwrap();
+            let loaded = saved(language, recognizer);
             assert_eq!(loaded.language, language);
             assert_eq!(loaded.recognizer, "tiny");
         }
         for recognizer in ["small.en", "small"] {
-            let cantonese = Settings {
-                language: "yue".into(),
-                recognizer: recognizer.into(),
-                ..Default::default()
-            };
-            save(dir.path(), &cantonese).unwrap();
-            assert_eq!(load(dir.path()).unwrap().recognizer, "large-v3-turbo");
+            assert_eq!(saved("yue", recognizer).recognizer, "large-v3-turbo");
         }
-        let kept = Settings {
-            language: "de".into(),
-            recognizer: "large-v3-turbo".into(),
-            ..Default::default()
-        };
-        save(dir.path(), &kept).unwrap();
-        assert_eq!(load(dir.path()).unwrap().recognizer, "large-v3-turbo");
+        assert_eq!(saved("de", "large-v3-turbo").recognizer, "large-v3-turbo");
     }
-
     #[test]
     fn a_hesitation_list_saved_before_languages_loads_as_the_english_list() {
         let dir = tempfile::tempdir().unwrap();
-        open(dir.path())
-            .unwrap()
-            .execute(
-                "INSERT OR REPLACE INTO settings VALUES (1, ?1)",
-                [r#"{"cleanup":{"fillers":["um","er"],"enhanced":"local"}}"#],
-            )
-            .unwrap();
+        stored(
+            dir.path(),
+            r#"{"cleanup":{"fillers":["um","er"],"enhanced":"local"}}"#,
+        );
         let loaded = load(dir.path()).unwrap();
         assert_eq!(loaded.cleanup.fillers["en"], ["um", "er"]);
         assert_eq!(loaded.cleanup.fillers.len(), 1);
-        assert_eq!(loaded.cleanup.enhanced, "local");
-        assert_eq!(loaded.language, "en");
+        assert_eq!(loaded.active().enhanced, "local");
+        assert_eq!(loaded.active().language, "en");
         save(dir.path(), &loaded).unwrap();
         assert_eq!(
             load(dir.path()).unwrap().cleanup.fillers["en"],
@@ -558,12 +747,12 @@ mod tests {
         assert_eq!(snapshot.cleanup.fillers["en"], ["um", "er"]);
     }
     #[test]
-    fn the_snapshot_captures_the_language_and_the_model_the_recording_starts_with() {
-        let settings = Settings {
+    fn the_snapshot_captures_the_language_and_the_model_of_the_active_profile() {
+        let settings = with_profile(Profile {
             language: "pt".into(),
             recognizer: "base".into(),
             ..Default::default()
-        };
+        });
         let snapshot = snapshot(&settings, &Indexes::new());
         assert_eq!(snapshot.language, "pt");
         assert_eq!(snapshot.recognizer, "base");

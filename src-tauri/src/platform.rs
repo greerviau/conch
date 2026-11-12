@@ -128,7 +128,10 @@ mod macos {
     unsafe extern "C" {
         fn conch_frontmost_pid() -> i32;
         fn conch_frontmost_name(buffer: *mut u8, size: i32);
+        fn conch_return_focus(pid: i32);
     }
+    /// The application that was frontmost when the recording started.
+    static DICTATING_INTO: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
     /// The frontmost application, from the window server rather than the
     /// accessibility tree. The system-wide accessibility element cannot name the
     /// focused application of an Electron app that has not built its tree.
@@ -177,11 +180,19 @@ mod macos {
     /// Called when recording starts so the target app has built its tree by the
     /// time the transcript is ready.
     pub fn prepare() {
-        if permission()
-            && let Some(pid) = frontmost()
-        {
+        let Some(pid) = frontmost() else {
+            return;
+        };
+        DICTATING_INTO.store(pid, std::sync::atomic::Ordering::Relaxed);
+        if permission() {
             wake_application(pid);
         }
+    }
+    /// Gives the frontmost position back to the application the recording
+    /// started in, if a click on the recording indicator made Conch active.
+    pub fn return_focus() {
+        let pid = DICTATING_INTO.load(std::sync::atomic::Ordering::Relaxed);
+        unsafe { conch_return_focus(pid) };
     }
     pub fn focused() -> Result<Focus, String> {
         if !permission() {
@@ -290,7 +301,7 @@ mod macos {
     }
 }
 #[cfg(target_os = "macos")]
-pub use macos::{Focus, permission, prepare};
+pub use macos::{Focus, permission, prepare, return_focus};
 #[cfg(target_os = "macos")]
 use macos::{focused, paste};
 
@@ -313,6 +324,9 @@ pub fn permission() -> bool {
 }
 #[cfg(not(target_os = "macos"))]
 pub fn prepare() {}
+/// The recording indicator does not take focus on Windows and Linux.
+#[cfg(not(target_os = "macos"))]
+pub fn return_focus() {}
 
 #[derive(Default)]
 pub struct InputEvidence<'a> {
@@ -341,6 +355,7 @@ unsafe extern "C" {
     fn conch_request_accessibility();
     fn conch_open_microphone_settings();
     pub fn conch_overlay_visibility(window: *mut std::ffi::c_void, visible: bool);
+    pub fn conch_overlay_interactive(window: *mut std::ffi::c_void, interactive: bool);
 }
 pub fn microphone_status() -> &'static str {
     #[cfg(target_os = "macos")]

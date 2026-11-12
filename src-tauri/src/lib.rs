@@ -36,6 +36,8 @@ pub fn run() {
             app::start,
             app::finish,
             app::cancel,
+            app::choose_profile,
+            app::indicator_menu,
             app::retry,
             app::edit,
             app::accept,

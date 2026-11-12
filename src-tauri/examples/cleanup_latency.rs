@@ -55,8 +55,10 @@ fn main() {
     let (data, model) = (PathBuf::from(&args[2]), PathBuf::from(&args[3]));
     let speed: f32 = args.get(5).map_or(1.0, |speed| speed.parse().unwrap());
     let rate = 16_000usize;
-    let mut snapshot = Snapshot::default();
-    snapshot.cleanup.enhanced = "managed".into();
+    let snapshot = Snapshot {
+        enhanced: "managed".into(),
+        ..Default::default()
+    };
     let worker = inference::new_worker();
     inference::preload(&workers, &model, inference::Kind::Whisper, &worker, false).unwrap();
     inference::preload(
