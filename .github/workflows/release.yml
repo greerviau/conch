@@ -53,7 +53,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: Conch ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
           releaseDraft: true
           includeUpdaterJson: true
       - if: runner.os == 'macOS'
