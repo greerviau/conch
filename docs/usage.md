@@ -91,7 +91,7 @@ With Automatic paste off, Conch does not ask for the Accessibility permission.
 
 ## Repositories, mappings, and the shortcut
 
-The top bar switches between Dictation, History, Profiles, Repositories, Mappings, Settings, and Logs.
+The top bar switches between Dictation, Profiles, Mappings, Repositories, Settings, History, and Logs.
 On Repositories, click Add repository to choose a folder, or Enter a path instead to type one.
 Changes to repositories, mappings, and settings stay in a draft until you click Save changes in the bar that appears at the bottom.
 Conch indexes a saved repository within a few seconds and indexes it again when its files change. Changes inside hidden folders such as `.git` and inside `node_modules`, `target`, `dist`, `build`, `vendor`, and `__pycache__` do not start a new index. Click Refresh indexes to index every repository now.

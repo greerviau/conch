@@ -23,11 +23,11 @@ import type { Cleanup, Mapping, Settings, View } from "./types";
 
 const TABS = [
   "Dictation",
-  "History",
   "Profiles",
-  "Repositories",
   "Mappings",
+  "Repositories",
   "Settings",
+  "History",
   "Logs",
 ];
 

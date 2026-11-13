@@ -415,6 +415,11 @@ kbd {
 .row-control input:not([type="checkbox"]) {
   width: 260px;
 }
+.row-control select {
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
 .row.stack {
   flex-direction: column;
   align-items: stretch;
