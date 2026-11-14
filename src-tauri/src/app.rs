@@ -785,7 +785,7 @@ fn process(
 /// Delivers the prepared result of recording `generation` and makes it the current
 /// result. Nothing is delivered for a recording that was cancelled before this.
 ///
-/// The lock on `inner` is free while the text is delivered and saved to the history.
+/// The lock on `inner` is free while the text is delivered.
 /// Reading the focused field waits on the app being dictated into, for seconds when
 /// that app is still building its accessibility tree, and the interface, the shortcut,
 /// and the recording indicator all wait on the lock. The phase stays Processing until
@@ -797,12 +797,12 @@ fn deliver_result(
     watch: &mut Stopwatch,
     desktop: &mut impl Desktop,
 ) {
-    let (paste, keep_history) = {
+    let paste = {
         let inner = state.inner.locked();
         if inner.session.generation != generation || inner.session.phase != Phase::Processing {
             return;
         }
-        (inner.settings.auto_paste, inner.settings.keep_history)
+        inner.settings.auto_paste
     };
     let delivered = delivery::deliver(desktop, &result.text, paste);
     watch.lap("delivery");
@@ -830,35 +830,36 @@ fn deliver_result(
             failure = Some(error);
         }
     }
-    let saved = history::record(&state.data, keep_history, &result);
-    if let Err(error) = &saved {
-        log::error("history", error);
-    }
     let mut inner = state.inner.locked();
-    if !inner.session.complete(generation) {
-        // Cancelled during delivery, which cannot be taken back. The text stays the
-        // current result unless another recording has begun.
-        if inner.session.phase == Phase::Idle {
-            inner.history_id = saved.unwrap_or(None);
-            inner.result = Some(result);
-        }
+    let current = inner.session.complete(generation);
+    // A cancel during delivery cannot take the paste back, so the text stays the
+    // current result, unless another recording has started since: that one owns the
+    // result, its history entry, and the retry.
+    let cancelled = !current
+        && inner.session.phase == Phase::Idle
+        && inner.session.generation == generation + 1;
+    if !current && !cancelled {
         return;
     }
-    inner.indicator_notice = notice.map(|text| (Instant::now(), text));
-    if let Some(error) = failure {
-        inner.error = error;
+    if current {
+        inner.indicator_notice = notice.map(|text| (Instant::now(), text));
+        if let Some(error) = failure {
+            inner.error = error;
+        }
+        inner.retry = None;
     }
-    match saved {
+    // The setting is read now, under the lock, so a save after a cancel is honored.
+    match history::record(&state.data, inner.settings.keep_history, &result) {
         Ok(id) => inner.history_id = id,
         Err(error) => {
+            log::error("history", &error);
             inner.history_id = None;
-            if inner.error.is_empty() {
+            if current && inner.error.is_empty() {
                 inner.error = error;
             }
         }
     }
     inner.result = Some(result);
-    inner.retry = None;
 }
 /// Whether the recording flow recognizes the audio since the last chunk
 /// before the stop (`Chunker::settle`, `Transcriber::speculate`). It is off:
@@ -2078,6 +2079,48 @@ mod tests {
         let inner = state.inner.locked();
         assert_eq!(inner.session.phase, Phase::Recording);
         assert!(inner.result.is_none() && inner.retry.is_some());
+    }
+    #[test]
+    fn a_result_delivered_after_a_later_recording_finished_does_not_replace_its_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            let next = inner.session.start().unwrap();
+            inner.session.finish();
+            assert!(inner.session.complete(next));
+            inner.result = Some(core::prepare("the later one", &Snapshot::default()));
+            inner.history_id = Some(41);
+        });
+        let inner = state.inner.locked();
+        assert_eq!(inner.result.as_ref().unwrap().text, "the later one");
+        assert_eq!(inner.history_id, Some(41));
+        assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 0);
+        drop(inner);
+        // The same holds when the later recording was cancelled or failed.
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            inner.session.start().unwrap();
+            inner.session.cancel();
+        });
+        assert!(state.inner.locked().result.is_none());
+    }
+    #[test]
+    fn history_turned_off_after_a_cancel_during_delivery_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            inner.settings.keep_history = false;
+        });
+        let inner = state.inner.locked();
+        assert_eq!(inner.result.as_ref().unwrap().text, "hello world");
+        assert_eq!(inner.history_id, None);
+        assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 0);
     }
     #[test]
     fn a_recording_cancelled_before_delivery_delivers_nothing() {
