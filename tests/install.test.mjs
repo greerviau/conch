@@ -86,7 +86,8 @@ test('Linux install downloads the latest AppImage and makes it executable', () =
  assert.match(readFileSync(target, 'utf8'), /echo conch/);
  // Windows has no executable bit to read back.
  if (platform() !== 'win32') assert.ok(statSync(target).mode & 0o100);
- assert.match(out.stdout, new RegExp(target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+ // The script joins the folder and the file name with a slash on every system.
+ assert.ok(out.stdout.includes(`${bin}/Conch.AppImage`), out.stdout);
 });
 
 test('Linux install reports a release with no AppImage', () => {
