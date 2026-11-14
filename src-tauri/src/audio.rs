@@ -152,9 +152,7 @@ where
     f32: cpal::FromSample<T>,
 {
     use cpal::Sample;
-    let mut phase = 0.0;
-    let mut sum = 0.0;
-    let mut count = 0usize;
+    let mut resampler = Resampler::new(rate);
     device
         .build_input_stream(
             config,
@@ -162,20 +160,14 @@ where
                 let mut out = buffer.locked();
                 let mut peak = 0.0f32;
                 for frame in samples.chunks_exact(channels) {
-                    sum +=
+                    let mono =
                         frame.iter().map(|s| f32::from_sample(*s)).sum::<f32>() / channels as f32;
-                    count += 1;
-                    phase += RATE as f64;
-                    if phase >= rate {
-                        phase -= rate;
+                    resampler.push(mono, |sample| {
                         if out.len() < RATE as usize * MAX_SECONDS {
-                            let sample = sum / count as f32;
                             peak = peak.max(sample.abs());
                             out.push(sample);
                         }
-                        sum = 0.0;
-                        count = 0;
-                    }
+                    });
                 }
                 level.store(
                     (peak * 6.0).min(1.0).to_bits(),
@@ -186,6 +178,40 @@ where
             None,
         )
         .map_err(|_| "Cannot open microphone".into())
+}
+/// Converts the microphone's mono frames at its own rate to samples at `RATE`.
+struct Resampler {
+    rate: f64,
+    phase: f64,
+    sum: f32,
+    count: usize,
+}
+impl Resampler {
+    fn new(rate: f64) -> Self {
+        Self {
+            rate,
+            phase: 0.0,
+            sum: 0.0,
+            count: 0,
+        }
+    }
+    /// Takes one frame and passes each sample that is now due to `emit`: the mean
+    /// of the frames since the last one. A microphone slower than `RATE` owes more
+    /// than one sample for a frame, and the frame is repeated for each.
+    fn push(&mut self, frame: f32, mut emit: impl FnMut(f32)) {
+        self.sum += frame;
+        self.count += 1;
+        self.phase += RATE as f64;
+        if self.phase >= self.rate {
+            let sample = self.sum / self.count as f32;
+            while self.phase >= self.rate {
+                self.phase -= self.rate;
+                emit(sample);
+            }
+            self.sum = 0.0;
+            self.count = 0;
+        }
+    }
 }
 pub fn wav(samples: &[f32]) -> Result<Vec<u8>, String> {
     let mut cursor = std::io::Cursor::new(vec![]);
@@ -215,6 +241,39 @@ mod tests {
     use super::*;
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|n| (*n).into()).collect()
+    }
+    /// One second of a ramp from a microphone at `rate`, resampled.
+    fn resampled(rate: usize) -> Vec<f32> {
+        let mut resampler = Resampler::new(rate as f64);
+        let mut out = vec![];
+        for frame in 0..rate {
+            resampler.push(frame as f32 / rate as f32, |sample| out.push(sample));
+        }
+        out
+    }
+    #[test]
+    fn one_second_from_any_microphone_rate_becomes_one_second_at_the_recognizer_rate() {
+        for rate in [8_000, 11_025, 16_000, 22_050, 44_100, 48_000, 96_000] {
+            let out = resampled(rate);
+            assert!(
+                out.len().abs_diff(RATE as usize) <= 1,
+                "{rate} Hz gave {} samples",
+                out.len()
+            );
+            // The ramp still rises from start to end, so no audio was dropped or reordered.
+            assert!(out.windows(2).all(|pair| pair[0] <= pair[1]));
+            assert!(out[0] < 0.01 && out[out.len() - 1] > 0.99);
+        }
+    }
+    #[test]
+    fn a_faster_microphone_is_averaged_down_exactly_as_before() {
+        let mut resampler = Resampler::new(48_000.0);
+        let mut out = vec![];
+        for frame in [0.0, 0.3, 0.6, 1.0, 1.0, 1.0] {
+            resampler.push(frame, |sample| out.push(sample));
+        }
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.3).abs() < 1e-6 && (out[1] - 1.0).abs() < 1e-6);
     }
     #[test]
     fn an_empty_choice_follows_the_system_input() {
