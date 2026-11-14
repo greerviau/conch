@@ -548,14 +548,16 @@ pub fn strip_hint_echo(text: &str, hint: &str) -> String {
 }
 /// Splits `text` after each run of `.`, `?`, or `!` that is followed by
 /// whitespace or the end, keeping that whitespace with the sentence before it.
-/// A period inside a word ("config.rs") does not end a sentence.
+/// A period inside a word ("config.rs") or after an abbreviation ("e.g.") does
+/// not end a sentence.
 fn sentences(text: &str) -> Vec<&str> {
     let mut out = vec![];
     let mut start = 0;
     let mut chars = text.char_indices().peekable();
     while let Some((at, c)) = chars.next() {
         let ends = matches!(c, '.' | '?' | '!')
-            && chars.peek().is_none_or(|&(_, next)| next.is_whitespace());
+            && chars.peek().is_none_or(|&(_, next)| next.is_whitespace())
+            && !(c == '.' && abbreviation(&text[start..at]));
         if !ends {
             continue;
         }
@@ -571,6 +573,22 @@ fn sentences(text: &str) -> Vec<&str> {
         out.push(&text[start..]);
     }
     out
+}
+/// Whether the last word of `before`, which a period follows, is an
+/// abbreviation: single letters joined by periods ("e.g", "U.S") or a short
+/// title or Latin form.
+fn abbreviation(before: &str) -> bool {
+    const SHORT: [&str; 9] = ["cf", "dr", "etc", "mr", "mrs", "ms", "st", "viz", "vs"];
+    let word = before
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or_default();
+    let letters: Vec<&str> = word.split('.').collect();
+    (letters.len() > 1
+        && letters
+            .iter()
+            .all(|part| part.chars().count() == 1 && part.chars().all(char::is_alphabetic)))
+        || SHORT.contains(&crate::fold::fold(word).as_str())
 }
 /// Whether `sentence` lists hint `terms` as `strip_hint_echo` describes. The
 /// one item that is not a term has at most as many words as the longest term,
@@ -589,9 +607,18 @@ fn echoes_hint(sentence: &str, terms: &[String]) -> bool {
         .map(|term| term.split_whitespace().count())
         .max()
         .unwrap_or(0);
-    // A term may end in its own period ("Inc."), so an item matches with or
-    // without the sentence's closing punctuation.
-    let forms = |item: &str| [item, item.trim_end_matches(['.', '?', '!'])].map(crate::fold::fold);
+    // A term may end in its own period ("Inc."), so an item matches as written,
+    // without the sentence's closing mark ("Inc.." is "Inc." and a period), or
+    // without any closing punctuation.
+    let forms = |item: &str| {
+        let closing = ['.', '?', '!'];
+        [
+            item,
+            item.strip_suffix(closing).unwrap_or(item),
+            item.trim_end_matches(closing),
+        ]
+        .map(crate::fold::fold)
+    };
     let mut next = 0;
     let mut matched = 0;
     let mut other = 0;
@@ -1413,6 +1440,22 @@ mod tests {
         assert_eq!(
             strip_hint_echo("Done. README, Inc.", "Vocabulary: README, Inc.."),
             "Done."
+        );
+        assert_eq!(
+            strip_hint_echo("README, Inc..", "Vocabulary: README, Inc.."),
+            ""
+        );
+        // An abbreviation does not end a sentence; a file name does.
+        for text in [
+            "Check e.g. README, Main.",
+            "Compare i.e. README, Main.",
+            "Ask Dr. README, Main.",
+        ] {
+            assert_eq!(strip_hint_echo(text, hint), text);
+        }
+        assert_eq!(
+            strip_hint_echo("Open config.rs. README, Main.", hint),
+            "Open config.rs."
         );
     }
     #[test]
