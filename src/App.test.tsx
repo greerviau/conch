@@ -574,7 +574,8 @@ it("dismisses an error the app reported until another one arrives", async () => 
   const base = ipc.getMockImplementation()!;
   ipc.mockImplementation(
     async (name: string, args?: Record<string, unknown>) => {
-      if (name === "dismiss_error") view.error = "";
+      if (name === "dismiss_error" && args?.message === view.error)
+        view.error = "";
       return base(name, args);
     },
   );
@@ -582,7 +583,9 @@ it("dismisses an error the app reported until another one arrives", async () => 
   const alert = await screen.findByRole("alert");
   fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-  expect(ipc).toHaveBeenCalledWith("dismiss_error");
+  expect(ipc).toHaveBeenCalledWith("dismiss_error", {
+    message: "No speech recognized",
+  });
   // The next poll keeps it hidden.
   await new Promise((resolve) => setTimeout(resolve, 900));
   expect(screen.queryByRole("alert")).toBeNull();

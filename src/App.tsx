@@ -390,7 +390,7 @@ export default function App() {
             onDismiss={() => {
               if (error) setError("");
               else
-                invoke("dismiss_error")
+                invoke("dismiss_error", { message: view.error })
                   .then(reload)
                   .catch((e) => setError(noted(e)));
             }}
