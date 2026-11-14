@@ -1,5 +1,5 @@
 use crate::{
-    core::{Cleanup, Mapping, Snapshot, Vocabulary},
+    core::{Cleanup, Mapping, Snapshot, Terms, Vocabulary},
     index::Index,
 };
 use serde::{Deserialize, Serialize};
@@ -289,9 +289,22 @@ pub fn indexes(dir: &Path) -> Result<Indexes, String> {
     })
     .collect()
 }
+/// The terms of the latest snapshot and the indexes they were collected from. A
+/// snapshot of the same indexes reuses the terms, so recordings share them and their
+/// lookup tables until a repository is indexed again with a different result.
+#[derive(Default)]
+pub struct TermsCache(Option<(Vec<Arc<Index>>, Terms)>);
 /// The context snapshot for a recording that starts with `settings`, from the
 /// vocabulary indexes held in memory.
 pub fn snapshot(settings: &Settings, indexes: &Indexes) -> Snapshot {
+    snapshot_reusing(settings, indexes, &mut TermsCache::default())
+}
+/// `snapshot`, taking the terms from `cache` when it holds those of the same indexes.
+pub fn snapshot_reusing(
+    settings: &Settings,
+    indexes: &Indexes,
+    cache: &mut TermsCache,
+) -> Snapshot {
     let profile = settings.active();
     let selected: Vec<_> = settings
         .repositories
@@ -299,12 +312,26 @@ pub fn snapshot(settings: &Settings, indexes: &Indexes) -> Snapshot {
         .filter(|r| profile.repositories.contains(&r.id) && r.root.is_dir())
         .map(|r| r.id.as_str())
         .collect();
-    let vocabulary = selected
+    let sources: Vec<Arc<Index>> = selected
         .iter()
         .filter_map(|id| indexes.get(*id))
         .filter(|index| index.available)
-        .flat_map(|index| index.entries.iter().cloned())
+        .cloned()
         .collect();
+    let cached = cache.0.as_ref().filter(|(from, _)| {
+        from.len() == sources.len() && from.iter().zip(&sources).all(|(a, b)| Arc::ptr_eq(a, b))
+    });
+    let vocabulary = match cached {
+        Some((_, terms)) => terms.clone(),
+        None => {
+            let terms: Terms = sources
+                .iter()
+                .flat_map(|index| index.entries.iter().cloned())
+                .collect();
+            cache.0 = Some((sources, terms.clone()));
+            terms
+        }
+    };
     let mappings = settings
         .mappings
         .iter()
@@ -498,6 +525,56 @@ mod tests {
             .map(|v| v.text.clone())
             .collect();
         assert_eq!(texts, ["Alpha"]);
+    }
+    #[test]
+    fn recordings_that_use_the_same_indexes_share_one_set_of_terms() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = with_profile(Profile {
+            repositories: vec!["a".into()],
+            ..Default::default()
+        });
+        let repository = |id: &str| Repository {
+            id: id.into(),
+            root: dir.path().into(),
+            exclusions: vec![],
+        };
+        settings.repositories = vec![repository("a"), repository("b")];
+        let index = |text: &str, available: bool| {
+            Arc::new(Index {
+                entries: vec![term(text, "x.ts")],
+                available,
+                ..Default::default()
+            })
+        };
+        let mut indexes = Indexes::from([
+            ("a".to_string(), index("Alpha", true)),
+            ("b".to_string(), index("Beta", true)),
+        ]);
+        let mut cache = TermsCache::default();
+        let texts = |snapshot: &Snapshot| -> Vec<String> {
+            snapshot.vocabulary.iter().map(|v| v.text.clone()).collect()
+        };
+        let first = snapshot_reusing(&settings, &indexes, &mut cache);
+        let second = snapshot_reusing(&settings, &indexes, &mut cache);
+        assert_eq!(texts(&first), ["Alpha"]);
+        assert!(std::ptr::eq(
+            first.vocabulary.as_ptr(),
+            second.vocabulary.as_ptr()
+        ));
+        // Another selection, or an index that was replaced, collects the terms again.
+        settings.profiles[0].repositories = vec!["a".into(), "b".into()];
+        let both = snapshot_reusing(&settings, &indexes, &mut cache);
+        assert_eq!(texts(&both), ["Alpha", "Beta"]);
+        indexes.insert("b".to_string(), index("Gamma", true));
+        let replaced = snapshot_reusing(&settings, &indexes, &mut cache);
+        assert_eq!(texts(&replaced), ["Alpha", "Gamma"]);
+        assert_eq!(texts(&both), ["Alpha", "Beta"]);
+        // Without a cache every snapshot collects its own.
+        let alone = snapshot(&settings, &indexes);
+        assert!(!std::ptr::eq(
+            alone.vocabulary.as_ptr(),
+            replaced.vocabulary.as_ptr()
+        ));
     }
     #[test]
     fn the_snapshot_uses_the_active_profile_and_ignores_the_others() {

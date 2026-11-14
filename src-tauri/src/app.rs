@@ -29,6 +29,9 @@ pub struct AppState {
     /// The stored vocabulary indexes, so a recording starts without reading the
     /// database. Lock it after `inner` when holding both.
     pub indexes: Mutex<storage::Indexes>,
+    /// The terms the latest recording used, for the next one that uses the same
+    /// indexes. Lock it after `indexes`.
+    pub terms: Mutex<storage::TermsCache>,
 }
 pub struct Inner {
     pub settings: Settings,
@@ -374,7 +377,11 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     if cfg!(target_os = "macos") && platform::microphone_status() != "granted" {
         return Err("Enable Conch microphone access in Setup before recording".into());
     }
-    let snapshot = storage::snapshot(&inner.settings, &state.indexes.locked());
+    let snapshot = storage::snapshot_reusing(
+        &inner.settings,
+        &state.indexes.locked(),
+        &mut state.terms.locked(),
+    );
     let worker = inference::new_worker();
     let (model, recognize, clean) = recognition_for(&state, &snapshot, &worker)?;
     let generation = inner.session.start()?;
@@ -543,7 +550,11 @@ pub fn switch_profile(state: &AppState, id: &str) -> Result<(), String> {
     settings.active_profile = profile.id.clone();
     let recording = inner.session.phase == Phase::Recording && inner.live.is_some();
     let switch = if recording {
-        let snapshot = storage::snapshot(&settings, &state.indexes.locked());
+        let snapshot = storage::snapshot_reusing(
+            &settings,
+            &state.indexes.locked(),
+            &mut state.terms.locked(),
+        );
         let (_, recognize, clean) = recognition_for(state, &snapshot, &inner.worker)
             .map_err(|_| format!("Download the recognition model of {} first", profile.name))?;
         Some((snapshot, recognize, clean))
@@ -1265,6 +1276,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         workers,
         inner: Mutex::new(Inner::new(settings.clone())),
         indexes: Mutex::new(indexes),
+        terms: Mutex::default(),
     });
     app.manage(crate::update::Tracker::new());
     if let Err(error) = crate::indicator::setup(app.handle()) {
@@ -1835,6 +1847,7 @@ mod tests {
             workers: dir.join("workers"),
             inner: Mutex::new(Inner::new(settings)),
             indexes: Mutex::new(storage::Indexes::new()),
+            terms: Mutex::default(),
         }
     }
     /// App state whose settings hold one repository at `root`, and that repository.

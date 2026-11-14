@@ -66,6 +66,11 @@ fn main() {
     );
     let (snapshot, took) = once(|| storage::snapshot(&settings, &indexes));
     println!("snapshot: {} terms in {took:?}", snapshot.vocabulary.len());
+    let mut cache = storage::TermsCache::default();
+    println!(
+        "snapshot of the same indexes again: {:?}",
+        best(|| storage::snapshot_reusing(&settings, &indexes, &mut cache))
+    );
     println!("snapshot clone: {:?}", best(|| snapshot.clone()));
     let (_, took) = once(|| core::recognition_hint(&snapshot));
     println!("recognition hint, first: {took:?}");
