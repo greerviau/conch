@@ -20,7 +20,8 @@ pub const SKIPPED_DIRECTORIES: [&str; 6] = [
     "__pycache__",
 ];
 /// What a scan read from each file, so the next scan of the repository reads and
-/// parses only the files whose size or modification time changed.
+/// parses only the files that changed. On Windows it keeps nothing, and every scan
+/// reads every file.
 #[derive(Default)]
 pub struct ScanCache {
     files: std::collections::HashMap<std::path::PathBuf, Scanned>,
@@ -35,36 +36,39 @@ struct Scanned {
 }
 /// What tells a scan that a file is the one it read before.
 #[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(not(unix), allow(dead_code))]
 struct Stamp {
     length: u64,
     modified: std::time::SystemTime,
-    /// On Unix, when the file's content, permissions, or times last changed. Restoring
-    /// the modification time after an edit, or revoking read access, moves it.
-    changed: Option<std::time::SystemTime>,
+    /// When the file's content, permissions, or times last changed. Restoring the
+    /// modification time after an edit, or revoking read access, moves it.
+    changed: std::time::SystemTime,
 }
 impl Stamp {
-    /// `None` when the file system gives no modification time; the file is then read
-    /// by every scan.
+    /// `None` when the system cannot tell that a file changed, and the file is then
+    /// read by every scan: a file system without these times, and every system but
+    /// Unix, where no change time is read and an edit can keep the other two values.
     fn of(meta: &std::fs::Metadata) -> Option<Self> {
         #[cfg(unix)]
-        let changed = {
+        {
             use std::os::unix::fs::MetadataExt;
             let seconds = u64::try_from(meta.ctime()).ok()?;
             let nanoseconds = u32::try_from(meta.ctime_nsec()).ok()?;
-            Some(std::time::UNIX_EPOCH + std::time::Duration::new(seconds, nanoseconds))
-        };
+            Some(Self {
+                length: meta.len(),
+                modified: meta.modified().ok()?,
+                changed: std::time::UNIX_EPOCH + std::time::Duration::new(seconds, nanoseconds),
+            })
+        }
         #[cfg(not(unix))]
-        let changed = None;
-        Some(Self {
-            length: meta.len(),
-            modified: meta.modified().ok()?,
-            changed,
-        })
+        {
+            let _ = meta;
+            None
+        }
     }
     /// The latest time the file changed in any way.
     fn latest(&self) -> std::time::SystemTime {
-        self.changed
-            .map_or(self.modified, |at| at.max(self.modified))
+        self.changed.max(self.modified)
     }
 }
 /// A file changed this recently is read again by the next scan: a second change
@@ -301,6 +305,7 @@ mod tests {
         );
     }
     /// Writes a file and dates it `age` seconds in the past.
+    #[cfg(unix)]
     fn write_aged(path: &Path, text: &str, age: u64) {
         std::fs::write(path, text).unwrap();
         std::fs::File::options()
@@ -311,9 +316,11 @@ mod tests {
             .unwrap();
     }
     /// Long enough for a file written before it to count as unchanged.
+    #[cfg(unix)]
     fn settle() {
         std::thread::sleep(SETTLED + std::time::Duration::from_millis(200));
     }
+    #[cfg(unix)]
     #[test]
     fn a_rescan_reads_only_the_files_that_changed_and_finds_what_a_full_scan_finds() {
         let d = tempfile::tempdir().unwrap();
@@ -369,6 +376,7 @@ mod tests {
         );
         assert_eq!(cache.read, 2);
     }
+    #[cfg(unix)]
     #[test]
     fn the_same_size_and_an_older_time_still_count_as_a_change() {
         let d = tempfile::tempdir().unwrap();
@@ -417,6 +425,16 @@ mod tests {
         if unreadable {
             assert!(found.incomplete && found.entries.is_empty());
         }
+    }
+    #[cfg(not(unix))]
+    #[test]
+    fn without_a_change_time_every_scan_reads_every_file() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("main.py"), "class Alpha: pass").unwrap();
+        let mut cache = ScanCache::default();
+        let first = scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        assert_eq!(scan_with(d.path(), "r", &[], &mut cache).unwrap(), first);
+        assert_eq!(cache.read, 1);
     }
     #[cfg(unix)]
     #[test]

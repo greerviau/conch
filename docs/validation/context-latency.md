@@ -52,5 +52,6 @@ A recording stopped before that thread finishes waits for the remainder.
 
 ## Limits
 
-- A scan trusts a file's size, its modification time, and on macOS and Linux its change time, which moves when the content, the permissions, or the times of the file are set. On Windows a file whose content changes while its size and modification time stay the same is read again only by the Refresh button. A file changed in the two seconds before a scan is always read again.
+- On macOS and Linux a scan trusts a file's size, modification time, and change time; the change time moves when the content, the permissions, or the times of the file are set. A file changed in the two seconds before a scan is always read again. Windows has no change time that Conch reads, so there every scan still reads every file and the scan time does not improve.
+- The non-Unix branch of the scan was not compiled or run here.
 - The characterization test `preparation_of_a_varied_vocabulary_matches_the_recorded_results` pins the prepared text, mask, recognition hint, and suggestions of 22 sentences in four settings against `src-tauri/tests/fixtures/preparation.txt`. The file was recorded from the code before the change. It does not prove equal results for every vocabulary.

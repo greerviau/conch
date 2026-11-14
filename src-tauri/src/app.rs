@@ -2067,6 +2067,19 @@ mod tests {
         assert!(inner.history_id.is_some());
     }
     #[test]
+    fn a_result_cancelled_twice_while_it_was_delivered_is_still_the_current_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            inner.session.cancel();
+        });
+        let inner = state.inner.locked();
+        assert_eq!(inner.result.as_ref().unwrap().text, "hello world");
+        assert!(inner.history_id.is_some());
+    }
+    #[test]
     fn a_result_delivered_after_the_next_recording_began_does_not_replace_its_state() {
         let dir = tempfile::tempdir().unwrap();
         let (state, generation) = preparing(dir.path());
@@ -2098,7 +2111,7 @@ mod tests {
         assert_eq!(inner.history_id, Some(41));
         assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 0);
         drop(inner);
-        // The same holds when the later recording was cancelled or failed.
+        // The same holds when the later recording was cancelled.
         let (state, generation) = preparing(dir.path());
         deliver_with(&state, generation, || {
             let mut inner = state.inner.locked();
