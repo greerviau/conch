@@ -3,14 +3,15 @@
 Basic with no hesitation tokens keeps recognition output after exact mappings.
 Basic with tokens removes configured standalone hesitation tokens and preserves quoted text, excluded terms, mapping output, and exact repository vocabulary.
 Repository corrections remain suggestions until accepted.
-Enhanced uses managed local S1-mini or an explicitly configured chat-completions endpoint.
+Enhanced uses managed local S1-mini, Claude through the Anthropic API, or an explicitly configured chat-completions endpoint.
 It masks protected spans and checks placeholder order, selected constraint terms, and numeric literals.
 These checks cannot prove semantic equivalence.
 Errors, timeouts, oversized inputs, and failed preservation checks deliver the Basic result.
 Conch does not send a later cleanup response after fallback or cancellation.
 
 Remote cleanup starts disabled.
-Enabling remote cleanup requires confirming the HTTPS destination in Settings.
+Choosing Claude (Anthropic API) in a profile names its destination, `api.anthropic.com`, and the profile shows it with the notice below before the change is saved.
+Enabling a remote endpoint requires confirming its HTTPS destination in the profile.
 Only the masked transcript and a fixed cleanup instruction leave the device.
 The transcript can still contain confidential information, and the provider may charge for requests.
 API keys use the platform credential store and can be removed in Settings.

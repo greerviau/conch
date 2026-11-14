@@ -99,6 +99,8 @@ pub struct View {
     history_revision: i64,
     logs_revision: u64,
     models: Vec<inference::ModelView>,
+    /// The Claude models Claude cleanup offers, the default first.
+    anthropic_models: &'static [inference::ProviderModel],
     languages: &'static [crate::languages::Language],
     accessibility: bool,
     installation_path: Option<String>,
@@ -135,6 +137,7 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
         history_revision,
         logs_revision: log::get().map_or(0, |log| log.revision()),
         models: inference::catalog(&state.data),
+        anthropic_models: &inference::ANTHROPIC_MODELS,
         languages: &crate::languages::LANGUAGES,
         accessibility,
         installation_path: platform::installation_path(),
@@ -168,8 +171,16 @@ fn chunk_cleaning(enhanced: &str, language: &str) -> bool {
         && (enhanced != "managed" || inference::managed_cleanup_supported(language))
 }
 /// Local and remote Enhanced cleanup need an allowed endpoint, and a remote
-/// destination needs the user's confirmation.
+/// destination needs the user's confirmation. Claude cleanup has a fixed destination,
+/// which choosing it names, and needs one of the offered models.
 fn check_enhanced(enhanced: &str, cleanup: &crate::core::Cleanup) -> Result<(), String> {
+    if enhanced == "anthropic"
+        && !inference::ANTHROPIC_MODELS
+            .iter()
+            .any(|m| m.id == cleanup.anthropic_model)
+    {
+        return Err("Choose a Claude model for Claude cleanup".into());
+    }
     let remote = enhanced == "remote";
     if matches!(enhanced, "local" | "remote")
         && !inference::endpoint_allowed(&cleanup.endpoint, remote)
@@ -1148,12 +1159,13 @@ pub async fn download(app: AppHandle, id: String) -> Result<(), String> {
 fn megabytes(bytes: u64) -> String {
     format!("{} MB", (bytes + 500_000) / 1_000_000)
 }
+/// Saves or, with no secret, removes the API key for `destination`: `anthropic` or a
+/// remote endpoint.
 #[tauri::command]
-pub fn credential(endpoint: String, secret: Option<String>) -> Result<(), String> {
-    if !inference::endpoint_allowed(&endpoint, true) {
-        return Err("Invalid remote destination".into());
-    }
-    let entry = keyring::Entry::new("app.conch.desktop", &endpoint)
+pub fn credential(destination: String, secret: Option<String>) -> Result<(), String> {
+    let account =
+        inference::credential_account(&destination).ok_or("Invalid remote destination")?;
+    let entry = keyring::Entry::new("app.conch.desktop", &account)
         .map_err(|_| "Credential store unavailable")?;
     match secret {
         Some(secret) if !secret.is_empty() => entry
@@ -1163,6 +1175,19 @@ pub fn credential(endpoint: String, secret: Option<String>) -> Result<(), String
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err("Cannot remove credential".into()),
         },
+    }
+}
+/// Whether an API key is saved for `destination`: `anthropic` or a remote endpoint.
+#[tauri::command]
+pub fn credential_saved(destination: String) -> Result<bool, String> {
+    let account =
+        inference::credential_account(&destination).ok_or("Invalid remote destination")?;
+    let entry = keyring::Entry::new("app.conch.desktop", &account)
+        .map_err(|_| "Credential store unavailable")?;
+    match entry.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(_) => Err("Credential store unavailable".into()),
     }
 }
 pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -1598,9 +1623,9 @@ mod tests {
         assert!(!with("small", ""));
     }
     #[test]
-    fn enhanced_cleanup_is_disabled_or_one_of_three_providers() {
+    fn enhanced_cleanup_is_disabled_or_one_of_four_providers() {
         let mut settings = Settings::default();
-        for choice in ["disabled", "managed", "local", "remote"] {
+        for choice in ["disabled", "managed", "anthropic", "local", "remote"] {
             settings.profiles[0].enhanced = choice.into();
             assert!(choices_valid(&settings), "{choice}");
         }
@@ -1624,6 +1649,18 @@ mod tests {
         );
         cleanup.remote_enabled = true;
         assert!(check_enhanced("remote", &cleanup).is_ok());
+    }
+    #[test]
+    fn claude_cleanup_needs_no_endpoint_or_confirmation_but_an_offered_model() {
+        let mut cleanup = crate::core::Cleanup::default();
+        assert!(check_enhanced("anthropic", &cleanup).is_ok());
+        for model in ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"] {
+            cleanup.anthropic_model = model.into();
+            assert!(check_enhanced("anthropic", &cleanup).is_ok(), "{model}");
+        }
+        cleanup.anthropic_model = "gpt-5".into();
+        assert!(check_enhanced("anthropic", &cleanup).is_err());
+        assert!(chunk_cleaning("anthropic", "auto"));
     }
     #[test]
     fn recording_needs_the_selected_recognizer_and_the_voice_detection_model() {

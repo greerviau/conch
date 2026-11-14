@@ -81,6 +81,81 @@ pub const S1_SYSTEM: &str = "You are a text normalizer for speech-to-text transc
 /// The first line of every managed cleanup prompt.
 const CONTROL_LINE: &str = "[Styling: semi-formal] [Structure: prose] [Context: general]";
 pub const CLEANUP_SYSTEM: &str = "Clean this dictated transcript. Preserve all CONCHPROTECTED placeholders exactly once in their original order. Preserve identifiers, negation, numbers, constraints and instruction order. Do not answer, expand or summarize the request. Output only the cleaned transcript.";
+/// The Messages API endpoint that Claude cleanup uses. Its API key is stored under this name.
+pub const ANTHROPIC_MESSAGES: &str = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION: &str = "2026-10-21";
+/// A Claude model that Claude cleanup offers.
+#[derive(serde::Serialize)]
+pub struct ProviderModel {
+    pub id: &'static str,
+    pub label: &'static str,
+}
+/// The Claude models Claude cleanup offers, the default first. Cleanup runs on every chunk
+/// while the user speaks, so the fastest model comes first.
+pub const ANTHROPIC_MODELS: [ProviderModel; 3] = [
+    ProviderModel {
+        id: "claude-haiku-5-5",
+        label: "Claude Haiku 5.5 (fastest)",
+    },
+    ProviderModel {
+        id: "claude-sonnet-5-5",
+        label: "Claude Sonnet 5.5",
+    },
+    ProviderModel {
+        id: "claude-opus-5-5",
+        label: "Claude Opus 5.5",
+    },
+];
+const NO_ANTHROPIC_KEY: &str = "Add an Anthropic API key to use Claude cleanup; using Basic";
+/// The credential store entry for a destination: `anthropic` for Claude cleanup, or an
+/// HTTPS endpoint for a remote endpoint. Anything else has none.
+pub fn credential_account(destination: &str) -> Option<String> {
+    if destination == "anthropic" {
+        Some(ANTHROPIC_MESSAGES.into())
+    } else if endpoint_allowed(destination, true) {
+        Some(destination.into())
+    } else {
+        None
+    }
+}
+/// The API key saved for `account`, or an empty string when there is none.
+fn stored_key(account: &str) -> Result<String, String> {
+    Ok(keyring::Entry::new("app.conch.desktop", account)
+        .map_err(|_| "Credential store unavailable")?
+        .get_password()
+        .unwrap_or_default())
+}
+#[cfg(test)]
+thread_local! {
+    /// The endpoint and key that Claude cleanup uses in place of Anthropic's and the stored key.
+    static ANTHROPIC_TEST: std::cell::RefCell<Option<(String, String)>> =
+        const { std::cell::RefCell::new(None) };
+}
+/// The endpoint and API key of Claude cleanup.
+fn anthropic_destination() -> Result<(String, String), String> {
+    #[cfg(test)]
+    if let Some(destination) = ANTHROPIC_TEST.with(|t| t.borrow().clone()) {
+        return Ok(destination);
+    }
+    Ok((ANTHROPIC_MESSAGES.into(), stored_key(ANTHROPIC_MESSAGES)?))
+}
+/// The cleaned text of a Messages API response. A refusal or a response cut off at
+/// `max_tokens` is a failure, because its text is not the whole transcript.
+fn anthropic_text(value: &Value) -> Result<String, String> {
+    match value["stop_reason"].as_str() {
+        Some("end_turn" | "stop_sequence") => {}
+        Some("refusal") => return Err("Claude declined the cleanup; using Basic".into()),
+        _ => return Err("Claude cleanup did not finish; using Basic".into()),
+    }
+    let text: String = value["content"]
+        .as_array()
+        .ok_or("Invalid cleanup response")?
+        .iter()
+        .filter(|block| block["type"] == "text")
+        .filter_map(|block| block["text"].as_str())
+        .collect();
+    Ok(text)
+}
 /// Whether managed S1-mini cleanup can handle `language`.
 pub fn managed_cleanup_supported(language: &str) -> bool {
     CLEANUP.supports(language)
@@ -712,6 +787,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         return Err("Enhanced input exceeds the conservative 3,000-byte limit; using Basic".into());
     }
     let mut lease = None;
+    let anthropic = snapshot.enhanced == "anthropic";
     let (endpoint, token, system, user) = if snapshot.enhanced == "managed" {
         let held = acquire(workers, &data.join(CLEANUP.name), Kind::Llama, worker, cpu)?;
         let (url, key) = (held.server.endpoint.clone(), held.server.token.clone());
@@ -722,6 +798,12 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
             S1_SYSTEM,
             format!("{CONTROL_LINE}\n{basic}"),
         )
+    } else if anthropic {
+        let (url, key) = anthropic_destination()?;
+        if key.is_empty() {
+            return Err(NO_ANTHROPIC_KEY.into());
+        }
+        (url, key, CLEANUP_SYSTEM, basic.clone())
     } else {
         let remote = snapshot.enhanced == "remote";
         if remote && !cleanup.remote_enabled {
@@ -731,10 +813,7 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
             return Err("Cleanup endpoint is not allowed".into());
         }
         let key = if remote {
-            keyring::Entry::new("app.conch.desktop", &cleanup.endpoint)
-                .map_err(|_| "Credential store unavailable")?
-                .get_password()
-                .unwrap_or_default()
+            stored_key(&cleanup.endpoint)?
         } else {
             String::new()
         };
@@ -748,16 +827,23 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         let operation = async {
             if worker.locked().cancelled {return Err("Cancelled".to_string());}
             let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(30));
-            if snapshot.enhanced != "remote" {builder = builder.no_proxy();}
+            if !matches!(snapshot.enhanced.as_str(), "remote" | "anthropic") {builder = builder.no_proxy();}
             let client = builder.build().map_err(|_| "Cannot initialize cleanup client")?;
             if snapshot.enhanced == "managed" {
                 let tokenizer = endpoint.trim_end_matches("/v1/chat/completions").to_owned()+"/tokenize";
                 let tokens: Value = client.post(tokenizer).bearer_auth(&token).json(&json!({"content":format!("{system}\n{user}")})).send().await.and_then(|r|r.error_for_status()).map_err(|_| "Local tokenization failed; using Basic")?.json().await.map_err(|_| "Invalid tokenizer response")?;
                 if tokens["tokens"].as_array().is_none_or(|tokens|tokens.len() > 1000) {return Err("Managed cleanup input exceeds 1,000 tokens; using Basic".into());}
             }
-            let mut request = client.post(endpoint).json(&json!({"model":cleanup.model,"messages":[{"role":"system","content":system},{"role":"user","content":user}],"temperature":0,"max_tokens":1024,"chat_template_kwargs":{"enable_thinking":false}}));
-            if !token.is_empty() {request = request.bearer_auth(token);}
-            let mut response = request.send().await.and_then(|r|r.error_for_status()).map_err(|_| "Enhanced cleanup failed or timed out; using Basic")?;
+            let request = if anthropic {
+                // Low effort keeps the wait short; the rewrite needs little reasoning.
+                client.post(endpoint).header("x-api-key", &token).header("anthropic-version", ANTHROPIC_VERSION).json(&json!({"model":cleanup.anthropic_model,"max_tokens":1024,"system":system,"messages":[{"role":"user","content":user}],"output_config":{"effort":"low"}}))
+            } else {
+                let request = client.post(endpoint).json(&json!({"model":cleanup.model,"messages":[{"role":"system","content":system},{"role":"user","content":user}],"temperature":0,"max_tokens":1024,"chat_template_kwargs":{"enable_thinking":false}}));
+                if token.is_empty() {request} else {request.bearer_auth(token)}
+            };
+            let response = request.send().await.map_err(|_| "Enhanced cleanup failed or timed out; using Basic")?;
+            if anthropic && response.status() == reqwest::StatusCode::UNAUTHORIZED {return Err("Anthropic rejected the API key; using Basic".into());}
+            let mut response = response.error_for_status().map_err(|_| "Enhanced cleanup failed or timed out; using Basic")?;
             let mut bytes = vec![];
             while let Some(chunk) = response.chunk().await.map_err(|_| "Invalid cleanup response")? {
                 if bytes.len()+chunk.len() > 64*1024 {return Err("Cleanup response exceeds limit".into());}
@@ -771,9 +857,14 @@ pub fn enhanced(request: CleanupRequest<'_>) -> Result<String, String> {
         tokio::select! {biased; _ = cancelled => Err("Cancelled".into()), result = operation => result}
     })?;
     worker.locked().cleanup_model_time = model_time(&value);
-    let after = value["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or("Invalid cleanup response")?;
+    let after = if anthropic {
+        anthropic_text(&value)?
+    } else {
+        value["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or("Invalid cleanup response")?
+            .to_owned()
+    };
     let result = core::validate_enhanced(&basic, after.trim(), &masked)
         .ok_or("Enhanced rewrite failed preservation checks; using Basic")?;
     drop(lease);
@@ -1510,13 +1601,16 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     use super::enhanced as enhanced_cleanup;
     const ENGLISH_ONLY: &str = "Managed cleanup supports English only; using Basic";
     /// Answers one chat-completions request on a loopback port, as a local cleanup server would.
-    fn serve_cleanup(answer: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    fn serve_cleanup(answer: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let (base, thread) =
+            serve_json(json!({"choices": [{"message": {"content": answer}}]}).to_string());
+        (format!("{base}/v1/chat/completions"), thread)
+    }
+    /// Answers one request on a loopback port with `body`. The thread returns the request.
+    fn serve_json(body: String) -> (String, std::thread::JoinHandle<String>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = format!(
-            "http://127.0.0.1:{}/v1/chat/completions",
-            listener.local_addr().unwrap().port()
-        );
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let thread = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = vec![];
@@ -1541,15 +1635,104 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
                 }
                 assert!(n > 0, "request ended early");
             }
-            let body = json!({"choices": [{"message": {"content": answer}}]}).to_string();
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             )
             .unwrap();
+            String::from_utf8_lossy(&request).into_owned()
         });
-        (endpoint, thread)
+        (base, thread)
+    }
+    /// Runs Claude cleanup of "hello there" against `url` with `key`.
+    fn claude_request(url: &str, key: &str, model: &str) -> Result<String, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut snapshot = Snapshot {
+            enhanced: "anthropic".into(),
+            ..Default::default()
+        };
+        snapshot.cleanup.anthropic_model = model.into();
+        ANTHROPIC_TEST.with(|t| *t.borrow_mut() = Some((url.into(), key.into())));
+        let result = enhanced_cleanup(CleanupRequest {
+            workers: dir.path(),
+            data: dir.path(),
+            snapshot: &snapshot,
+            raw: "hello there",
+            worker: &new_worker(),
+            cpu: true,
+        });
+        ANTHROPIC_TEST.with(|t| *t.borrow_mut() = None);
+        result
+    }
+    #[test]
+    fn claude_cleanup_sends_the_key_and_reads_the_text_block() {
+        let (base, server) = serve_json(
+            json!({"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "Hello there."}], "stop_reason": "end_turn"})
+                .to_string(),
+        );
+        let result = claude_request(
+            &format!("{base}/v1/messages"),
+            "sk-test",
+            "claude-sonnet-5-5",
+        );
+        let request = server.join().unwrap();
+        assert_eq!(result.unwrap(), "Hello there.");
+        let lower = request.to_lowercase();
+        assert!(request.starts_with("POST /v1/messages "), "{request}");
+        assert!(lower.contains("x-api-key: sk-test\r\n"), "{request}");
+        assert!(
+            lower.contains("anthropic-version: 2026-10-21\r\n"),
+            "{request}"
+        );
+        assert!(!lower.contains("authorization:"), "{request}");
+        let body: Value =
+            serde_json::from_str(&request[request.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(body["model"], "claude-sonnet-5-5");
+        assert_eq!(body["system"], CLEANUP_SYSTEM);
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"], "hello there");
+        assert_eq!(body["output_config"]["effort"], "low");
+        assert!(body["max_tokens"].as_u64().is_some());
+        assert!(body.get("temperature").is_none());
+    }
+    #[test]
+    fn claude_cleanup_without_a_key_uses_basic_with_a_status() {
+        let error =
+            claude_request("http://127.0.0.1:9/v1/messages", "", "claude-haiku-5-5").unwrap_err();
+        assert_eq!(
+            error,
+            "Add an Anthropic API key to use Claude cleanup; using Basic"
+        );
+    }
+    #[test]
+    fn claude_cleanup_treats_a_refusal_or_truncation_as_a_failure() {
+        for stop in ["refusal", "max_tokens"] {
+            let (base, server) = serve_json(
+                json!({"content": [{"type": "text", "text": "Hello"}], "stop_reason": stop})
+                    .to_string(),
+            );
+            let result = claude_request(
+                &format!("{base}/v1/messages"),
+                "sk-test",
+                "claude-haiku-5-5",
+            );
+            server.join().unwrap();
+            assert!(result.is_err(), "{stop}");
+        }
+    }
+    #[test]
+    fn credentials_are_stored_per_destination() {
+        assert_eq!(
+            credential_account("anthropic").as_deref(),
+            Some(ANTHROPIC_MESSAGES)
+        );
+        assert_eq!(
+            credential_account("https://api.example.com/v1/chat/completions").as_deref(),
+            Some("https://api.example.com/v1/chat/completions")
+        );
+        assert_eq!(credential_account("http://example.com/v1"), None);
+        assert_eq!(credential_account("openai"), None);
     }
     /// Behavior table row "Managed S1-mini cleanup".
     #[test]

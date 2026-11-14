@@ -37,6 +37,10 @@ function noted(error: unknown) {
   invoke("logs_note", { message }).catch(() => undefined);
   return message;
 }
+/** Whether an API key is saved for `destination`, or null when the store cannot say. */
+const credentialSaved = (destination: string) =>
+  invoke<boolean>("credential_saved", { destination }).catch(() => null);
+
 export default function App() {
   const [view, setView] = useState<View>();
   const [draft, setDraft] = useState<Settings>();
@@ -665,8 +669,13 @@ export default function App() {
             downloadBusy={downloadBusy}
             percent={percent}
             onDownload={(id) => void downloadModel(id)}
-            onCredential={async (endpoint, secret) => {
-              const saved = await command("credential", { endpoint, secret });
+            anthropicModels={view.anthropic_models}
+            credentialSaved={credentialSaved}
+            onCredential={async (destination, secret) => {
+              const saved = await command("credential", {
+                destination,
+                secret,
+              });
               if (saved)
                 setNotice(
                   secret === null

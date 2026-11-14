@@ -44,6 +44,7 @@ const fixture = () => ({
       endpoint: "",
       model: "",
       remote_enabled: false,
+      anthropic_model: "claude-haiku-5-5",
     },
     profiles: [
       {
@@ -65,6 +66,11 @@ const fixture = () => ({
   history_revision: 0,
   logs_revision: 0,
   models: catalog(),
+  anthropic_models: [
+    { id: "claude-haiku-5-5", label: "Claude Haiku 5.5 (fastest)" },
+    { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
+    { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
+  ],
   languages: LANGUAGES,
   accessibility: false,
   microphone: "unknown",
@@ -76,6 +82,7 @@ const fixture = () => ({
   update: { state: "idle" } as { state: string; detail?: string },
 });
 let view = fixture();
+let savedKeys = new Set<string>();
 let holdDownload: Promise<void> | null = null;
 const install = (...ids: string[]) =>
   view.models.forEach((model) => {
@@ -83,6 +90,7 @@ const install = (...ids: string[]) =>
   });
 beforeEach(() => {
   view = fixture();
+  savedKeys = new Set();
   holdDownload = null;
   events.progress = null;
   ipc.mockReset();
@@ -102,6 +110,13 @@ beforeEach(() => {
         return ["Built-in Microphone", "USB Microphone"];
       if (name === "save_settings") {
         view.settings = args?.settings as typeof view.settings;
+      }
+      if (name === "credential_saved")
+        return savedKeys.has(args?.destination as string);
+      if (name === "credential") {
+        const destination = args?.destination as string;
+        if (args?.secret) savedKeys.add(destination);
+        else savedKeys.delete(destination);
       }
       return;
     },
@@ -308,6 +323,7 @@ it("turns Enhanced cleanup off by default and offers the S1-mini download only f
   expect(Array.from(choice.options).map((option) => option.value)).toEqual([
     "disabled",
     "managed",
+    "anthropic",
     "local",
     "remote",
   ]);
@@ -341,6 +357,64 @@ it("asks for an endpoint when Enhanced cleanup uses a local or remote model", as
   ).toBeTruthy();
   fireEvent.change(choice, { target: { value: "disabled" } });
   expect(screen.queryByLabelText("Endpoint")).toBeNull();
+});
+it("sets up Claude cleanup with a model and an API key and no endpoint", async () => {
+  render(<App />);
+  await openProfiles();
+  const choice = await screen.findByRole("combobox", {
+    name: "Enhanced cleanup",
+  });
+  fireEvent.change(choice, { target: { value: "anthropic" } });
+  const model = (await screen.findByRole("combobox", {
+    name: "Claude model",
+  })) as HTMLSelectElement;
+  expect(model.value).toBe("claude-haiku-5-5");
+  expect(Array.from(model.options).map((option) => option.text)).toEqual([
+    "Claude Haiku 5.5 (fastest)",
+    "Claude Sonnet 5.5",
+    "Claude Opus 5.5",
+  ]);
+  expect(screen.queryByLabelText("Endpoint")).toBeNull();
+  expect(screen.queryByRole("checkbox", { name: /enable remote/i })).toBeNull();
+  expect(screen.getByText(/dictated text leaves this device/i)).toBeTruthy();
+  expect(await screen.findByText("No API key saved")).toBeTruthy();
+  fireEvent.change(model, { target: { value: "claude-sonnet-5-5" } });
+  fireEvent.change(screen.getByLabelText("API key"), {
+    target: { value: "sk-ant-test" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("credential", {
+      destination: "anthropic",
+      secret: "sk-ant-test",
+    }),
+  );
+  expect(await screen.findByText("API key saved")).toBeTruthy();
+  expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("");
+  const saved = await savedSettings();
+  expect(saved.profiles[0].enhanced).toBe("anthropic");
+  expect(saved.cleanup.anthropic_model).toBe("claude-sonnet-5-5");
+});
+it("keeps a remote endpoint's key under that endpoint", async () => {
+  render(<App />);
+  await openProfiles();
+  fireEvent.change(
+    await screen.findByRole("combobox", { name: "Enhanced cleanup" }),
+    { target: { value: "remote" } },
+  );
+  fireEvent.change(await screen.findByLabelText("Endpoint"), {
+    target: { value: "https://api.example.com/v1/chat/completions" },
+  });
+  fireEvent.change(screen.getByLabelText("API key"), {
+    target: { value: "secret" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("credential", {
+      destination: "https://api.example.com/v1/chat/completions",
+      secret: "secret",
+    }),
+  );
 });
 it("follows the system microphone until the user picks a device, then saves its name", async () => {
   render(<App />);

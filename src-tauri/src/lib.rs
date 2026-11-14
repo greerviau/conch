@@ -57,6 +57,7 @@ pub fn run() {
             app::logs_copy,
             app::download,
             app::credential,
+            app::credential_saved,
             update::check_update,
             update::install_update
         ])

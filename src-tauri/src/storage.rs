@@ -25,7 +25,7 @@ pub struct Profile {
     pub language: String,
     /// Id of the recognition model, from `inference::RECOGNIZERS`.
     pub recognizer: String,
-    /// Enhanced cleanup: `disabled`, `managed`, `local`, or `remote`.
+    /// Enhanced cleanup: `disabled`, `managed`, `anthropic`, `local`, or `remote`.
     pub enhanced: String,
     /// Ids of the repositories whose vocabulary and mappings a recording uses.
     pub repositories: Vec<String>,
@@ -163,7 +163,7 @@ pub fn normalize(settings: &mut Settings) {
     }
 }
 /// The Enhanced cleanup choices a profile can hold.
-pub const ENHANCED: [&str; 4] = ["disabled", "managed", "local", "remote"];
+pub const ENHANCED: [&str; 5] = ["disabled", "managed", "anthropic", "local", "remote"];
 /// The `user_version` of the current schema. Version 1 keeps each index's
 /// status in columns, so reading the status does not parse the entries.
 const SCHEMA: i64 = 1;
