@@ -1075,7 +1075,18 @@ with open(os.path.join(here, "starts.log"), "a") as log:
     log.write(str(os.getpid()) + "\n")
 with open(os.path.join(here, "args.log"), "a") as log:
     log.write("\0".join(sys.argv[1:]) + "\n")
+token = "Bearer " + os.environ["CONCH_WORKER_TOKEN"]
 class Handler(http.server.BaseHTTPRequestHandler):
+    def parse_request(self):
+        # Like the real servers, answer only the token Conch launched this
+        # one with, so a test never takes another test's server on a reused
+        # port for its own.
+        if not super().parse_request():
+            return False
+        if self.headers.get("Authorization") != token:
+            self.send_error(401)
+            return False
+        return True
     def log_message(self, *args):
         pass
     def do_GET(self):
@@ -1100,7 +1111,18 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 import http.server, json, os, sys
 port = int(sys.argv[sys.argv.index("--port") + 1])
 here = os.path.dirname(os.path.abspath(__file__))
+token = "Bearer " + sys.argv[sys.argv.index("--api-key") + 1]
 class Handler(http.server.BaseHTTPRequestHandler):
+    def parse_request(self):
+        # Like the real servers, answer only the token Conch launched this
+        # one with, so a test never takes another test's server on a reused
+        # port for its own.
+        if not super().parse_request():
+            return False
+        if self.headers.get("Authorization") != token:
+            self.send_error(401)
+            return False
+        return True
     def log_message(self, *args):
         pass
     def do_GET(self):
