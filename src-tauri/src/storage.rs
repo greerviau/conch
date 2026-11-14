@@ -497,8 +497,8 @@ mod tests {
         ]);
         let texts: Vec<_> = snapshot(&settings, &indexes)
             .vocabulary
-            .into_iter()
-            .map(|v| v.text)
+            .iter()
+            .map(|v| v.text.clone())
             .collect();
         assert_eq!(texts, ["Alpha"]);
     }

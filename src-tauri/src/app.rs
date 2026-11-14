@@ -369,6 +369,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     });
     drop(inner);
     std::thread::spawn(platform::prepare);
+    warm_terms(&snapshot);
     warm_cleanup(&state, &snapshot, &worker);
     let handle = app.clone();
     std::thread::spawn(move || {
@@ -529,6 +530,7 @@ pub fn switch_profile(state: &AppState, id: &str) -> Result<(), String> {
             "dictation",
             "Switched the recording to another profile; recognizing the audio so far again",
         );
+        warm_terms(&snapshot);
         warm_cleanup(state, &snapshot, &worker);
     }
     Ok(())
@@ -587,6 +589,12 @@ fn recognition_for(
             }) as pipeline::Cleaner
         });
     Ok((model, recognize, clean))
+}
+/// Builds the lookup tables of the snapshot's indexed terms while the user speaks, so
+/// preparing the result does not wait for them.
+fn warm_terms(snapshot: &Snapshot) {
+    let snapshot = snapshot.clone();
+    std::thread::spawn(move || snapshot.vocabulary.warm(&snapshot.language));
 }
 /// Loads managed S1-mini while the user speaks, when the recording cleans with it.
 fn warm_cleanup(state: &AppState, snapshot: &Snapshot, worker: &Worker) {

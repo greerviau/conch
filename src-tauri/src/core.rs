@@ -54,10 +54,103 @@ impl Default for Cleanup {
         }
     }
 }
+/// The indexed terms of a context snapshot. They do not change once the snapshot is taken,
+/// so its clones share them and the lookup tables derived from them. The tables are built
+/// on first use, or ahead of it by `warm`.
+#[derive(Clone, Default)]
+pub struct Terms(std::sync::Arc<TermTables>);
+#[derive(Default)]
+struct TermTables {
+    entries: Vec<Vocabulary>,
+    /// For each entry, the words a recognizer writes for it, when they differ from the entry.
+    phrases: std::sync::OnceLock<Vec<Option<Box<str>>>>,
+    /// The identifiers the recognition hint lists, in its order.
+    identifiers: std::sync::OnceLock<Vec<usize>>,
+    /// The sound keys with English letter names and without.
+    sounds: [std::sync::OnceLock<crate::spoken::Index>; 2],
+}
+impl Terms {
+    /// Adds an entry. The tables are derived again on their next use.
+    pub fn push(&mut self, entry: Vocabulary) {
+        let mut entries = self.0.entries.clone();
+        entries.push(entry);
+        *self = entries.into();
+    }
+    /// Builds every table a recording in `language` reads, so the first result does not wait.
+    pub fn warm(&self, language: &str) {
+        self.phrases();
+        self.identifiers();
+        self.sounds(language);
+    }
+    fn phrases(&self) -> &[Option<Box<str>>] {
+        self.0.phrases.get_or_init(|| {
+            self.iter()
+                .map(|v| {
+                    let phrase = spoken(&v.text);
+                    (phrase != crate::fold::fold(&v.text)).then(|| phrase.into())
+                })
+                .collect()
+        })
+    }
+    /// Indexes of the distinct identifiers, those that more entries declare first and
+    /// then in alphabetical order.
+    fn identifiers(&self) -> &[usize] {
+        self.0.identifiers.get_or_init(|| {
+            let mut declared = std::collections::BTreeMap::<&str, (usize, usize)>::new();
+            for (at, v) in self.iter().enumerate() {
+                if crate::spoken::is_identifier(&v.text) {
+                    declared.entry(v.text.as_str()).or_insert((0, at)).0 += 1;
+                }
+            }
+            let mut ranked: Vec<_> = declared.into_iter().collect();
+            ranked.sort_by_key(|&(text, (count, _))| (std::cmp::Reverse(count), text));
+            ranked.into_iter().map(|(_, (_, at))| at).collect()
+        })
+    }
+    fn sounds(&self, language: &str) -> &crate::spoken::Index {
+        let english = crate::spoken::names_letters(language);
+        self.0.sounds[usize::from(english)]
+            .get_or_init(|| crate::spoken::Index::build(self, language))
+    }
+}
+impl std::ops::Deref for Terms {
+    type Target = [Vocabulary];
+    fn deref(&self) -> &[Vocabulary] {
+        &self.0.entries
+    }
+}
+impl From<Vec<Vocabulary>> for Terms {
+    fn from(entries: Vec<Vocabulary>) -> Self {
+        Self(std::sync::Arc::new(TermTables {
+            entries,
+            ..Default::default()
+        }))
+    }
+}
+impl FromIterator<Vocabulary> for Terms {
+    fn from_iter<I: IntoIterator<Item = Vocabulary>>(entries: I) -> Self {
+        entries.into_iter().collect::<Vec<_>>().into()
+    }
+}
+impl std::fmt::Debug for Terms {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.entries.fmt(f)
+    }
+}
+impl Serialize for Terms {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.entries.serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for Terms {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<Vocabulary>::deserialize(deserializer).map(Self::from)
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub mappings: Vec<Mapping>,
-    pub vocabulary: Vec<Vocabulary>,
+    pub vocabulary: Terms,
     pub cleanup: Cleanup,
     /// Enhanced cleanup: `disabled`, `managed`, `anthropic`, `local`, or `remote`.
     pub enhanced: String,
@@ -72,7 +165,7 @@ impl Default for Snapshot {
     fn default() -> Self {
         Self {
             mappings: vec![],
-            vocabulary: vec![],
+            vocabulary: Terms::default(),
             cleanup: Cleanup::default(),
             enhanced: "disabled".into(),
             auto_accept: false,
@@ -188,10 +281,35 @@ fn quote_spans(text: &str) -> Vec<(usize, usize)> {
     spans
 }
 pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
+    mask_with(
+        raw,
+        &snapshot.mappings,
+        &snapshot.vocabulary,
+        &[],
+        &snapshot.cleanup.excluded,
+    )
+}
+/// Whether each byte value occurs in `text`. Text that lacks a byte of a term cannot
+/// contain the term, which rules out most of a large vocabulary without searching for it.
+fn bytes_present(text: &str) -> [bool; 256] {
+    let mut present = [false; 256];
+    for byte in text.bytes() {
+        present[byte as usize] = true;
+    }
+    present
+}
+/// Masks `raw` as `mask` does, with the mappings, the terms kept as written (`vocabulary`
+/// and `literals`), and the excluded terms given apart.
+fn mask_with(
+    raw: &str,
+    mappings: &[Mapping],
+    vocabulary: &[Vocabulary],
+    literals: &[&str],
+    excluded: &[String],
+) -> Masked {
     let mut spans: Vec<(usize, usize, String)> = vec![];
     let mut groups = std::collections::BTreeMap::<String, Vec<&Mapping>>::new();
-    for m in snapshot
-        .mappings
+    for m in mappings
         .iter()
         .filter(|m| m.enabled && !m.phrase.trim().is_empty())
     {
@@ -259,17 +377,22 @@ pub fn mask(raw: &str, snapshot: &Snapshot) -> Masked {
         .iter()
         .map(|&(start, end)| (start, end, raw[start..end].to_owned()))
         .collect();
-    for v in &snapshot.vocabulary {
-        if v.text.is_empty() {
+    let present = bytes_present(raw);
+    for term in vocabulary
+        .iter()
+        .map(|v| v.text.as_str())
+        .chain(literals.iter().copied())
+    {
+        if term.is_empty() || !term.bytes().all(|byte| present[byte as usize]) {
             continue;
         }
-        for (start, literal) in raw.match_indices(&v.text) {
+        for (start, literal) in raw.match_indices(term) {
             if boundary(raw, start, start + literal.len()) {
                 protected.push((start, start + literal.len(), literal.into()));
             }
         }
     }
-    for term in &snapshot.cleanup.excluded {
+    for term in excluded {
         if let Some(re) = phrase_regex(term) {
             protected.extend(
                 re.find_iter(raw)
@@ -353,7 +476,12 @@ fn add_sound_alikes(
     protected: &[(usize, usize)],
     groups: &mut std::collections::BTreeMap<(usize, usize, bool), Vec<Vocabulary>>,
 ) {
-    let found = crate::spoken::find(text, &snapshot.vocabulary, protected, &snapshot.language);
+    let found = crate::spoken::find_in(
+        text,
+        snapshot.vocabulary.sounds(&snapshot.language),
+        &snapshot.vocabulary,
+        protected,
+    );
     let mut best = std::collections::BTreeMap::<(usize, usize), usize>::new();
     for m in &found {
         best.entry((m.start, m.end))
@@ -389,31 +517,34 @@ fn add_sound_alikes(
 }
 pub fn suggestions(text: &str, snapshot: &Snapshot) -> Vec<Suggestion> {
     let mut groups = std::collections::BTreeMap::<(usize, usize, bool), Vec<Vocabulary>>::new();
-    let mut protection = snapshot.clone();
-    protection
-        .vocabulary
-        .extend(
-            snapshot
-                .mappings
-                .iter()
-                .filter(|m| m.enabled)
-                .map(|m| Vocabulary {
-                    text: m.replacement.clone(),
-                    ..Default::default()
-                }),
-        );
-    protection.mappings.clear();
-    let protected = mask(text, &protection);
+    // Indexed terms and mapped replacements already in the text are not suggested over.
+    let replacements: Vec<&str> = snapshot
+        .mappings
+        .iter()
+        .filter(|m| m.enabled)
+        .map(|m| m.replacement.as_str())
+        .collect();
+    let protected = mask_with(
+        text,
+        &[],
+        &snapshot.vocabulary,
+        &replacements,
+        &snapshot.cleanup.excluded,
+    );
     let normalized = spoken(text);
-    for v in &snapshot.vocabulary {
-        let phrase = spoken(&v.text);
-        if !normalized.contains(&phrase) {
+    let present = bytes_present(&normalized);
+    for (v, phrase) in snapshot
+        .vocabulary
+        .iter()
+        .zip(snapshot.vocabulary.phrases())
+    {
+        let Some(phrase) = phrase.as_deref() else {
+            continue;
+        };
+        if !phrase.bytes().all(|byte| present[byte as usize]) || !normalized.contains(phrase) {
             continue;
         }
-        if phrase == crate::fold::fold(&v.text) {
-            continue;
-        }
-        if let Some(re) = phrase_regex(&phrase) {
+        if let Some(re) = phrase_regex(phrase) {
             for m in re.find_iter(text).filter(|m| {
                 boundary(text, m.start(), m.end())
                     && !protected
@@ -493,15 +624,13 @@ pub fn recognition_hint(snapshot: &Snapshot) -> String {
         .map(|m| m.replacement.trim())
         .filter(|t| !t.is_empty() && t.len() <= HINT_TERM_BYTES && !t.contains('\n'))
         .collect();
-    let mut declared = std::collections::BTreeMap::<&str, usize>::new();
-    for v in &snapshot.vocabulary {
-        if crate::spoken::is_identifier(&v.text) {
-            *declared.entry(v.text.as_str()).or_default() += 1;
-        }
-    }
-    let mut ranked: Vec<_> = declared.into_iter().collect();
-    ranked.sort_by_key(|&(text, count)| (std::cmp::Reverse(count), text));
-    terms.extend(ranked.into_iter().map(|(text, _)| text));
+    terms.extend(
+        snapshot
+            .vocabulary
+            .identifiers()
+            .iter()
+            .map(|&at| snapshot.vocabulary[at].text.as_str()),
+    );
     let mut chosen: Vec<&str> = vec![];
     let mut seen = std::collections::HashSet::new();
     // The prefix and the closing period.
@@ -898,7 +1027,8 @@ mod tests {
             vocabulary: vec![Vocabulary {
                 text: "maxGroups".into(),
                 ..Default::default()
-            }],
+            }]
+            .into(),
             ..Default::default()
         };
         let mut result = prepare("max groups and max groups", &snapshot);
@@ -914,7 +1044,8 @@ mod tests {
             vocabulary: vec![Vocabulary {
                 text: "maxGroups".into(),
                 ..Default::default()
-            }],
+            }]
+            .into(),
             ..Default::default()
         };
         let result = prepare("'max groups' and max groups", &snapshot);
@@ -1219,7 +1350,8 @@ mod tests {
         snapshot.vocabulary = vec![
             term_in("gr\u{FC}n\u{C4}pfel"),
             term_in("Stra\u{DF}e\u{D6}l"),
-        ];
+        ]
+        .into();
         let exact = suggestions("zwei GR\u{DC}N \u{C4}PFEL bitte", &snapshot);
         assert_eq!(exact.len(), 1, "{language}");
         assert_eq!(exact[0].candidates[0].text, "gr\u{FC}n\u{C4}pfel");
@@ -1281,7 +1413,7 @@ mod tests {
     /// Behavior table row "Spelled-letter matching": English only.
     fn spelled_letters(language: &str) -> usize {
         let mut snapshot = in_language(language);
-        snapshot.vocabulary = vec![term_in("podGC")];
+        snapshot.vocabulary = vec![term_in("podGC")].into();
         suggestions("pod gee see", &snapshot).len()
     }
     #[test]
@@ -1543,5 +1675,213 @@ mod tests {
         assert_eq!(Cleanup::default().anthropic_model, "claude-haiku-5-5");
         let saved: Cleanup = serde_json::from_str(r#"{"endpoint":""}"#).unwrap();
         assert_eq!(saved.anthropic_model, "claude-haiku-5-5");
+    }
+
+    #[test]
+    fn clones_of_a_snapshot_share_the_tables_of_its_terms() {
+        let snapshot = indexed(&["maxGroups", "podGC"]);
+        let clone = snapshot.clone();
+        snapshot.vocabulary.warm("en");
+        assert!(std::ptr::eq(
+            snapshot.vocabulary.phrases(),
+            clone.vocabulary.phrases()
+        ));
+        assert!(std::ptr::eq(
+            snapshot.vocabulary.sounds("en"),
+            clone.vocabulary.sounds("en")
+        ));
+        // English spells acronyms by letter name, so it keeps its own sound keys.
+        assert!(!std::ptr::eq(
+            snapshot.vocabulary.sounds("en"),
+            snapshot.vocabulary.sounds("de")
+        ));
+        assert!(std::ptr::eq(
+            snapshot.vocabulary.sounds("de"),
+            snapshot.vocabulary.sounds("auto")
+        ));
+    }
+    #[test]
+    fn a_term_added_after_the_tables_were_built_is_found() {
+        let mut snapshot = indexed(&["maxGroups"]);
+        assert!(
+            prepare("use the pod gee see", &snapshot)
+                .suggestions
+                .is_empty()
+        );
+        snapshot.vocabulary.push(Vocabulary {
+            text: "podGC".into(),
+            repository: "r".into(),
+            file: "a.ts".into(),
+        });
+        let result = prepare("use the pod gee see and max groups", &snapshot);
+        let found: Vec<_> = result
+            .suggestions
+            .iter()
+            .map(|s| s.candidates[0].text.as_str())
+            .collect();
+        assert_eq!(found, ["podGC", "maxGroups"]);
+        assert_eq!(recognition_hint(&snapshot), "Vocabulary: maxGroups, podGC.");
+    }
+    /// A vocabulary of every shape the index produces, built without randomness.
+    fn golden_snapshot(language: &str, auto_accept: bool) -> Snapshot {
+        let words = [
+            "max", "group", "pod", "read", "file", "app", "bar", "user", "index", "chunk",
+            "worker", "stream", "token", "parse", "render", "queue", "cache", "http", "json",
+            "path", "state", "view", "log", "retry",
+        ];
+        let acronyms = ["GC", "URL", "ID", "API", "HTTP", "IO", "DB", "UI"];
+        let title = |word: &str| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+                .unwrap_or_default()
+        };
+        let mut texts: Vec<String> = vec![];
+        for (i, a) in words.iter().enumerate() {
+            let b = words[(i * 7 + 3) % words.len()];
+            let c = words[(i * 5 + 1) % words.len()];
+            let acronym = acronyms[i % acronyms.len()];
+            texts.push(format!("{a}{}", title(b)));
+            texts.push(format!("{a}{}{}", title(b), title(c)));
+            texts.push(format!("{}{}s", title(a), title(b)));
+            texts.push(format!("{a}_{b}"));
+            texts.push(format!("{a}{acronym}"));
+            texts.push(format!("{acronym}{}", title(a)));
+            texts.push(format!("src/{a}/{b}_{c}.ts"));
+            texts.push(format!("{b}_{c}.ts"));
+            texts.push(format!("{a}-{b}.py"));
+            if i % 4 == 0 {
+                texts.push((*a).to_owned());
+            }
+            texts.push(format!("{a}{i}"));
+        }
+        texts.extend(
+            [
+                "podGC",
+                "maxGroups",
+                "AppBar",
+                "readFile",
+                "\u{DC}berGr\u{F6}\u{DF}e",
+                "Stra\u{DF}e\u{D6}l",
+                "\u{130}Value",
+                "C#",
+                "node.js",
+                "uh.py",
+                "",
+                "a,b",
+                "\u{3A3}\u{3AF}\u{3C3}\u{3C5}\u{3C6}\u{3BF}\u{3C2}Name",
+                "x",
+                "HTTPServer",
+                "parseHTTPResponse",
+                "user_id",
+                "README.md",
+            ]
+            .map(String::from),
+        );
+        Snapshot {
+            vocabulary: texts
+                .into_iter()
+                .enumerate()
+                .map(|(i, text)| Vocabulary {
+                    text,
+                    repository: if i % 3 == 0 { "other" } else { "r" }.into(),
+                    file: format!("src/file{}.ts", i % 17),
+                })
+                .collect(),
+            mappings: vec![
+                mapping("you em", "um", None),
+                mapping("pod gee see", "podGC", Some("r")),
+                mapping("pod gee see", "PodGc", Some("other")),
+                mapping("alpha beta", "Widget", None),
+                mapping("the queue", "workerQueue", Some("r")),
+                Mapping {
+                    enabled: false,
+                    ..mapping("max group", "disabled", None)
+                },
+            ],
+            cleanup: Cleanup {
+                excluded: vec!["Keep This".into(), "node.js".into()],
+                ..Default::default()
+            },
+            auto_accept,
+            language: language.into(),
+            ..Default::default()
+        }
+    }
+    const GOLDEN_SENTENCES: [&str; 22] = [
+        "Rename the pod gee see helper in app bar and then update max group so the worker does not fail.",
+        "um, do not change 12 uh.py or 'uh' or you em uh, repeat repeat",
+        "use max groups and Max Group and maxgroup with read file",
+        "the queue feeds the worker queue and the http server",
+        "parse http response before 3 tests, never after",
+        "say \"alpha beta\" then alpha beta and 'max groups' here",
+        "open src/max/http_index.ts and http_index.ts and README.md",
+        "the user id and user_id and user I D differ",
+        "pod G C and pod GC and POD gee see and tripod gc",
+        "keep this exactly and Keep This too with node.js",
+        "die \u{FC}ber gr\u{F6}\u{DF}e hier und STRASSE \u{D6}L und strasse \u{F6}l",
+        "an i\u{307} value here and \u{3C3}\u{3AF}\u{3C3}\u{3C5}\u{3C6}\u{3BF}\u{3C3} name",
+        "app bear, app bar; app-bar. AppBar!",
+        "read file. Read File? read  file",
+        "max0 and max 0 and cache 16 with index chunk worker",
+        "aitch tee tee pee server and you are el path",
+        "state view log retry token stream",
+        "it's the user's index, don't 'parse render' it",
+        "uh um uh",
+        "",
+        "C# and a,b and x",
+        "render queue cache http json path state view log retry render queue",
+    ];
+    /// The prepared result, mask, and hint of every golden sentence as text.
+    fn golden_output() -> String {
+        let mut out = String::new();
+        for (language, auto_accept) in [("en", false), ("en", true), ("de", false), ("auto", false)]
+        {
+            let snapshot = golden_snapshot(language, auto_accept);
+            out.push_str(&format!(
+                "# {language} auto_accept={auto_accept}\nhint: {}\n",
+                recognition_hint(&snapshot)
+            ));
+            for sentence in GOLDEN_SENTENCES {
+                let result = prepare(sentence, &snapshot);
+                let masked = mask(sentence, &snapshot);
+                out.push_str(&format!(
+                    "> {sentence}\ntext: {}\nmasked: {}\nliterals: {:?}\nedits: {}\nsuggestions: {}\n",
+                    result.text,
+                    masked.text,
+                    masked.literals,
+                    serde_json::to_string(&result.edits).unwrap(),
+                    serde_json::to_string(&result.suggestions).unwrap(),
+                ));
+                // Enhanced cleanup computes the suggestions again on its own text.
+                let again = suggestions(&result.text, &snapshot);
+                out.push_str(&format!(
+                    "again: {}\n",
+                    serde_json::to_string(&again).unwrap()
+                ));
+            }
+        }
+        out
+    }
+    /// Pins what preparation returns for a varied vocabulary, so a change to how the
+    /// vocabulary is searched cannot change a result. Set `CONCH_WRITE_GOLDEN` to
+    /// rewrite the file after an intended change.
+    #[test]
+    fn preparation_of_a_varied_vocabulary_matches_the_recorded_results() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/preparation.txt"
+        );
+        let actual = golden_output();
+        if std::env::var_os("CONCH_WRITE_GOLDEN").is_some() {
+            std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
+            std::fs::write(path, &actual).unwrap();
+        }
+        let recorded = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            actual == recorded,
+            "preparation changed; compare with {path}"
+        );
     }
 }

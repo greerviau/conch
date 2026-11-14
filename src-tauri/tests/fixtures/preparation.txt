@@ -1,0 +1,624 @@
+# en auto_accept=false
+hint: Vocabulary: um, podGC, PodGc, Widget, workerQueue, AppBar, AppRenders, BarViews, CachePaths, ChunkJsons, FileUsers, GroupWorkers, HttpPods, IndexStreams, JsonChunks, LogParses, MaxReads, ParseLogs, PathCaches, PodHttps, QueueTokens, ReadMaxs, RenderApps, RetryStates, StateRetrys, StraßeÖl, StreamIndexs, TokenQueues, UserFiles, ViewBars, WorkerGroups, appIO, appRender, appRenderPod, app_render.
+> Rename the pod gee see helper in app bar and then update max group so the worker does not fail.
+text: Rename the pod gee see helper in app bar and then update max group so the worker does not fail.
+masked: Rename the CONCHPROTECTED0X helper in app bar and then update CONCHPROTECTED1X group so the worker does not fail.
+literals: ["pod gee see", "max"]
+edits: []
+suggestions: [{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true},{"start":33,"end":40,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+again: [{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true},{"start":33,"end":40,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+> um, do not change 12 uh.py or 'uh' or you em uh, repeat repeat
+text: do not change 12 uh.py or 'uh' or um repeat repeat
+masked: um, do not change 12 CONCHPROTECTED0X or CONCHPROTECTED1X or CONCHPROTECTED2X uh, repeat repeat
+literals: ["uh.py", "'uh'", "um"]
+edits: []
+suggestions: []
+again: []
+> use max groups and Max Group and maxgroup with read file
+text: use max groups and Max Group and maxgroup with read file
+masked: use CONCHPROTECTED0X groups and Max Group and maxgroup with read CONCHPROTECTED1X
+literals: ["max", "file"]
+edits: []
+suggestions: [{"start":19,"end":28,"original":"Max Group","candidates":[{"text":"maxGroups","repository":"r","file":"src/file9.ts"}],"conflict":false}]
+again: [{"start":19,"end":28,"original":"Max Group","candidates":[{"text":"maxGroups","repository":"r","file":"src/file9.ts"}],"conflict":false}]
+> the queue feeds the worker queue and the http server
+text: workerQueue feeds the worker queue and the http server
+masked: CONCHPROTECTED0X feeds the worker queue and the http server
+literals: ["workerQueue"]
+edits: []
+suggestions: [{"start":43,"end":54,"original":"http server","candidates":[{"text":"HTTPServer","repository":"r","file":"src/file5.ts"}],"conflict":false}]
+again: [{"start":43,"end":54,"original":"http server","candidates":[{"text":"HTTPServer","repository":"r","file":"src/file5.ts"}],"conflict":false}]
+> parse http response before 3 tests, never after
+text: parse http response before 3 tests, never after
+masked: parse http response before 3 tests, never after
+literals: []
+edits: []
+suggestions: [{"start":0,"end":19,"original":"parse http response","candidates":[{"text":"parseHTTPResponse","repository":"other","file":"src/file6.ts"}],"conflict":false}]
+again: [{"start":0,"end":19,"original":"parse http response","candidates":[{"text":"parseHTTPResponse","repository":"other","file":"src/file6.ts"}],"conflict":false}]
+> say "alpha beta" then alpha beta and 'max groups' here
+text: say "Widget" then Widget and 'max groups' here
+masked: say CONCHPROTECTED0X then CONCHPROTECTED1X and CONCHPROTECTED2X here
+literals: ["\"Widget\"", "Widget", "'max groups'"]
+edits: []
+suggestions: []
+again: []
+> open src/max/http_index.ts and http_index.ts and README.md
+text: open src/max/http_index.ts and http_index.ts and README.md
+masked: open src/CONCHPROTECTED0X/http_index.ts and http_index.ts and CONCHPROTECTED1X
+literals: ["max", "README.md"]
+edits: []
+suggestions: []
+again: []
+> the user id and user_id and user I D differ
+text: the user id and user_id and user I D differ
+masked: the user id and CONCHPROTECTED0X and user I D differ
+literals: ["user_id"]
+edits: []
+suggestions: [{"start":4,"end":11,"original":"user id","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false},{"start":28,"end":36,"original":"user I D","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false}]
+again: [{"start":4,"end":11,"original":"user id","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false},{"start":28,"end":36,"original":"user I D","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false}]
+> pod G C and pod GC and POD gee see and tripod gc
+text: pod G C and pod GC and POD gee see and tripod gc
+masked: pod G C and pod GC and CONCHPROTECTED0X and tripod gc
+literals: ["POD gee see"]
+edits: []
+suggestions: [{"start":6,"end":7,"original":"C","candidates":[{"text":"C#","repository":"r","file":"src/file15.ts"}],"conflict":false},{"start":12,"end":18,"original":"pod GC","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+again: [{"start":6,"end":7,"original":"C","candidates":[{"text":"C#","repository":"r","file":"src/file15.ts"}],"conflict":false},{"start":12,"end":18,"original":"pod GC","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+> keep this exactly and Keep This too with node.js
+text: keep this exactly and Keep This too with node.js
+masked: CONCHPROTECTED0X exactly and CONCHPROTECTED1X too with CONCHPROTECTED2X
+literals: ["keep this", "Keep This", "node.js"]
+edits: []
+suggestions: []
+again: []
+> die über größe hier und STRASSE ÖL und strasse öl
+text: die über größe hier und STRASSE ÖL und strasse öl
+masked: die über größe hier und STRASSE ÖL und strasse öl
+literals: []
+edits: []
+suggestions: [{"start":4,"end":17,"original":"über größe","candidates":[{"text":"ÜberGröße","repository":"r","file":"src/file12.ts"}],"conflict":false},{"start":27,"end":38,"original":"STRASSE ÖL","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false},{"start":43,"end":54,"original":"strasse öl","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false}]
+again: [{"start":4,"end":17,"original":"über größe","candidates":[{"text":"ÜberGröße","repository":"r","file":"src/file12.ts"}],"conflict":false},{"start":27,"end":38,"original":"STRASSE ÖL","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false},{"start":43,"end":54,"original":"strasse öl","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false}]
+> an i̇ value here and σίσυφοσ name
+text: an i̇ value here and σίσυφοσ name
+masked: an i̇ value here and σίσυφοσ name
+literals: []
+edits: []
+suggestions: [{"start":3,"end":12,"original":"i̇ value","candidates":[{"text":"İValue","repository":"other","file":"src/file14.ts"}],"conflict":false},{"start":22,"end":41,"original":"σίσυφοσ name","candidates":[{"text":"ΣίσυφοςName","repository":"other","file":"src/file3.ts"}],"conflict":false}]
+again: [{"start":3,"end":12,"original":"i̇ value","candidates":[{"text":"İValue","repository":"other","file":"src/file14.ts"}],"conflict":false},{"start":22,"end":41,"original":"σίσυφοσ name","candidates":[{"text":"ΣίσυφοςName","repository":"other","file":"src/file3.ts"}],"conflict":false}]
+> app bear, app bar; app-bar. AppBar!
+text: app bear, app bar; app-bar. AppBar!
+masked: app bear, app bar; app-bar. CONCHPROTECTED0X!
+literals: ["AppBar"]
+edits: []
+suggestions: [{"start":10,"end":17,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false},{"start":19,"end":26,"original":"app-bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+again: [{"start":10,"end":17,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false},{"start":19,"end":26,"original":"app-bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+> read file. Read File? read  file
+text: read file. Read File? read file
+masked: read CONCHPROTECTED0X. Read File? read  CONCHPROTECTED1X
+literals: ["file", "file"]
+edits: []
+suggestions: [{"start":11,"end":20,"original":"Read File","candidates":[{"text":"readFile","repository":"other","file":"src/file11.ts"}],"conflict":false}]
+again: [{"start":11,"end":20,"original":"Read File","candidates":[{"text":"readFile","repository":"other","file":"src/file11.ts"}],"conflict":false}]
+> max0 and max 0 and cache 16 with index chunk worker
+text: max0 and max 0 and cache 16 with index chunk worker
+masked: CONCHPROTECTED0X and CONCHPROTECTED1X 0 and CONCHPROTECTED2X 16 with CONCHPROTECTED3X chunk worker
+literals: ["max0", "max", "cache", "index"]
+edits: []
+suggestions: []
+again: []
+> aitch tee tee pee server and you are el path
+text: aitch tee tee pee server and you are el path
+masked: aitch tee tee pee server and you are el path
+literals: []
+edits: []
+suggestions: []
+again: []
+> state view log retry token stream
+text: state view log retry token stream
+masked: CONCHPROTECTED0X view log retry CONCHPROTECTED1X stream
+literals: ["state", "token"]
+edits: []
+suggestions: []
+again: []
+> it's the user's index, don't 'parse render' it
+text: it's the user's index, don't 'parse render' it
+masked: it's the user's CONCHPROTECTED0X, don't CONCHPROTECTED1X it
+literals: ["index", "'parse render'"]
+edits: []
+suggestions: []
+again: []
+> uh um uh
+text: 
+masked: uh um uh
+literals: []
+edits: []
+suggestions: []
+again: []
+> 
+text: 
+masked: 
+literals: []
+edits: []
+suggestions: []
+again: []
+> C# and a,b and x
+text: C# and a,b and x
+masked: CONCHPROTECTED0X and CONCHPROTECTED1X and CONCHPROTECTED2X
+literals: ["C#", "a,b", "x"]
+edits: []
+suggestions: []
+again: []
+> render queue cache http json path state view log retry render queue
+text: render queue cache http json path state view log retry render queue
+masked: render queue CONCHPROTECTED0X http json path CONCHPROTECTED1X view log retry render queue
+literals: ["cache", "state"]
+edits: []
+suggestions: []
+again: []
+# en auto_accept=true
+hint: Vocabulary: um, podGC, PodGc, Widget, workerQueue, AppBar, AppRenders, BarViews, CachePaths, ChunkJsons, FileUsers, GroupWorkers, HttpPods, IndexStreams, JsonChunks, LogParses, MaxReads, ParseLogs, PathCaches, PodHttps, QueueTokens, ReadMaxs, RenderApps, RetryStates, StateRetrys, StraßeÖl, StreamIndexs, TokenQueues, UserFiles, ViewBars, WorkerGroups, appIO, appRender, appRenderPod, app_render.
+> Rename the pod gee see helper in app bar and then update max group so the worker does not fail.
+text: Rename the pod gee see helper in AppBar and then update max group so the worker does not fail.
+masked: Rename the CONCHPROTECTED0X helper in app bar and then update CONCHPROTECTED1X group so the worker does not fail.
+literals: ["pod gee see", "max"]
+edits: [{"start":33,"end":39,"original":"app bar","replacement":"AppBar"}]
+suggestions: [{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+again: [{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+> um, do not change 12 uh.py or 'uh' or you em uh, repeat repeat
+text: do not change 12 uh.py or 'uh' or um repeat repeat
+masked: um, do not change 12 CONCHPROTECTED0X or CONCHPROTECTED1X or CONCHPROTECTED2X uh, repeat repeat
+literals: ["uh.py", "'uh'", "um"]
+edits: []
+suggestions: []
+again: []
+> use max groups and Max Group and maxgroup with read file
+text: use max groups and maxGroups and maxgroup with read file
+masked: use CONCHPROTECTED0X groups and Max Group and maxgroup with read CONCHPROTECTED1X
+literals: ["max", "file"]
+edits: [{"start":19,"end":28,"original":"Max Group","replacement":"maxGroups"}]
+suggestions: []
+again: []
+> the queue feeds the worker queue and the http server
+text: workerQueue feeds the worker queue and the HTTPServer
+masked: CONCHPROTECTED0X feeds the worker queue and the http server
+literals: ["workerQueue"]
+edits: [{"start":43,"end":53,"original":"http server","replacement":"HTTPServer"}]
+suggestions: []
+again: []
+> parse http response before 3 tests, never after
+text: parseHTTPResponse before 3 tests, never after
+masked: parse http response before 3 tests, never after
+literals: []
+edits: [{"start":0,"end":17,"original":"parse http response","replacement":"parseHTTPResponse"}]
+suggestions: []
+again: []
+> say "alpha beta" then alpha beta and 'max groups' here
+text: say "Widget" then Widget and 'max groups' here
+masked: say CONCHPROTECTED0X then CONCHPROTECTED1X and CONCHPROTECTED2X here
+literals: ["\"Widget\"", "Widget", "'max groups'"]
+edits: []
+suggestions: []
+again: []
+> open src/max/http_index.ts and http_index.ts and README.md
+text: open src/max/http_index.ts and http_index.ts and README.md
+masked: open src/CONCHPROTECTED0X/http_index.ts and http_index.ts and CONCHPROTECTED1X
+literals: ["max", "README.md"]
+edits: []
+suggestions: []
+again: []
+> the user id and user_id and user I D differ
+text: the user_id and user_id and user_id differ
+masked: the user id and CONCHPROTECTED0X and user I D differ
+literals: ["user_id"]
+edits: [{"start":4,"end":11,"original":"user id","replacement":"user_id"},{"start":28,"end":35,"original":"user I D","replacement":"user_id"}]
+suggestions: []
+again: []
+> pod G C and pod GC and POD gee see and tripod gc
+text: pod G C# and podGC and POD gee see and tripod gc
+masked: pod G C and pod GC and CONCHPROTECTED0X and tripod gc
+literals: ["POD gee see"]
+edits: [{"start":6,"end":8,"original":"C","replacement":"C#"},{"start":13,"end":18,"original":"pod GC","replacement":"podGC"}]
+suggestions: [{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+again: [{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+> keep this exactly and Keep This too with node.js
+text: keep this exactly and Keep This too with node.js
+masked: CONCHPROTECTED0X exactly and CONCHPROTECTED1X too with CONCHPROTECTED2X
+literals: ["keep this", "Keep This", "node.js"]
+edits: []
+suggestions: []
+again: []
+> die über größe hier und STRASSE ÖL und strasse öl
+text: die ÜberGröße hier und StraßeÖl und StraßeÖl
+masked: die über größe hier und STRASSE ÖL und strasse öl
+literals: []
+edits: [{"start":4,"end":16,"original":"über größe","replacement":"ÜberGröße"},{"start":26,"end":36,"original":"STRASSE ÖL","replacement":"StraßeÖl"},{"start":41,"end":51,"original":"strasse öl","replacement":"StraßeÖl"}]
+suggestions: []
+again: []
+> an i̇ value here and σίσυφοσ name
+text: an İValue here and ΣίσυφοςName
+masked: an i̇ value here and σίσυφοσ name
+literals: []
+edits: [{"start":3,"end":10,"original":"i̇ value","replacement":"İValue"},{"start":20,"end":38,"original":"σίσυφοσ name","replacement":"ΣίσυφοςName"}]
+suggestions: []
+again: []
+> app bear, app bar; app-bar. AppBar!
+text: app bear, AppBar; AppBar. AppBar!
+masked: app bear, app bar; app-bar. CONCHPROTECTED0X!
+literals: ["AppBar"]
+edits: [{"start":10,"end":16,"original":"app bar","replacement":"AppBar"},{"start":18,"end":24,"original":"app-bar","replacement":"AppBar"}]
+suggestions: []
+again: []
+> read file. Read File? read  file
+text: read file. readFile? read file
+masked: read CONCHPROTECTED0X. Read File? read  CONCHPROTECTED1X
+literals: ["file", "file"]
+edits: [{"start":11,"end":19,"original":"Read File","replacement":"readFile"}]
+suggestions: []
+again: []
+> max0 and max 0 and cache 16 with index chunk worker
+text: max0 and max 0 and cache 16 with index chunk worker
+masked: CONCHPROTECTED0X and CONCHPROTECTED1X 0 and CONCHPROTECTED2X 16 with CONCHPROTECTED3X chunk worker
+literals: ["max0", "max", "cache", "index"]
+edits: []
+suggestions: []
+again: []
+> aitch tee tee pee server and you are el path
+text: aitch tee tee pee server and you are el path
+masked: aitch tee tee pee server and you are el path
+literals: []
+edits: []
+suggestions: []
+again: []
+> state view log retry token stream
+text: state view log retry token stream
+masked: CONCHPROTECTED0X view log retry CONCHPROTECTED1X stream
+literals: ["state", "token"]
+edits: []
+suggestions: []
+again: []
+> it's the user's index, don't 'parse render' it
+text: it's the user's index, don't 'parse render' it
+masked: it's the user's CONCHPROTECTED0X, don't CONCHPROTECTED1X it
+literals: ["index", "'parse render'"]
+edits: []
+suggestions: []
+again: []
+> uh um uh
+text: 
+masked: uh um uh
+literals: []
+edits: []
+suggestions: []
+again: []
+> 
+text: 
+masked: 
+literals: []
+edits: []
+suggestions: []
+again: []
+> C# and a,b and x
+text: C# and a,b and x
+masked: CONCHPROTECTED0X and CONCHPROTECTED1X and CONCHPROTECTED2X
+literals: ["C#", "a,b", "x"]
+edits: []
+suggestions: []
+again: []
+> render queue cache http json path state view log retry render queue
+text: render queue cache http json path state view log retry render queue
+masked: render queue CONCHPROTECTED0X http json path CONCHPROTECTED1X view log retry render queue
+literals: ["cache", "state"]
+edits: []
+suggestions: []
+again: []
+# de auto_accept=false
+hint: Vocabulary: um, podGC, PodGc, Widget, workerQueue, AppBar, AppRenders, BarViews, CachePaths, ChunkJsons, FileUsers, GroupWorkers, HttpPods, IndexStreams, JsonChunks, LogParses, MaxReads, ParseLogs, PathCaches, PodHttps, QueueTokens, ReadMaxs, RenderApps, RetryStates, StateRetrys, StraßeÖl, StreamIndexs, TokenQueues, UserFiles, ViewBars, WorkerGroups, appIO, appRender, appRenderPod, app_render.
+> Rename the pod gee see helper in app bar and then update max group so the worker does not fail.
+text: Rename the pod gee see helper in app bar and then update max group so the worker does not fail.
+masked: Rename the CONCHPROTECTED0X helper in app bar and then update CONCHPROTECTED1X group so the worker does not fail.
+literals: ["pod gee see", "max"]
+edits: []
+suggestions: [{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true},{"start":33,"end":40,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+again: [{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true},{"start":33,"end":40,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+> um, do not change 12 uh.py or 'uh' or you em uh, repeat repeat
+text: um, do not change 12 uh.py or 'uh' or um uh, repeat repeat
+masked: um, do not change 12 CONCHPROTECTED0X or CONCHPROTECTED1X or CONCHPROTECTED2X uh, repeat repeat
+literals: ["uh.py", "'uh'", "um"]
+edits: []
+suggestions: []
+again: []
+> use max groups and Max Group and maxgroup with read file
+text: use max groups and Max Group and maxgroup with read file
+masked: use CONCHPROTECTED0X groups and Max Group and maxgroup with read CONCHPROTECTED1X
+literals: ["max", "file"]
+edits: []
+suggestions: [{"start":19,"end":28,"original":"Max Group","candidates":[{"text":"maxGroups","repository":"r","file":"src/file9.ts"}],"conflict":false}]
+again: [{"start":19,"end":28,"original":"Max Group","candidates":[{"text":"maxGroups","repository":"r","file":"src/file9.ts"}],"conflict":false}]
+> the queue feeds the worker queue and the http server
+text: workerQueue feeds the worker queue and the http server
+masked: CONCHPROTECTED0X feeds the worker queue and the http server
+literals: ["workerQueue"]
+edits: []
+suggestions: [{"start":43,"end":54,"original":"http server","candidates":[{"text":"HTTPServer","repository":"r","file":"src/file5.ts"}],"conflict":false}]
+again: [{"start":43,"end":54,"original":"http server","candidates":[{"text":"HTTPServer","repository":"r","file":"src/file5.ts"}],"conflict":false}]
+> parse http response before 3 tests, never after
+text: parse http response before 3 tests, never after
+masked: parse http response before 3 tests, never after
+literals: []
+edits: []
+suggestions: [{"start":0,"end":19,"original":"parse http response","candidates":[{"text":"parseHTTPResponse","repository":"other","file":"src/file6.ts"}],"conflict":false}]
+again: [{"start":0,"end":19,"original":"parse http response","candidates":[{"text":"parseHTTPResponse","repository":"other","file":"src/file6.ts"}],"conflict":false}]
+> say "alpha beta" then alpha beta and 'max groups' here
+text: say "Widget" then Widget and 'max groups' here
+masked: say CONCHPROTECTED0X then CONCHPROTECTED1X and CONCHPROTECTED2X here
+literals: ["\"Widget\"", "Widget", "'max groups'"]
+edits: []
+suggestions: []
+again: []
+> open src/max/http_index.ts and http_index.ts and README.md
+text: open src/max/http_index.ts and http_index.ts and README.md
+masked: open src/CONCHPROTECTED0X/http_index.ts and http_index.ts and CONCHPROTECTED1X
+literals: ["max", "README.md"]
+edits: []
+suggestions: []
+again: []
+> the user id and user_id and user I D differ
+text: the user id and user_id and user I D differ
+masked: the user id and CONCHPROTECTED0X and user I D differ
+literals: ["user_id"]
+edits: []
+suggestions: [{"start":4,"end":11,"original":"user id","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false},{"start":28,"end":36,"original":"user I D","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false}]
+again: [{"start":4,"end":11,"original":"user id","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false},{"start":28,"end":36,"original":"user I D","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false}]
+> pod G C and pod GC and POD gee see and tripod gc
+text: pod G C and pod GC and POD gee see and tripod gc
+masked: pod G C and pod GC and CONCHPROTECTED0X and tripod gc
+literals: ["POD gee see"]
+edits: []
+suggestions: [{"start":6,"end":7,"original":"C","candidates":[{"text":"C#","repository":"r","file":"src/file15.ts"}],"conflict":false},{"start":12,"end":18,"original":"pod GC","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+again: [{"start":6,"end":7,"original":"C","candidates":[{"text":"C#","repository":"r","file":"src/file15.ts"}],"conflict":false},{"start":12,"end":18,"original":"pod GC","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+> keep this exactly and Keep This too with node.js
+text: keep this exactly and Keep This too with node.js
+masked: CONCHPROTECTED0X exactly and CONCHPROTECTED1X too with CONCHPROTECTED2X
+literals: ["keep this", "Keep This", "node.js"]
+edits: []
+suggestions: []
+again: []
+> die über größe hier und STRASSE ÖL und strasse öl
+text: die über größe hier und STRASSE ÖL und strasse öl
+masked: die über größe hier und STRASSE ÖL und strasse öl
+literals: []
+edits: []
+suggestions: [{"start":4,"end":17,"original":"über größe","candidates":[{"text":"ÜberGröße","repository":"r","file":"src/file12.ts"}],"conflict":false},{"start":27,"end":38,"original":"STRASSE ÖL","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false},{"start":43,"end":54,"original":"strasse öl","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false}]
+again: [{"start":4,"end":17,"original":"über größe","candidates":[{"text":"ÜberGröße","repository":"r","file":"src/file12.ts"}],"conflict":false},{"start":27,"end":38,"original":"STRASSE ÖL","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false},{"start":43,"end":54,"original":"strasse öl","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false}]
+> an i̇ value here and σίσυφοσ name
+text: an i̇ value here and σίσυφοσ name
+masked: an i̇ value here and σίσυφοσ name
+literals: []
+edits: []
+suggestions: [{"start":3,"end":12,"original":"i̇ value","candidates":[{"text":"İValue","repository":"other","file":"src/file14.ts"}],"conflict":false},{"start":22,"end":41,"original":"σίσυφοσ name","candidates":[{"text":"ΣίσυφοςName","repository":"other","file":"src/file3.ts"}],"conflict":false}]
+again: [{"start":3,"end":12,"original":"i̇ value","candidates":[{"text":"İValue","repository":"other","file":"src/file14.ts"}],"conflict":false},{"start":22,"end":41,"original":"σίσυφοσ name","candidates":[{"text":"ΣίσυφοςName","repository":"other","file":"src/file3.ts"}],"conflict":false}]
+> app bear, app bar; app-bar. AppBar!
+text: app bear, app bar; app-bar. AppBar!
+masked: app bear, app bar; app-bar. CONCHPROTECTED0X!
+literals: ["AppBar"]
+edits: []
+suggestions: [{"start":10,"end":17,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false},{"start":19,"end":26,"original":"app-bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+again: [{"start":10,"end":17,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false},{"start":19,"end":26,"original":"app-bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+> read file. Read File? read  file
+text: read file. Read File? read  file
+masked: read CONCHPROTECTED0X. Read File? read  CONCHPROTECTED1X
+literals: ["file", "file"]
+edits: []
+suggestions: [{"start":11,"end":20,"original":"Read File","candidates":[{"text":"readFile","repository":"other","file":"src/file11.ts"}],"conflict":false}]
+again: [{"start":11,"end":20,"original":"Read File","candidates":[{"text":"readFile","repository":"other","file":"src/file11.ts"}],"conflict":false}]
+> max0 and max 0 and cache 16 with index chunk worker
+text: max0 and max 0 and cache 16 with index chunk worker
+masked: CONCHPROTECTED0X and CONCHPROTECTED1X 0 and CONCHPROTECTED2X 16 with CONCHPROTECTED3X chunk worker
+literals: ["max0", "max", "cache", "index"]
+edits: []
+suggestions: []
+again: []
+> aitch tee tee pee server and you are el path
+text: aitch tee tee pee server and you are el path
+masked: aitch tee tee pee server and you are el path
+literals: []
+edits: []
+suggestions: []
+again: []
+> state view log retry token stream
+text: state view log retry token stream
+masked: CONCHPROTECTED0X view log retry CONCHPROTECTED1X stream
+literals: ["state", "token"]
+edits: []
+suggestions: []
+again: []
+> it's the user's index, don't 'parse render' it
+text: it's the user's index, don't 'parse render' it
+masked: it's the user's CONCHPROTECTED0X, don't CONCHPROTECTED1X it
+literals: ["index", "'parse render'"]
+edits: []
+suggestions: []
+again: []
+> uh um uh
+text: uh um uh
+masked: uh um uh
+literals: []
+edits: []
+suggestions: []
+again: []
+> 
+text: 
+masked: 
+literals: []
+edits: []
+suggestions: []
+again: []
+> C# and a,b and x
+text: C# and a,b and x
+masked: CONCHPROTECTED0X and CONCHPROTECTED1X and CONCHPROTECTED2X
+literals: ["C#", "a,b", "x"]
+edits: []
+suggestions: []
+again: []
+> render queue cache http json path state view log retry render queue
+text: render queue cache http json path state view log retry render queue
+masked: render queue CONCHPROTECTED0X http json path CONCHPROTECTED1X view log retry render queue
+literals: ["cache", "state"]
+edits: []
+suggestions: []
+again: []
+# auto auto_accept=false
+hint: Vocabulary: um, podGC, PodGc, Widget, workerQueue, AppBar, AppRenders, BarViews, CachePaths, ChunkJsons, FileUsers, GroupWorkers, HttpPods, IndexStreams, JsonChunks, LogParses, MaxReads, ParseLogs, PathCaches, PodHttps, QueueTokens, ReadMaxs, RenderApps, RetryStates, StateRetrys, StraßeÖl, StreamIndexs, TokenQueues, UserFiles, ViewBars, WorkerGroups, appIO, appRender, appRenderPod, app_render.
+> Rename the pod gee see helper in app bar and then update max group so the worker does not fail.
+text: Rename the pod gee see helper in app bar and then update max group so the worker does not fail.
+masked: Rename the CONCHPROTECTED0X helper in app bar and then update CONCHPROTECTED1X group so the worker does not fail.
+literals: ["pod gee see", "max"]
+edits: []
+suggestions: [{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true},{"start":33,"end":40,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+again: [{"start":11,"end":22,"original":"pod gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true},{"start":33,"end":40,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+> um, do not change 12 uh.py or 'uh' or you em uh, repeat repeat
+text: um, do not change 12 uh.py or 'uh' or um uh, repeat repeat
+masked: um, do not change 12 CONCHPROTECTED0X or CONCHPROTECTED1X or CONCHPROTECTED2X uh, repeat repeat
+literals: ["uh.py", "'uh'", "um"]
+edits: []
+suggestions: []
+again: []
+> use max groups and Max Group and maxgroup with read file
+text: use max groups and Max Group and maxgroup with read file
+masked: use CONCHPROTECTED0X groups and Max Group and maxgroup with read CONCHPROTECTED1X
+literals: ["max", "file"]
+edits: []
+suggestions: [{"start":19,"end":28,"original":"Max Group","candidates":[{"text":"maxGroups","repository":"r","file":"src/file9.ts"}],"conflict":false}]
+again: [{"start":19,"end":28,"original":"Max Group","candidates":[{"text":"maxGroups","repository":"r","file":"src/file9.ts"}],"conflict":false}]
+> the queue feeds the worker queue and the http server
+text: workerQueue feeds the worker queue and the http server
+masked: CONCHPROTECTED0X feeds the worker queue and the http server
+literals: ["workerQueue"]
+edits: []
+suggestions: [{"start":43,"end":54,"original":"http server","candidates":[{"text":"HTTPServer","repository":"r","file":"src/file5.ts"}],"conflict":false}]
+again: [{"start":43,"end":54,"original":"http server","candidates":[{"text":"HTTPServer","repository":"r","file":"src/file5.ts"}],"conflict":false}]
+> parse http response before 3 tests, never after
+text: parse http response before 3 tests, never after
+masked: parse http response before 3 tests, never after
+literals: []
+edits: []
+suggestions: [{"start":0,"end":19,"original":"parse http response","candidates":[{"text":"parseHTTPResponse","repository":"other","file":"src/file6.ts"}],"conflict":false}]
+again: [{"start":0,"end":19,"original":"parse http response","candidates":[{"text":"parseHTTPResponse","repository":"other","file":"src/file6.ts"}],"conflict":false}]
+> say "alpha beta" then alpha beta and 'max groups' here
+text: say "Widget" then Widget and 'max groups' here
+masked: say CONCHPROTECTED0X then CONCHPROTECTED1X and CONCHPROTECTED2X here
+literals: ["\"Widget\"", "Widget", "'max groups'"]
+edits: []
+suggestions: []
+again: []
+> open src/max/http_index.ts and http_index.ts and README.md
+text: open src/max/http_index.ts and http_index.ts and README.md
+masked: open src/CONCHPROTECTED0X/http_index.ts and http_index.ts and CONCHPROTECTED1X
+literals: ["max", "README.md"]
+edits: []
+suggestions: []
+again: []
+> the user id and user_id and user I D differ
+text: the user id and user_id and user I D differ
+masked: the user id and CONCHPROTECTED0X and user I D differ
+literals: ["user_id"]
+edits: []
+suggestions: [{"start":4,"end":11,"original":"user id","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false},{"start":28,"end":36,"original":"user I D","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false}]
+again: [{"start":4,"end":11,"original":"user id","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false},{"start":28,"end":36,"original":"user I D","candidates":[{"text":"user_id","repository":"r","file":"src/file7.ts"}],"conflict":false}]
+> pod G C and pod GC and POD gee see and tripod gc
+text: pod G C and pod GC and POD gee see and tripod gc
+masked: pod G C and pod GC and CONCHPROTECTED0X and tripod gc
+literals: ["POD gee see"]
+edits: []
+suggestions: [{"start":6,"end":7,"original":"C","candidates":[{"text":"C#","repository":"r","file":"src/file15.ts"}],"conflict":false},{"start":12,"end":18,"original":"pod GC","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+again: [{"start":6,"end":7,"original":"C","candidates":[{"text":"C#","repository":"r","file":"src/file15.ts"}],"conflict":false},{"start":12,"end":18,"original":"pod GC","candidates":[{"text":"podGC","repository":"other","file":"src/file8.ts"}],"conflict":false},{"start":23,"end":34,"original":"POD gee see","candidates":[{"text":"podGC","repository":"r","file":"explicit mapping"},{"text":"PodGc","repository":"other","file":"explicit mapping"}],"conflict":true}]
+> keep this exactly and Keep This too with node.js
+text: keep this exactly and Keep This too with node.js
+masked: CONCHPROTECTED0X exactly and CONCHPROTECTED1X too with CONCHPROTECTED2X
+literals: ["keep this", "Keep This", "node.js"]
+edits: []
+suggestions: []
+again: []
+> die über größe hier und STRASSE ÖL und strasse öl
+text: die über größe hier und STRASSE ÖL und strasse öl
+masked: die über größe hier und STRASSE ÖL und strasse öl
+literals: []
+edits: []
+suggestions: [{"start":4,"end":17,"original":"über größe","candidates":[{"text":"ÜberGröße","repository":"r","file":"src/file12.ts"}],"conflict":false},{"start":27,"end":38,"original":"STRASSE ÖL","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false},{"start":43,"end":54,"original":"strasse öl","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false}]
+again: [{"start":4,"end":17,"original":"über größe","candidates":[{"text":"ÜberGröße","repository":"r","file":"src/file12.ts"}],"conflict":false},{"start":27,"end":38,"original":"STRASSE ÖL","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false},{"start":43,"end":54,"original":"strasse öl","candidates":[{"text":"StraßeÖl","repository":"r","file":"src/file13.ts"}],"conflict":false}]
+> an i̇ value here and σίσυφοσ name
+text: an i̇ value here and σίσυφοσ name
+masked: an i̇ value here and σίσυφοσ name
+literals: []
+edits: []
+suggestions: [{"start":3,"end":12,"original":"i̇ value","candidates":[{"text":"İValue","repository":"other","file":"src/file14.ts"}],"conflict":false},{"start":22,"end":41,"original":"σίσυφοσ name","candidates":[{"text":"ΣίσυφοςName","repository":"other","file":"src/file3.ts"}],"conflict":false}]
+again: [{"start":3,"end":12,"original":"i̇ value","candidates":[{"text":"İValue","repository":"other","file":"src/file14.ts"}],"conflict":false},{"start":22,"end":41,"original":"σίσυφοσ name","candidates":[{"text":"ΣίσυφοςName","repository":"other","file":"src/file3.ts"}],"conflict":false}]
+> app bear, app bar; app-bar. AppBar!
+text: app bear, app bar; app-bar. AppBar!
+masked: app bear, app bar; app-bar. CONCHPROTECTED0X!
+literals: ["AppBar"]
+edits: []
+suggestions: [{"start":10,"end":17,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false},{"start":19,"end":26,"original":"app-bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+again: [{"start":10,"end":17,"original":"app bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false},{"start":19,"end":26,"original":"app-bar","candidates":[{"text":"AppBar","repository":"r","file":"src/file10.ts"}],"conflict":false}]
+> read file. Read File? read  file
+text: read file. Read File? read  file
+masked: read CONCHPROTECTED0X. Read File? read  CONCHPROTECTED1X
+literals: ["file", "file"]
+edits: []
+suggestions: [{"start":11,"end":20,"original":"Read File","candidates":[{"text":"readFile","repository":"other","file":"src/file11.ts"}],"conflict":false}]
+again: [{"start":11,"end":20,"original":"Read File","candidates":[{"text":"readFile","repository":"other","file":"src/file11.ts"}],"conflict":false}]
+> max0 and max 0 and cache 16 with index chunk worker
+text: max0 and max 0 and cache 16 with index chunk worker
+masked: CONCHPROTECTED0X and CONCHPROTECTED1X 0 and CONCHPROTECTED2X 16 with CONCHPROTECTED3X chunk worker
+literals: ["max0", "max", "cache", "index"]
+edits: []
+suggestions: []
+again: []
+> aitch tee tee pee server and you are el path
+text: aitch tee tee pee server and you are el path
+masked: aitch tee tee pee server and you are el path
+literals: []
+edits: []
+suggestions: []
+again: []
+> state view log retry token stream
+text: state view log retry token stream
+masked: CONCHPROTECTED0X view log retry CONCHPROTECTED1X stream
+literals: ["state", "token"]
+edits: []
+suggestions: []
+again: []
+> it's the user's index, don't 'parse render' it
+text: it's the user's index, don't 'parse render' it
+masked: it's the user's CONCHPROTECTED0X, don't CONCHPROTECTED1X it
+literals: ["index", "'parse render'"]
+edits: []
+suggestions: []
+again: []
+> uh um uh
+text: uh um uh
+masked: uh um uh
+literals: []
+edits: []
+suggestions: []
+again: []
+> 
+text: 
+masked: 
+literals: []
+edits: []
+suggestions: []
+again: []
+> C# and a,b and x
+text: C# and a,b and x
+masked: CONCHPROTECTED0X and CONCHPROTECTED1X and CONCHPROTECTED2X
+literals: ["C#", "a,b", "x"]
+edits: []
+suggestions: []
+again: []
+> render queue cache http json path state view log retry render queue
+text: render queue cache http json path state view log retry render queue
+masked: render queue CONCHPROTECTED0X http json path CONCHPROTECTED1X view log retry render queue
+literals: ["cache", "state"]
+edits: []
+suggestions: []
+again: []
