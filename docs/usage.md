@@ -181,6 +181,7 @@ Clear logs asks for confirmation and deletes every entry.
 Conch writes the log whether or not Keep history is on, keeps about 4 MB (`conch.log` and the previous `conch.log.1`), and deletes the oldest entries first.
 Logs never contain audio, transcripts, result text, or source text. They show your home directory as `~` and any other absolute path as `.../file name`; see [privacy](privacy.md).
 The Dictation page links its status line and its error banner to this page.
+Each error banner and confirmation above a page has a Dismiss button. Dismissing a dictation error clears it until the next one.
 
 ## Delivery
 

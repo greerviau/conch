@@ -38,7 +38,16 @@ fn main() {
         screen,
         work,
         scale,
-        conch_lib::indicator::width_for("recording"),
+        conch_lib::indicator::size_for(&conch_lib::indicator::Indicator {
+            visible: true,
+            mode: "recording".into(),
+            label: String::new(),
+            hint: String::new(),
+            level: 0.0,
+            seconds: 0,
+            profile: String::new(),
+            profiles: Vec::new(),
+        }),
     );
     assert_eq!(
         unsafe {

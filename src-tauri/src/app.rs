@@ -1005,6 +1005,17 @@ pub async fn logs_page(
     .await
     .map_err(|_| "Log reader failed")?
 }
+/// Clears the error the main window showed when the person dismissed it. An
+/// error that replaced it before the click stays, so it is not lost unseen.
+#[tauri::command]
+pub fn dismiss_error(state: State<'_, AppState>, message: String) {
+    clear_shown_error(&mut state.inner.locked().error, &message);
+}
+fn clear_shown_error(error: &mut String, shown: &str) {
+    if error == shown {
+        error.clear();
+    }
+}
 /// Logs an error the interface showed for a failed command, so the Logs page
 /// holds what the error banner reported.
 #[tauri::command]
@@ -1475,6 +1486,14 @@ pub fn set_hotkey(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dismissing_an_error_keeps_a_different_one_that_replaced_it() {
+        let mut error = "Index refresh failed: disk full".to_string();
+        clear_shown_error(&mut error, "No speech recognized");
+        assert_eq!(error, "Index refresh failed: disk full");
+        clear_shown_error(&mut error, "Index refresh failed: disk full");
+        assert_eq!(error, "");
+    }
     #[test]
     fn cleaned_parts_are_used_only_when_they_protect_what_the_whole_text_protects() {
         let snapshot = Snapshot {

@@ -481,6 +481,32 @@ kbd {
   font-size: 13px;
   margin-bottom: 12px;
 }
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.banner > span {
+  flex: 1;
+  min-width: 0;
+}
+button.dismiss {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: inherit;
+  opacity: 0.7;
+}
+button.dismiss:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  opacity: 1;
+}
 details {
   margin-top: 12px;
 }

@@ -262,6 +262,19 @@ it("reports a failure to read the log", async () => {
     "The log is unavailable",
   );
 });
+it("dismisses a notice and an error", async () => {
+  open();
+  await screen.findByText("Stop to text 412 ms");
+  fireEvent.click(screen.getByRole("button", { name: "Copy shown entries" }));
+  await screen.findByText("Copied 4 entries");
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByText("Copied 4 entries")).toBeNull();
+  ipc.mockRejectedValueOnce("Cannot copy");
+  fireEvent.click(screen.getByRole("button", { name: "Copy shown entries" }));
+  const alert = await screen.findByRole("alert");
+  fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
 it("states that logs never hold transcripts", async () => {
   open();
   expect(

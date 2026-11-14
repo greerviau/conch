@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Search } from "./icons";
+import { Banner } from "./ui";
 import type { HistoryPage } from "./types";
 export const PAGE_SIZE = 50;
 export function History({
@@ -105,14 +106,14 @@ export function History({
         </p>
       )}
       {error && (
-        <div role="alert" className="error">
+        <Banner kind="error" onDismiss={() => setError("")}>
           {error}
-        </div>
+        </Banner>
       )}
       {notice && (
-        <p role="status" className="notice">
+        <Banner kind="notice" onDismiss={() => setNotice("")}>
           {notice}
-        </p>
+        </Banner>
       )}
       {page && total === 0 && !filtered ? (
         <p className="empty-note">
