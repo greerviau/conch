@@ -8,6 +8,7 @@ import {
   act,
   within,
 } from "@testing-library/react";
+import { Profiler } from "react";
 import App from "./App";
 import { IndicatorView } from "./RecordingIndicator";
 import { LANGUAGES, catalog } from "./testModels";
@@ -1635,4 +1636,45 @@ it("keeps the profile switcher on the Dictation page while the active profile's 
   render(<App />);
   const group = await screen.findByRole("radiogroup", { name: "Profile" });
   expect(within(group).getAllByRole("radio")).toHaveLength(2);
+});
+const viewCalls = () =>
+  ipc.mock.calls.filter(([name]) => name === "view").length;
+const setHidden = (hidden: boolean) => {
+  Object.defineProperty(document, "hidden", {
+    configurable: true,
+    get: () => hidden,
+  });
+  document.dispatchEvent(new Event("visibilitychange"));
+};
+it("asks for the view less often while the window is hidden and at once when it is shown again", async () => {
+  render(<App />);
+  await screen.findByRole("button", { name: "Start recording" });
+  try {
+    setHidden(true);
+    const hidden = viewCalls();
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    expect(viewCalls()).toBe(hidden);
+    setHidden(false);
+    await waitFor(() => expect(viewCalls()).toBe(hidden + 1));
+  } finally {
+    setHidden(false);
+  }
+});
+it("does not render again when a poll returns the view already on screen", async () => {
+  let commits = 0;
+  render(
+    <Profiler id="app" onRender={() => (commits += 1)}>
+      <App />
+    </Profiler>,
+  );
+  await screen.findByRole("button", { name: "Start recording" });
+  const polls = viewCalls();
+  const shown = commits;
+  await waitFor(() => expect(viewCalls()).toBeGreaterThanOrEqual(polls + 2), {
+    timeout: 3000,
+  });
+  expect(commits).toBe(shown);
+  // A changed view still reaches the screen.
+  view.error = "Index refresh failed";
+  expect(await screen.findByText(/Index refresh failed/)).toBeTruthy();
 });

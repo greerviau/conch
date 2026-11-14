@@ -31,6 +31,11 @@ const TABS = [
   "Logs",
 ];
 
+/** How often the window asks the backend for the view, in milliseconds. */
+const POLL = 700;
+/** How often it asks while it is hidden. */
+const HIDDEN_POLL = 5000;
+
 /** Records a failed command in the log, so the error banner's link to Logs has an entry to show. */
 function noted(error: unknown) {
   const message = String(error);
@@ -66,29 +71,54 @@ export default function App() {
   // The saved active profile at the last refresh, so a switch from the menu bar or the
   // recording indicator reaches the draft without discarding its other edits.
   const savedActive = useRef<string | null>(null);
+  // The view on screen as JSON, so a poll that returns the same view renders nothing.
+  const shownView = useRef("");
+  const showView = useCallback((v: View) => {
+    const serialized = JSON.stringify(v);
+    if (serialized === shownView.current) return;
+    shownView.current = serialized;
+    setView(v);
+  }, []);
   const reload = useCallback(async () => {
     try {
       const v = await invoke<View>("view");
       refreshFailed.current = false;
-      setView(v);
+      showView(v);
+      const first = savedActive.current === null;
       const switched =
-        savedActive.current !== null &&
-        savedActive.current !== v.settings.active_profile;
+        !first && savedActive.current !== v.settings.active_profile;
       savedActive.current = v.settings.active_profile;
-      setDraft((d) =>
-        d && switched
-          ? { ...d, active_profile: v.settings.active_profile }
-          : (d ?? v.settings),
-      );
+      if (first || switched)
+        setDraft((d) =>
+          d && switched
+            ? { ...d, active_profile: v.settings.active_profile }
+            : (d ?? v.settings),
+        );
     } catch (e) {
       setError(refreshFailed.current ? String(e) : noted(e));
       refreshFailed.current = true;
     }
-  }, []);
+  }, [showView]);
   useEffect(() => {
     void reload();
-    const timer = window.setInterval(() => void reload(), 700);
-    return () => window.clearInterval(timer);
+    // A hidden window shows nothing, so it asks rarely. The backend still reads the
+    // permissions on each request and logs a change within HIDDEN_POLL.
+    let last = Date.now();
+    const timer = window.setInterval(() => {
+      if (document.hidden && Date.now() - last < HIDDEN_POLL) return;
+      last = Date.now();
+      void reload();
+    }, POLL);
+    const shown = () => {
+      if (document.hidden) return;
+      last = Date.now();
+      void reload();
+    };
+    document.addEventListener("visibilitychange", shown);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", shown);
+    };
   }, [reload]);
   useEffect(() => {
     if (!dirty) setText(view?.result?.text ?? "");
@@ -161,7 +191,7 @@ export default function App() {
             )
           : v.settings,
       );
-      setView(v);
+      showView(v);
       setNotice("Settings saved");
     }
   }
