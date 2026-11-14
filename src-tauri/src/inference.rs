@@ -576,7 +576,7 @@ pub fn recognize(
         .map_err(|_| "Local recognition failed or timed out")?;
     let text = value["text"]
         .as_str()
-        .map(flatten_segments)
+        .map(|text| crate::core::strip_hint_echo(&flatten_segments(text), hint))
         .ok_or("Recognizer returned invalid output")?;
     let language = value["language"]
         .as_str()
@@ -1292,6 +1292,29 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         let with = fake::last_request(dir.path());
         assert!(with.contains("name=\"prompt\""));
         assert!(with.contains(hint));
+        shutdown(dir.path());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn the_recognizer_drops_its_echo_of_the_vocabulary_hint() {
+        // Recorded in a dictation: whisper answered a pause with its prompt.
+        let dir = tempfile::tempdir().unwrap();
+        fake::install(dir.path());
+        fake::reply(
+            dir.path(),
+            r#"{"text": "give it a score.\n Readme, Main, C2, Phonetica, Business.\n The way I would"}"#,
+        );
+        let text = transcribe(
+            dir.path(),
+            &dir.path().join("model.bin"),
+            vec![0; 64],
+            "Vocabulary: README, Main, C#, Phonetica, Business, podGC.",
+            "en",
+            &new_worker(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(text, "give it a score. The way I would");
         shutdown(dir.path());
     }
     #[cfg(unix)]

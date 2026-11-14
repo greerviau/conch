@@ -470,6 +470,8 @@ pub fn suggestions(text: &str, snapshot: &Snapshot) -> Vec<Suggestion> {
         })
         .collect()
 }
+/// Opens every recognition hint; `strip_hint_echo` reads the terms after it.
+const HINT_PREFIX: &str = "Vocabulary: ";
 /// Largest hint sent to the recognizer. whisper.cpp keeps at most 224 prompt
 /// tokens, and an identifier costs about three.
 pub const RECOGNITION_HINT_BYTES: usize = 400;
@@ -480,7 +482,6 @@ const HINT_TERM_BYTES: usize = 40;
 /// declare, then the rest in alphabetical order. Plain words and file paths
 /// are left out because the recognizer already spells them correctly.
 pub fn recognition_hint(snapshot: &Snapshot) -> String {
-    const PREFIX: &str = "Vocabulary: ";
     let mut terms: Vec<&str> = snapshot
         .mappings
         .iter()
@@ -500,7 +501,7 @@ pub fn recognition_hint(snapshot: &Snapshot) -> String {
     let mut chosen: Vec<&str> = vec![];
     let mut seen = std::collections::HashSet::new();
     // The prefix and the closing period.
-    let mut size = PREFIX.len() + 1;
+    let mut size = HINT_PREFIX.len() + 1;
     for term in terms {
         let separator = if chosen.is_empty() { 0 } else { 2 };
         if size + separator + term.len() > RECOGNITION_HINT_BYTES || !seen.insert(term) {
@@ -512,7 +513,80 @@ pub fn recognition_hint(snapshot: &Snapshot) -> String {
     if chosen.is_empty() {
         return String::new();
     }
-    format!("{PREFIX}{}.", chosen.join(", "))
+    format!("{HINT_PREFIX}{}.", chosen.join(", "))
+}
+/// Removes sentences in which the recognizer repeated `hint` (from
+/// `recognition_hint`) in place of speech. Given a pause, whisper sometimes
+/// answers with its prompt as a comma-separated list of the hint's terms. A
+/// sentence is dropped when it is a comma-separated list in which at least two
+/// items are hint terms, in hint order and ignoring case, and at most one item
+/// is not, because the recognizer can misspell one term ("C2" for "C#").
+pub fn strip_hint_echo(text: &str, hint: &str) -> String {
+    let Some(list) = hint
+        .strip_prefix(HINT_PREFIX)
+        .and_then(|list| list.strip_suffix('.'))
+    else {
+        return text.into();
+    };
+    let terms: Vec<String> = list.split(", ").map(crate::fold::fold).collect();
+    let parts = sentences(text);
+    let kept: Vec<&str> = parts
+        .iter()
+        .copied()
+        .filter(|sentence| !echoes_hint(sentence, &terms))
+        .collect();
+    if kept.len() == parts.len() {
+        return text.into();
+    }
+    kept.concat().trim_end().to_owned()
+}
+/// Splits `text` after each run of `.`, `?`, or `!` that is followed by
+/// whitespace or the end, keeping that whitespace with the sentence before it.
+/// A period inside a word ("config.rs") does not end a sentence.
+fn sentences(text: &str) -> Vec<&str> {
+    let mut out = vec![];
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let ends = matches!(c, '.' | '?' | '!')
+            && chars.peek().is_none_or(|&(_, next)| next.is_whitespace());
+        if !ends {
+            continue;
+        }
+        let mut end = at + c.len_utf8();
+        while let Some(&(at, space)) = chars.peek().filter(|(_, next)| next.is_whitespace()) {
+            end = at + space.len_utf8();
+            chars.next();
+        }
+        out.push(&text[start..end]);
+        start = end;
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+fn echoes_hint(sentence: &str, terms: &[String]) -> bool {
+    let body = sentence.trim().trim_end_matches(['.', '?', '!']);
+    let label = HINT_PREFIX.trim_end();
+    let body = body
+        .get(..label.len())
+        .filter(|start| start.eq_ignore_ascii_case(label))
+        .map_or(body, |_| &body[label.len()..]);
+    let items: Vec<&str> = body.split(',').map(str::trim).collect();
+    let mut previous = None;
+    let mut matched = 0;
+    for item in &items {
+        let folded = crate::fold::fold(item);
+        if let Some(at) = terms.iter().position(|term| *term == folded) {
+            if previous.is_some_and(|previous| at <= previous) {
+                return false;
+            }
+            previous = Some(at);
+            matched += 1;
+        }
+    }
+    matched >= 2 && matched + 1 >= items.len()
 }
 /// Whether masking each part protects the same literals as masking the whole
 /// text. A mapping or a quotation that spans two parts is protected in the
@@ -1259,6 +1333,37 @@ mod tests {
         assert!(hint.ends_with('.'));
         assert!(hint.contains("someName000, someName001"));
         assert!(!hint.contains("someName299"));
+    }
+    #[test]
+    fn a_sentence_listing_hint_terms_in_hint_order_is_dropped() {
+        let hint = "Vocabulary: README, Main, C#, Phonetica, Business.";
+        let echoes = [
+            ("Readme, Main, C2, Phonetica, Business.", ""),
+            (
+                "score. Readme, Main, C2, Phonetica, Business. The way",
+                "score. The way",
+            ),
+            ("score. Main, Phonetica", "score."),
+            ("Vocabulary: README, Main. Next.", "Next."),
+            ("Done? README, Business! Go", "Done? Go"),
+        ];
+        for (text, kept) in echoes {
+            assert_eq!(strip_hint_echo(text, hint), kept, "{text}");
+        }
+        let dictated = [
+            // Out of hint order.
+            "Business, README.",
+            // One hint term.
+            "Update the README, then commit.",
+            // Two items that are not hint terms.
+            "README, Main, the build, and tests.",
+            "Edit config.rs, Main, README.",
+            "Nothing from the hint here.",
+        ];
+        for text in dictated {
+            assert_eq!(strip_hint_echo(text, hint), text);
+        }
+        assert_eq!(strip_hint_echo("README, Main.", ""), "README, Main.");
     }
     #[test]
     fn remembered_mapping_replaces_the_heard_phrase_on_the_next_recording() {
