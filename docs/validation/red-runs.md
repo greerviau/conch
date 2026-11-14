@@ -66,3 +66,12 @@ Tests written before the update logic reproduce these failures.
 - The Rust tests `blank_hesitation_tokens_leave_the_transcript_exactly_as_recognized`, `enhanced_cleanup_is_disabled_unless_settings_name_a_choice`, `enhanced_cleanup_is_disabled_or_one_of_three_providers`, `only_local_and_remote_cleanup_need_a_valid_endpoint`, `with_automatic_paste_off_the_result_is_only_copied_and_focus_is_never_read`, `automatic_paste_is_on_and_the_microphone_follows_the_system_by_default`, and the three `pick_input` tests fail to compile because `Cleanup::enhanced`, `Settings::auto_paste`, `Settings::microphone`, `audio::pick_input`, the third argument of `deliver`, and `check_enhanced` do not exist.
 - `check_enhanced` was added after a review of the first implementation: it still required an endpoint whenever the choice was not `managed`, so saving with Enhanced cleanup Disabled would have failed.
 - Seven interface tests in `src/App.test.tsx` and one in `src/Setup.test.tsx` fail: Settings still has a Mode menu and no Enhanced cleanup, Microphone, or Automatic paste controls, and setup still asks for the paste permission while Automatic paste is off.
+
+# Audit of 2026-11-14
+
+- `asks for the view less often while the window is hidden and at once when it is shown again` counted 3 `view` calls instead of 1 after 1.6 seconds hidden.
+- `does not render again when a poll returns the view already on screen` counted 4 commits instead of 2.
+- `a_scanned_index_is_written_without_the_lock_that_recording_needs` fails `state.inner.try_lock().is_ok()` when the index is written inside the lock, as the earlier code did. The test was written with `store_index`, so this run used a copy that held the lock around the write.
+- `the_result_is_delivered_without_the_lock_the_interface_waits_on` panics with `the lock is free: "WouldBlock"` against delivery extracted unchanged into `deliver_result`.
+- `one_second_from_any_microphone_rate_becomes_one_second_at_the_recognizer_rate` reports `8000 Hz gave 8000 samples` against the resampler extracted unchanged from the audio callback.
+- `a_database_of_the_previous_schema_is_rebuilt_and_keeps_settings_and_history`, `a_rescan_reads_only_the_files_that_changed_and_finds_what_a_full_scan_finds`, `recordings_that_use_the_same_indexes_share_one_set_of_terms`, and the tests of `Terms` were written in the same step as the code they call, so no separate failing run was recorded. [context-latency.md](context-latency.md) holds the measurements taken before those changes.
