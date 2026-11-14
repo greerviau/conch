@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   LanguageMenu,
   ModelStatus,
@@ -134,21 +134,24 @@ export function Profiles({
       : profile.enhanced === "remote"
         ? cleanup.endpoint
         : null;
-  // A typed key belongs to the destination shown when it was typed.
+  // Changing the destination and saving a key each start a new generation. A
+  // key-store answer from an older generation is about a destination or a key
+  // that is no longer shown, so it is dropped.
+  const keyGeneration = useRef(0);
   useEffect(() => {
+    const generation = ++keyGeneration.current;
     setKeySaved(null);
     setSecret("");
     if (!destination) return;
-    let current = true;
     void credentialSaved(destination).then((saved) => {
-      if (current) setKeySaved(saved);
+      if (keyGeneration.current === generation) setKeySaved(saved);
     });
-    return () => {
-      current = false;
-    };
   }, [destination, credentialSaved]);
   const saveKey = async (value: string | null) => {
-    if (destination && (await onCredential(destination, value))) {
+    if (!destination) return;
+    const generation = ++keyGeneration.current;
+    const saved = await onCredential(destination, value);
+    if (saved && keyGeneration.current === generation) {
       setSecret("");
       setKeySaved(value !== null);
     }

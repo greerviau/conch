@@ -83,6 +83,7 @@ const fixture = () => ({
 });
 let view = fixture();
 let savedKeys = new Set<string>();
+let holdCredential: Promise<void> | null = null;
 let holdDownload: Promise<void> | null = null;
 const install = (...ids: string[]) =>
   view.models.forEach((model) => {
@@ -91,6 +92,7 @@ const install = (...ids: string[]) =>
 beforeEach(() => {
   view = fixture();
   savedKeys = new Set();
+  holdCredential = null;
   holdDownload = null;
   events.progress = null;
   ipc.mockReset();
@@ -114,6 +116,7 @@ beforeEach(() => {
       if (name === "credential_saved")
         return savedKeys.has(args?.destination as string);
       if (name === "credential") {
+        await holdCredential;
         const destination = args?.destination as string;
         if (args?.secret) savedKeys.add(destination);
         else savedKeys.delete(destination);
@@ -415,6 +418,35 @@ it("keeps a remote endpoint's key under that endpoint", async () => {
       secret: "secret",
     }),
   );
+});
+it("applies a key save only to the destination it was made for", async () => {
+  let release = () => {};
+  holdCredential = new Promise((resolve) => (release = resolve));
+  render(<App />);
+  await openProfiles();
+  const choice = await screen.findByRole("combobox", {
+    name: "Enhanced cleanup",
+  });
+  fireEvent.change(choice, { target: { value: "anthropic" } });
+  fireEvent.change(await screen.findByLabelText("API key"), {
+    target: { value: "sk-ant-test" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+  fireEvent.change(choice, { target: { value: "remote" } });
+  fireEvent.change(await screen.findByLabelText("Endpoint"), {
+    target: { value: "https://api.example.com/v1/chat/completions" },
+  });
+  expect(await screen.findByText("No API key saved")).toBeTruthy();
+  fireEvent.change(screen.getByLabelText("API key"), {
+    target: { value: "typed for the endpoint" },
+  });
+  await act(async () => release());
+  await waitFor(() => expect(savedKeys.has("anthropic")).toBe(true));
+  expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe(
+    "typed for the endpoint",
+  );
+  expect(screen.getByText("No API key saved")).toBeTruthy();
+  expect(screen.queryByText("API key saved")).toBeNull();
 });
 it("follows the system microphone until the user picks a device, then saves its name", async () => {
   render(<App />);
