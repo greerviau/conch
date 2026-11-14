@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   LanguageMenu,
   ModelStatus,
@@ -23,12 +23,14 @@ import {
   type Language,
   type ModelView,
   type Profile,
+  type ProviderModel,
   type Settings,
 } from "./types";
 
 export const ENHANCED_LABELS: Record<string, string> = {
   disabled: "Basic only",
   managed: "Managed S1-mini",
+  anthropic: "Claude (Anthropic API)",
   local: "Local endpoint",
   remote: "Remote endpoint",
 };
@@ -58,7 +60,9 @@ export function Profiles({
   downloadBusy,
   percent,
   onDownload,
+  anthropicModels,
   onCredential,
+  credentialSaved,
 }: {
   /** The draft settings; changes wait for Save changes. */
   settings: Settings;
@@ -72,11 +76,19 @@ export function Profiles({
   downloadBusy: boolean;
   percent: number | null;
   onDownload: (id: string) => void;
-  /** Saves or, with null, removes the API key for an endpoint. */
-  onCredential: (endpoint: string, secret: string | null) => Promise<boolean>;
+  /** The Claude models Claude cleanup offers, the default first. */
+  anthropicModels: ProviderModel[];
+  /** Saves or, with null, removes the API key for `anthropic` or a remote endpoint. */
+  onCredential: (
+    destination: string,
+    secret: string | null,
+  ) => Promise<boolean>;
+  /** Whether a key is saved for the destination, or null when the store cannot say. */
+  credentialSaved: (destination: string) => Promise<boolean | null>;
 }) {
   const [editingId, setEditingId] = useState(settings.active_profile);
   const [secret, setSecret] = useState("");
+  const [keySaved, setKeySaved] = useState<boolean | null>(null);
   const profile =
     settings.profiles.find((p) => p.id === editingId) ??
     activeProfile(settings);
@@ -116,6 +128,70 @@ export function Profiles({
   const mini = cleanupModel(models);
   const managedUnsupported =
     profile.enhanced === "managed" && !supports(mini, profile.language);
+  const destination =
+    profile.enhanced === "anthropic"
+      ? "anthropic"
+      : profile.enhanced === "remote"
+        ? cleanup.endpoint
+        : null;
+  // Changing the destination and saving a key each start a new generation. A
+  // key-store answer from an older generation is about a destination or a key
+  // that is no longer shown, so it is dropped.
+  const keyGeneration = useRef(0);
+  useEffect(() => {
+    const generation = ++keyGeneration.current;
+    setKeySaved(null);
+    setSecret("");
+    if (!destination) return;
+    void credentialSaved(destination).then((saved) => {
+      if (keyGeneration.current === generation) setKeySaved(saved);
+    });
+  }, [destination, credentialSaved]);
+  const saveKey = async (value: string | null) => {
+    if (!destination) return;
+    const generation = ++keyGeneration.current;
+    const saved = await onCredential(destination, value);
+    if (saved && keyGeneration.current === generation) {
+      setSecret("");
+      setKeySaved(value !== null);
+    }
+  };
+  const apiKey = (
+    <>
+      <label className="field">
+        API key
+        <input
+          type="password"
+          autoComplete="off"
+          value={secret}
+          onChange={(e) => setSecret(e.target.value)}
+        />
+      </label>
+      {keySaved !== null && (
+        <p className="note">
+          {keySaved ? "API key saved" : "No API key saved"}
+        </p>
+      )}
+      <div className="actions">
+        <button disabled={!secret} onClick={() => void saveKey(secret)}>
+          Save key
+        </button>
+        {keySaved !== false && (
+          <button className="ghost" onClick={() => void saveKey(null)}>
+            Remove key
+          </button>
+        )}
+      </div>
+    </>
+  );
+  const leavesDevice = (provider: string) => (
+    <p>
+      Dictated text leaves this device. {provider} may charge for requests.
+      Protected spans use placeholders, but the transcript can still contain
+      confidential text. Conch sends no audio, source files, vocabulary indexes,
+      or clipboard content.
+    </p>
+  );
   const languageName =
     profile.language === "auto"
       ? "Auto-detect"
@@ -245,7 +321,7 @@ export function Profiles({
               title="Enhanced cleanup"
               note={`Basic cleanup always runs. Enhanced cleanup rewrites the transcript with a language model after it.${
                 managedUnsupported
-                  ? ` Managed S1-mini supports English only; Conch uses Basic cleanup for ${languageName}. A local or remote endpoint works in any language.`
+                  ? ` Managed S1-mini supports English only; Conch uses Basic cleanup for ${languageName}. Claude or an endpoint works in any language.`
                   : ""
               }`}
             >
@@ -256,6 +332,7 @@ export function Profiles({
               >
                 <option value="disabled">Disabled</option>
                 <option value="managed">Managed S1-mini</option>
+                <option value="anthropic">Claude (Anthropic API)</option>
                 <option value="local">Local endpoint</option>
                 <option value="remote">Remote endpoint</option>
               </select>
@@ -273,12 +350,39 @@ export function Profiles({
                 onDownload={() => onDownload(mini.id)}
               />
             )}
+            {profile.enhanced === "anthropic" && (
+              <>
+                <Row
+                  title="Claude model"
+                  note="Haiku answers fastest and costs least. Every profile that uses Claude shares this model and key."
+                >
+                  <select
+                    aria-label="Claude model"
+                    value={cleanup.anthropic_model}
+                    onChange={(e) =>
+                      updateCleanup({ anthropic_model: e.target.value })
+                    }
+                  >
+                    {anthropicModels.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </Row>
+                <div className="callout">
+                  <p>Destination: Anthropic (api.anthropic.com)</p>
+                  {leavesDevice("Anthropic")}
+                  {apiKey}
+                </div>
+              </>
+            )}
             {(profile.enhanced === "local" ||
               profile.enhanced === "remote") && (
               <>
                 <Row
                   title="Endpoint"
-                  note="Full chat-completions endpoint. Every profile that uses an endpoint shares it."
+                  note="Full OpenAI-compatible chat-completions endpoint. Every profile that uses an endpoint shares it."
                 >
                   <input
                     aria-label="Endpoint"
@@ -306,12 +410,7 @@ export function Profiles({
                 <p>
                   Destination: {cleanup.endpoint || "Set an HTTPS endpoint"}
                 </p>
-                <p>
-                  Dictated text leaves this device. The provider may charge for
-                  requests. Protected spans use placeholders, but the transcript
-                  can still contain confidential text. Conch sends no audio,
-                  source files, vocabulary indexes, or clipboard content.
-                </p>
+                {leavesDevice("The provider")}
                 <label className="check">
                   <input
                     type="checkbox"
@@ -322,34 +421,7 @@ export function Profiles({
                   />
                   Enable remote cleanup for this destination
                 </label>
-                <label className="field">
-                  API key
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    value={secret}
-                    onChange={(e) => setSecret(e.target.value)}
-                  />
-                </label>
-                <div className="actions">
-                  <button
-                    onClick={async () => {
-                      if (await onCredential(cleanup.endpoint, secret))
-                        setSecret("");
-                    }}
-                  >
-                    Save key
-                  </button>
-                  <button
-                    className="ghost"
-                    onClick={async () => {
-                      if (await onCredential(cleanup.endpoint, null))
-                        setSecret("");
-                    }}
-                  >
-                    Remove key
-                  </button>
-                </div>
+                {apiKey}
               </div>
             )}
             {profile.enhanced !== "disabled" && (

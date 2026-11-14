@@ -25,6 +25,8 @@ pub struct Cleanup {
     pub endpoint: String,
     pub model: String,
     pub remote_enabled: bool,
+    /// The Claude model that Claude cleanup uses, from `inference::ANTHROPIC_MODELS`.
+    pub anthropic_model: String,
 }
 fn fillers_by_language<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
@@ -48,6 +50,7 @@ impl Default for Cleanup {
             endpoint: String::new(),
             model: String::new(),
             remote_enabled: false,
+            anthropic_model: crate::inference::ANTHROPIC_MODELS[0].id.into(),
         }
     }
 }
@@ -56,7 +59,7 @@ pub struct Snapshot {
     pub mappings: Vec<Mapping>,
     pub vocabulary: Vec<Vocabulary>,
     pub cleanup: Cleanup,
-    /// Enhanced cleanup: `disabled`, `managed`, `local`, or `remote`.
+    /// Enhanced cleanup: `disabled`, `managed`, `anthropic`, `local`, or `remote`.
     pub enhanced: String,
     /// Apply repository suggestions that have one candidate without review.
     pub auto_accept: bool,
@@ -1336,5 +1339,11 @@ mod tests {
         assert_eq!(r.text, r.raw);
         assert_eq!(r.suggestions[0].original, "max groups");
         assert_eq!(r.suggestions[0].candidates[0].text, "maxGroups");
+    }
+    #[test]
+    fn claude_cleanup_defaults_to_the_fastest_model() {
+        assert_eq!(Cleanup::default().anthropic_model, "claude-haiku-5-5");
+        let saved: Cleanup = serde_json::from_str(r#"{"endpoint":""}"#).unwrap();
+        assert_eq!(saved.anthropic_model, "claude-haiku-5-5");
     }
 }

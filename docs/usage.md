@@ -71,9 +71,11 @@ A hesitation list saved before languages existed loads as the English list.
 Auto-detect removes no hesitation tokens, and Settings disables the row and says why.
 Leave Hesitation tokens blank and Basic cleanup leaves the transcript exactly as recognized.
 Excluded literal terms stay as dictated.
-Enhanced cleanup is Disabled until you choose Managed S1-mini, Local endpoint, or Remote endpoint in a profile. The endpoint, its model, the remote confirmation, and the API key are shared by every profile that uses an endpoint.
+Enhanced cleanup is Disabled until you choose Managed S1-mini, Claude (Anthropic API), Local endpoint, or Remote endpoint in a profile.
+Claude (Anthropic API) needs a model and an API key from your Anthropic account, and no endpoint. Choose the model in the profile, paste the key, and choose Save key; the profile shows whether a key is saved. Claude Haiku 5.5 is the default because it answers fastest. Without a key, Conch uses Basic cleanup and the result status says to add one. The Claude model and key are shared by every profile that uses Claude.
+Remote endpoint takes any HTTPS OpenAI-compatible chat-completions endpoint. The endpoint, its model, the remote confirmation, and the API key are shared by every profile that uses an endpoint.
 Managed S1-mini asks for the 484 MB download; until it is installed, Conch uses Basic cleanup.
-Managed S1-mini supports English only. For any other language and for Auto-detect, Conch uses Basic cleanup, the result status says so, and the profile shows the reason. A local or remote endpoint works in every language.
+Managed S1-mini supports English only. For any other language and for Auto-detect, Conch uses Basic cleanup, the result status says so, and the profile shows the reason. Claude or an endpoint works in every language.
 With Enhanced cleanup on, Conch cleans each finished chunk while you keep speaking, one at a time.
 After you stop, it recognizes and cleans the audio after the last chunk, behind any chunk whose cleaning is still running; a slow endpoint can leave a backlog.
 A dictation with no chunk is recognized and cleaned whole after the stop. That is one shorter than about 9 seconds, or one with no pause of a second after 8 seconds and under 25 seconds of audio pending.

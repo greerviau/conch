@@ -17,7 +17,11 @@ export type Cleanup = {
   endpoint: string;
   model: string;
   remote_enabled: boolean;
+  /** The Claude model Claude cleanup uses, shared by every profile. */
+  anthropic_model: string;
 };
+/** A model a cleanup provider offers. */
+export type ProviderModel = { id: string; label: string };
 /** The recognition language and model, Enhanced cleanup, and repository context of a recording. */
 export type Profile = {
   id: string;
@@ -25,7 +29,7 @@ export type Profile = {
   /** ISO code from the language table, or `auto`. */
   language: string;
   recognizer: string;
-  /** Enhanced cleanup: disabled, managed, local, or remote. */
+  /** Enhanced cleanup: disabled, managed, anthropic, local, or remote. */
   enhanced: string;
   /** Ids of the repositories that supply context. */
   repositories: string[];
@@ -164,6 +168,8 @@ export type View = {
   /** Changes whenever the log changes. */
   logs_revision: number;
   models: ModelView[];
+  /** The Claude models Claude cleanup offers, the default first. */
+  anthropic_models: ProviderModel[];
   /** Every recognition language, in the order of the Whisper table. */
   languages: Language[];
   accessibility: boolean;
