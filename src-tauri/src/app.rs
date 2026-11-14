@@ -774,12 +774,37 @@ fn process(
             note_model_time(&mut watch, &worker);
         }
     }
-    let mut inner = state.inner.locked();
-    if !inner.session.complete(generation) {
-        return;
-    }
-    let paste = inner.settings.auto_paste;
-    let delivered = delivery::deliver(&mut platform::NativeDesktop::default(), &result.text, paste);
+    deliver_result(
+        &state,
+        generation,
+        result,
+        &mut watch,
+        &mut platform::NativeDesktop::default(),
+    );
+}
+/// Delivers the prepared result of recording `generation` and makes it the current
+/// result. Nothing is delivered for a recording that was cancelled before this.
+///
+/// The lock on `inner` is free while the text is delivered and saved to the history.
+/// Reading the focused field waits on the app being dictated into, for seconds when
+/// that app is still building its accessibility tree, and the interface, the shortcut,
+/// and the recording indicator all wait on the lock. The phase stays Processing until
+/// the result is stored, so nothing else starts in between.
+fn deliver_result(
+    state: &AppState,
+    generation: u64,
+    mut result: ResultText,
+    watch: &mut Stopwatch,
+    desktop: &mut impl Desktop,
+) {
+    let (paste, keep_history) = {
+        let inner = state.inner.locked();
+        if inner.session.generation != generation || inner.session.phase != Phase::Processing {
+            return;
+        }
+        (inner.settings.auto_paste, inner.settings.keep_history)
+    };
+    let delivered = delivery::deliver(desktop, &result.text, paste);
     watch.lap("delivery");
     log::record(
         log::Level::Info,
@@ -787,27 +812,45 @@ fn process(
         &watch.headline(),
         Some(&watch.detail()),
     );
+    let mut notice = None;
+    let mut failure = None;
     match delivered {
         Ok(status) => {
-            let notice = crate::indicator::delivery_notice(&status, result.text.is_empty());
+            notice = crate::indicator::delivery_notice(&status, result.text.is_empty());
             let level = if notice.is_some() {
                 log::Level::Warn
             } else {
                 log::Level::Info
             };
             log::record(level, "delivery", &status, None);
-            inner.indicator_notice = notice.map(|text| (Instant::now(), text));
             result.status.push_str(&format!(". {status}"));
         }
         Err(error) => {
             log::error("delivery", &error);
-            inner.error = error;
+            failure = Some(error);
         }
     }
-    match history::record(&state.data, inner.settings.keep_history, &result) {
+    let saved = history::record(&state.data, keep_history, &result);
+    if let Err(error) = &saved {
+        log::error("history", error);
+    }
+    let mut inner = state.inner.locked();
+    if !inner.session.complete(generation) {
+        // Cancelled during delivery, which cannot be taken back. The text stays the
+        // current result unless another recording has begun.
+        if inner.session.phase == Phase::Idle {
+            inner.history_id = saved.unwrap_or(None);
+            inner.result = Some(result);
+        }
+        return;
+    }
+    inner.indicator_notice = notice.map(|text| (Instant::now(), text));
+    if let Some(error) = failure {
+        inner.error = error;
+    }
+    match saved {
         Ok(id) => inner.history_id = id,
         Err(error) => {
-            log::error("history", &error);
             inner.history_id = None;
             if inner.error.is_empty() {
                 inner.error = error;
@@ -1940,6 +1983,110 @@ mod tests {
         state.inner.locked().settings.repositories.clear();
         store_index(&state, &repository, index_of(&["maxGroups"]), unwritten).unwrap();
         assert!(state.indexes.locked().is_empty());
+    }
+    /// A desktop with a focused field that runs `on_copy` when the text is copied.
+    struct Field<F: FnMut()> {
+        on_copy: F,
+        copies: usize,
+        pastes: usize,
+    }
+    impl<F: FnMut()> Desktop for Field<F> {
+        type Focus = u8;
+        fn focus(&mut self) -> Option<u8> {
+            Some(1)
+        }
+        fn copy(&mut self, _: &str) -> Result<(), String> {
+            self.copies += 1;
+            (self.on_copy)();
+            Ok(())
+        }
+        fn paste(&mut self) -> Result<(), String> {
+            self.pastes += 1;
+            Ok(())
+        }
+    }
+    /// App state that is preparing the result of a recording, and that recording.
+    fn preparing(dir: &std::path::Path) -> (AppState, u64) {
+        let state = profiled(dir);
+        let generation = {
+            let mut inner = state.inner.locked();
+            inner.settings.keep_history = true;
+            inner.retry = Some((vec![], Snapshot::default()));
+            let generation = inner.session.start().unwrap();
+            inner.session.finish();
+            generation
+        };
+        (state, generation)
+    }
+    fn deliver_with(state: &AppState, generation: u64, on_copy: impl FnMut()) -> (usize, usize) {
+        let mut desktop = Field {
+            on_copy,
+            copies: 0,
+            pastes: 0,
+        };
+        deliver_result(
+            state,
+            generation,
+            core::prepare("hello world", &Snapshot::default()),
+            &mut Stopwatch::start(Instant::now()),
+            &mut desktop,
+        );
+        (desktop.copies, desktop.pastes)
+    }
+    #[test]
+    fn the_result_is_delivered_without_the_lock_the_interface_waits_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        let delivered = deliver_with(&state, generation, || {
+            let inner = state.inner.try_lock().expect("the lock is free");
+            // The interface still shows the result as being prepared.
+            assert_eq!(inner.session.phase, Phase::Processing);
+        });
+        assert_eq!(delivered, (1, 1));
+        let inner = state.inner.locked();
+        assert_eq!(inner.session.phase, Phase::Idle);
+        let result = inner.result.as_ref().unwrap();
+        assert_eq!(result.text, "hello world");
+        assert!(result.status.contains("paste requested"));
+        assert!(inner.retry.is_none() && inner.indicator_notice.is_none());
+        assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 1);
+        assert_eq!(
+            inner.history_id,
+            Some(history::revision(dir.path()).unwrap())
+        );
+    }
+    #[test]
+    fn a_result_cancelled_while_it_was_delivered_is_still_the_current_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || state.inner.locked().session.cancel());
+        let inner = state.inner.locked();
+        assert_eq!(inner.session.phase, Phase::Idle);
+        assert_eq!(inner.result.as_ref().unwrap().text, "hello world");
+        assert!(inner.history_id.is_some());
+    }
+    #[test]
+    fn a_result_delivered_after_the_next_recording_began_does_not_replace_its_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            inner.session.start().unwrap();
+            inner.retry = Some((vec![1], Snapshot::default()));
+        });
+        let inner = state.inner.locked();
+        assert_eq!(inner.session.phase, Phase::Recording);
+        assert!(inner.result.is_none() && inner.retry.is_some());
+    }
+    #[test]
+    fn a_recording_cancelled_before_delivery_delivers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        state.inner.locked().session.cancel();
+        assert_eq!(deliver_with(&state, generation, || ()), (0, 0));
+        assert!(state.inner.locked().result.is_none());
+        assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 0);
     }
     #[test]
     fn choosing_a_profile_between_recordings_saves_it_as_active() {
