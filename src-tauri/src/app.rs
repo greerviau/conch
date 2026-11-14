@@ -1005,6 +1005,11 @@ pub async fn logs_page(
     .await
     .map_err(|_| "Log reader failed")?
 }
+/// Clears the error the main window shows, when the person dismisses it.
+#[tauri::command]
+pub fn dismiss_error(state: State<'_, AppState>) {
+    state.inner.locked().error.clear();
+}
 /// Logs an error the interface showed for a failed command, so the Logs page
 /// holds what the error banner reported.
 #[tauri::command]

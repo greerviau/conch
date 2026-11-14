@@ -569,6 +569,42 @@ it("links an error the app reported to the Logs page", async () => {
     await screen.findByText(/never contain audio, transcripts, result text/),
   ).toBeTruthy();
 });
+it("dismisses an error the app reported until another one arrives", async () => {
+  view.error = "No speech recognized";
+  const base = ipc.getMockImplementation()!;
+  ipc.mockImplementation(
+    async (name: string, args?: Record<string, unknown>) => {
+      if (name === "dismiss_error") view.error = "";
+      return base(name, args);
+    },
+  );
+  render(<App />);
+  const alert = await screen.findByRole("alert");
+  fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(ipc).toHaveBeenCalledWith("dismiss_error");
+  // The next poll keeps it hidden.
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  expect(screen.queryByRole("alert")).toBeNull();
+  view.error = "No speech recognized";
+  expect(await screen.findByRole("alert", {}, { timeout: 2000 })).toBeTruthy();
+});
+it("dismisses the Settings saved notice", async () => {
+  install("tiny.en", "silero-vad");
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  fireEvent.click(
+    await screen.findByRole("checkbox", { name: "Keep history of results" }),
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  const notice = await screen.findByText("Settings saved");
+  fireEvent.click(
+    within(notice.closest(".notice") as HTMLElement).getByRole("button", {
+      name: "Dismiss",
+    }),
+  );
+  expect(screen.queryByText("Settings saved")).toBeNull();
+});
 it("logs a failed command and links its error banner to the Logs page", async () => {
   view.microphone = "granted";
   install("tiny.en", "silero-vad");

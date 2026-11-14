@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Back, Search } from "./icons";
+import { Banner } from "./ui";
 import type { TermPage } from "./types";
 export const PAGE_SIZE = 100;
 type Kind = "all" | "files" | "symbols";
@@ -121,9 +122,9 @@ export function RepositoryTerms({
         </div>
       </div>
       {error && (
-        <div role="alert" className="error">
+        <Banner kind="error" onDismiss={() => setError("")}>
           {error}
-        </div>
+        </Banner>
       )}
       {page && total === 0 ? (
         <p className="empty-note">

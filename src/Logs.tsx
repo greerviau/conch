@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Search } from "./icons";
+import { Banner } from "./ui";
 import type { LogEntry, LogPage } from "./types";
 export const PAGE_SIZE = 50;
 const LEVELS = [
@@ -169,14 +170,14 @@ export function Logs({
         transcripts, result text, or source text, and paths are shortened.
       </p>
       {error && (
-        <div role="alert" className="error">
+        <Banner kind="error" onDismiss={() => setError("")}>
           {error}
-        </div>
+        </Banner>
       )}
       {notice && (
-        <p role="status" className="notice">
+        <Banner kind="notice" onDismiss={() => setNotice("")}>
           {notice}
-        </p>
+        </Banner>
       )}
       {page && all === 0 ? (
         <p className="empty-note">

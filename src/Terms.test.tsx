@@ -5,6 +5,7 @@ import {
   fireEvent,
   cleanup,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { RepositoryTerms } from "./Terms";
 const ipc = vi.hoisted(() => vi.fn());
@@ -157,4 +158,13 @@ it("keeps the range of the page it shows when the next page fails", async () => 
   ).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   expect(await screen.findByText("101-150 of 150 terms")).toBeTruthy();
+});
+it("dismisses a failed load", async () => {
+  open();
+  await screen.findByText("1-100 of 150 terms");
+  ipc.mockRejectedValueOnce("Cannot read index");
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  const alert = await screen.findByRole("alert");
+  fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).toBeNull();
 });

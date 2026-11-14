@@ -10,7 +10,7 @@ import { Profiles, profileSummary } from "./Profiles";
 import { Repositories } from "./Repositories";
 import { Mic, Stop } from "./icons";
 import { Updates } from "./Updates";
-import { Row, Toggle } from "./ui";
+import { Banner, Row, Toggle } from "./ui";
 import {
   activeProfile,
   folderName,
@@ -385,7 +385,16 @@ export default function App() {
       </header>
       <main className="page">
         {(error || view.error) && (
-          <div role="alert" className="error">
+          <Banner
+            kind="error"
+            onDismiss={() => {
+              if (error) setError("");
+              else
+                invoke("dismiss_error")
+                  .then(reload)
+                  .catch((e) => setError(noted(e)));
+            }}
+          >
             {error || view.error}{" "}
             <button
               className="link"
@@ -394,12 +403,12 @@ export default function App() {
             >
               View logs
             </button>
-          </div>
+          </Banner>
         )}
         {notice && (
-          <p role="status" className="notice">
+          <Banner kind="notice" onDismiss={() => setNotice("")}>
             {notice}
-          </p>
+          </Banner>
         )}
         {tab === "Dictation" && (
           <>

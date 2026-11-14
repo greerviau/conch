@@ -5,6 +5,7 @@ import {
   fireEvent,
   cleanup,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { History } from "./History";
 const ipc = vi.hoisted(() => vi.fn());
@@ -94,6 +95,19 @@ it("copies the result or the raw transcript of one entry", async () => {
   // The second entry's raw transcript equals its text, so it offers no second copy.
   expect(screen.getAllByRole("button", { name: "Copy raw" })).toHaveLength(1);
   expect(await screen.findByText("Copied the raw transcript")).toBeTruthy();
+});
+it("dismisses a notice and an error", async () => {
+  open();
+  await screen.findByText("open main.rs");
+  fireEvent.click(screen.getAllByRole("button", { name: "Copy" })[0]);
+  await screen.findByText("Copied");
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByText("Copied")).toBeNull();
+  ipc.mockRejectedValueOnce("Cannot copy");
+  fireEvent.click(screen.getAllByRole("button", { name: "Copy" })[0]);
+  const alert = await screen.findByRole("alert");
+  fireEvent.click(within(alert).getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 it("deletes one entry and reloads the list", async () => {
   open();
