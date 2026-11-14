@@ -57,8 +57,7 @@ fn main() {
     println!(
         "terms page of repository-0: {:?}",
         best(|| storage::index_terms(
-            data.path(),
-            "repository-0",
+            indexes.get("repository-0").map(|index| &**index),
             "app",
             storage::TermKind::All,
             0,

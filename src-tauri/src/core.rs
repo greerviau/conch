@@ -7,7 +7,7 @@ pub struct Mapping {
     pub repository: Option<String>,
     pub enabled: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct Vocabulary {
     pub text: String,
     pub repository: String,

@@ -200,6 +200,7 @@ pub fn save_settings(
     state: State<'_, AppState>,
     mut settings: Settings,
 ) -> Result<(), String> {
+    let _writing = INDEX_WRITES.locked();
     let mut inner = state.inner.locked();
     if inner.session.phase != Phase::Idle {
         return Err("Finish or cancel before saving settings".into());
@@ -281,12 +282,18 @@ pub async fn index_terms(
     offset: usize,
     limit: usize,
 ) -> Result<storage::TermPage, String> {
-    let dir = app.state::<AppState>().data.clone();
+    // The index held in memory is the stored one, so the page needs no read of the database.
+    let index = app
+        .state::<AppState>()
+        .indexes
+        .locked()
+        .get(&repository)
+        .cloned();
     tauri::async_runtime::spawn_blocking(move || {
-        storage::index_terms(&dir, &repository, &query, kind, offset, limit.min(500))
+        storage::index_terms(index.as_deref(), &query, kind, offset, limit.min(500))
     })
     .await
-    .map_err(|_| "Index worker failed")?
+    .map_err(|_| "Index worker failed".into())
 }
 #[tauri::command]
 pub async fn refresh(app: AppHandle) -> Result<(), String> {
@@ -303,30 +310,57 @@ fn refresh_now(app: &AppHandle) -> Result<(), String> {
     let repositories = state.inner.locked().settings.repositories.clone();
     for repository in repositories {
         let index = index::scan(&repository.root, &repository.id, &repository.exclusions)?;
-        let before = storage::index_status(&state.data)?
-            .into_iter()
-            .find(|row| row.0 == repository.id)
-            .map(|row| row.1);
-        let inner = state.inner.locked();
-        if inner.settings.repositories.iter().any(|r| {
-            r.id == repository.id
-                && r.root == repository.root
-                && r.exclusions == repository.exclusions
-        }) {
-            storage::put_index(&state.data, &repository.id, &index)?;
-            let name = repository.root.file_name().map_or_else(
-                || repository.id.clone(),
-                |n| n.to_string_lossy().into_owned(),
-            );
-            if let Some(message) = index_message(&name, before.as_ref(), &index) {
-                log::info("index", &message);
-            }
-            state
-                .indexes
-                .locked()
-                .insert(repository.id, Arc::new(index));
-        }
+        store_index(&state, &repository, index, |index| {
+            storage::put_index(&state.data, &repository.id, index)
+        })?;
     }
+    Ok(())
+}
+/// Held while an index is written and while settings are saved. A save can remove a
+/// repository, so it must not land between the check that the repository is still
+/// configured and the write of its index. `save_settings` takes it before `inner`.
+static INDEX_WRITES: Mutex<()> = Mutex::new(());
+/// Stores the index a scan of `repository` produced, unless the repository was removed
+/// or changed during the scan. `write` saves it to the database and runs without the
+/// lock on `inner`, because a large index takes long enough to write that a recording
+/// started meanwhile would wait. A scan that found what is already stored keeps the
+/// index in memory, so the recordings that follow share its terms, and records only
+/// the time.
+fn store_index(
+    state: &AppState,
+    repository: &storage::Repository,
+    index: index::Index,
+    write: impl FnOnce(&index::Index) -> Result<(), String>,
+) -> Result<(), String> {
+    let _writing = INDEX_WRITES.locked();
+    let configured = state.inner.locked().settings.repositories.iter().any(|r| {
+        r.id == repository.id && r.root == repository.root && r.exclusions == repository.exclusions
+    });
+    if !configured {
+        return Ok(());
+    }
+    let stored = state.indexes.locked().get(&repository.id).cloned();
+    if stored.as_deref() == Some(&index) {
+        return storage::touch_index(&state.data, &repository.id);
+    }
+    write(&index)?;
+    let name = repository.root.file_name().map_or_else(
+        || repository.id.clone(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let before = stored.as_deref().map(|stored| storage::IndexStatus {
+        available: stored.available,
+        incomplete: stored.incomplete,
+        skipped: stored.skipped,
+        entries: stored.entries.len(),
+    });
+    if let Some(message) = index_message(&name, before.as_ref(), &index) {
+        log::info("index", &message);
+    }
+    state
+        .indexes
+        .locked()
+        .insert(repository.id.clone(), Arc::new(index));
     Ok(())
 }
 #[tauri::command]
@@ -1802,6 +1836,85 @@ mod tests {
             inner: Mutex::new(Inner::new(settings)),
             indexes: Mutex::new(storage::Indexes::new()),
         }
+    }
+    /// App state whose settings hold one repository at `root`, and that repository.
+    fn with_repository(dir: &std::path::Path, root: &str) -> (AppState, storage::Repository) {
+        let state = profiled(dir);
+        let repository = storage::Repository {
+            id: "r".into(),
+            root: root.into(),
+            exclusions: vec![],
+        };
+        state
+            .inner
+            .locked()
+            .settings
+            .repositories
+            .push(repository.clone());
+        (state, repository)
+    }
+    fn index_of(texts: &[&str]) -> index::Index {
+        index::Index {
+            entries: texts
+                .iter()
+                .map(|text| core::Vocabulary {
+                    text: (*text).into(),
+                    repository: "r".into(),
+                    file: "a.ts".into(),
+                })
+                .collect(),
+            available: true,
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn a_scanned_index_is_written_without_the_lock_that_recording_needs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, repository) = with_repository(dir.path(), "/work/app");
+        let mut written = false;
+        store_index(&state, &repository, index_of(&["maxGroups"]), |index| {
+            written = true;
+            assert!(state.inner.try_lock().is_ok());
+            assert!(state.indexes.try_lock().is_ok());
+            storage::put_index(dir.path(), "r", index)
+        })
+        .unwrap();
+        assert!(written);
+        assert_eq!(state.indexes.locked()["r"].entries.len(), 1);
+        assert_eq!(storage::index_status(dir.path()).unwrap()[0].1.entries, 1);
+    }
+    #[test]
+    fn a_rescan_that_finds_the_same_terms_keeps_the_index_and_records_only_the_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, repository) = with_repository(dir.path(), "/work/app");
+        let save = |index: &index::Index| storage::put_index(dir.path(), "r", index);
+        store_index(&state, &repository, index_of(&["maxGroups"]), save).unwrap();
+        let first = state.indexes.locked()["r"].clone();
+        storage::open(dir.path())
+            .unwrap()
+            .execute("UPDATE indexes SET refreshed=5", [])
+            .unwrap();
+        store_index(&state, &repository, index_of(&["maxGroups"]), |_| {
+            panic!("an unchanged index is not written again")
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&first, &state.indexes.locked()["r"]));
+        assert!(storage::index_status(dir.path()).unwrap()[0].2 > 5);
+        // A changed index replaces it.
+        store_index(&state, &repository, index_of(&["maxGroups", "podGC"]), save).unwrap();
+        assert_eq!(state.indexes.locked()["r"].entries.len(), 2);
+        assert_eq!(storage::index_status(dir.path()).unwrap()[0].1.entries, 2);
+    }
+    #[test]
+    fn the_index_of_a_repository_removed_or_changed_during_its_scan_is_not_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, repository) = with_repository(dir.path(), "/work/app");
+        let unwritten = |_: &index::Index| -> Result<(), String> { panic!("not written") };
+        state.inner.locked().settings.repositories[0].exclusions = vec!["docs".into()];
+        store_index(&state, &repository, index_of(&["maxGroups"]), unwritten).unwrap();
+        state.inner.locked().settings.repositories.clear();
+        store_index(&state, &repository, index_of(&["maxGroups"]), unwritten).unwrap();
+        assert!(state.indexes.locked().is_empty());
     }
     #[test]
     fn choosing_a_profile_between_recordings_saves_it_as_active() {

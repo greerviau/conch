@@ -1,7 +1,7 @@
 use crate::core::Vocabulary;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Index {
     pub entries: Vec<Vocabulary>,
     pub skipped: usize,
