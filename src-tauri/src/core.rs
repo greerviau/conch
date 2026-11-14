@@ -481,6 +481,7 @@ const HINT_TERM_BYTES: usize = 40;
 /// mapping replacements come first, then indexed identifiers that more files
 /// declare, then the rest in alphabetical order. Plain words and file paths
 /// are left out because the recognizer already spells them correctly.
+/// Terms that contain a comma are left out too.
 pub fn recognition_hint(snapshot: &Snapshot) -> String {
     let mut terms: Vec<&str> = snapshot
         .mappings
@@ -504,7 +505,11 @@ pub fn recognition_hint(snapshot: &Snapshot) -> String {
     let mut size = HINT_PREFIX.len() + 1;
     for term in terms {
         let separator = if chosen.is_empty() { 0 } else { 2 };
-        if size + separator + term.len() > RECOGNITION_HINT_BYTES || !seen.insert(term) {
+        // `strip_hint_echo` reads the terms back by splitting at commas.
+        if term.contains(',')
+            || size + separator + term.len() > RECOGNITION_HINT_BYTES
+            || !seen.insert(term)
+        {
             continue;
         }
         size += separator + term.len();
@@ -520,7 +525,8 @@ pub fn recognition_hint(snapshot: &Snapshot) -> String {
 /// answers with its prompt as a comma-separated list of the hint's terms. A
 /// sentence is dropped when it is a comma-separated list in which at least two
 /// items are hint terms, in hint order and ignoring case, and at most one item
-/// is not, because the recognizer can misspell one term ("C2" for "C#").
+/// is not, because the recognizer can misspell one term ("C2" for "C#"). A
+/// dictated sentence of that form is dropped too.
 pub fn strip_hint_echo(text: &str, hint: &str) -> String {
     let Some(list) = hint
         .strip_prefix(HINT_PREFIX)
@@ -566,27 +572,45 @@ fn sentences(text: &str) -> Vec<&str> {
     }
     out
 }
+/// Whether `sentence` lists hint `terms` as `strip_hint_echo` describes. The
+/// one item that is not a term has at most as many words as the longest term,
+/// as a misspelled term would, so a clause such as "and the build logs" is
+/// never taken for one.
 fn echoes_hint(sentence: &str, terms: &[String]) -> bool {
-    let body = sentence.trim().trim_end_matches(['.', '?', '!']);
+    let body = sentence.trim();
     let label = HINT_PREFIX.trim_end();
     let body = body
         .get(..label.len())
         .filter(|start| start.eq_ignore_ascii_case(label))
         .map_or(body, |_| &body[label.len()..]);
     let items: Vec<&str> = body.split(',').map(str::trim).collect();
-    let mut previous = None;
+    let longest = terms
+        .iter()
+        .map(|term| term.split_whitespace().count())
+        .max()
+        .unwrap_or(0);
+    // A term may end in its own period ("Inc."), so an item matches with or
+    // without the sentence's closing punctuation.
+    let forms = |item: &str| [item, item.trim_end_matches(['.', '?', '!'])].map(crate::fold::fold);
+    let mut next = 0;
     let mut matched = 0;
+    let mut other = 0;
     for item in &items {
-        let folded = crate::fold::fold(item);
-        if let Some(at) = terms.iter().position(|term| *term == folded) {
-            if previous.is_some_and(|previous| at <= previous) {
+        let forms = forms(item);
+        if let Some(at) = terms[next..].iter().position(|term| forms.contains(term)) {
+            next += at + 1;
+            matched += 1;
+        } else if terms[..next].iter().any(|term| forms.contains(term)) {
+            // A term before the last match: out of hint order.
+            return false;
+        } else {
+            other += 1;
+            if other > 1 || item.split_whitespace().count() > longest {
                 return false;
             }
-            previous = Some(at);
-            matched += 1;
         }
     }
-    matched >= 2 && matched + 1 >= items.len()
+    matched >= 2
 }
 /// Whether masking each part protects the same literals as masking the whole
 /// text. A mapping or a quotation that spans two parts is protected in the
@@ -1364,6 +1388,32 @@ mod tests {
             assert_eq!(strip_hint_echo(text, hint), text);
         }
         assert_eq!(strip_hint_echo("README, Main.", ""), "README, Main.");
+    }
+    #[test]
+    fn hint_echo_matching_keeps_term_boundaries_and_spares_long_items() {
+        // A replacement with a comma would read back as two terms, so it stays
+        // out of the hint.
+        let mut s = Snapshot::default();
+        s.mappings.push(mapping("new york", "New York, NY", None));
+        s.mappings.push(mapping("read me", "README", None));
+        let hint = recognition_hint(&s);
+        assert_eq!(hint, "Vocabulary: README.");
+        assert_eq!(strip_hint_echo("New York, NY.", &hint), "New York, NY.");
+        // The item that is not a term is a misspelled term, never a phrase
+        // longer than every term.
+        let hint = "Vocabulary: README, Main.";
+        let text = "Check e.g. README, Main, and the build logs.";
+        assert_eq!(strip_hint_echo(text, hint), text);
+        // Terms that differ only in case each keep their place in the hint.
+        assert_eq!(
+            strip_hint_echo("README, main.", "Vocabulary: Main, README, main."),
+            ""
+        );
+        // A term's own period is part of the term.
+        assert_eq!(
+            strip_hint_echo("Done. README, Inc.", "Vocabulary: README, Inc.."),
+            "Done."
+        );
     }
     #[test]
     fn remembered_mapping_replaces_the_heard_phrase_on_the_next_recording() {
