@@ -84,7 +84,8 @@ test('Linux install downloads the latest AppImage and makes it executable', () =
  assert.equal(out.status, 0, out.stderr);
  const target = join(bin, 'Conch.AppImage');
  assert.match(readFileSync(target, 'utf8'), /echo conch/);
- assert.ok(statSync(target).mode & 0o100);
+ // Windows has no executable bit to read back.
+ if (platform() !== 'win32') assert.ok(statSync(target).mode & 0o100);
  assert.match(out.stdout, new RegExp(target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 

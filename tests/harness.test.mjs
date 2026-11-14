@@ -49,7 +49,9 @@ test('the signing check rejects an ad-hoc signed app because its Accessibility g
  assert.notEqual(check.status, 0);
  assert.match(check.stderr, /Accessibility grant/);
 });
-test('the signing check accepts an app signed with the stable local identity', { skip: platform() !== 'darwin' }, (t) => {
+// The setup script adds an identity to the login keychain, and signing with it waits for a
+// keychain prompt that nobody answers on a CI runner.
+test('the signing check accepts an app signed with the stable local identity', { skip: platform() !== 'darwin' || !!process.env.CI }, (t) => {
  const found = spawnSync('scripts/setup-local-signing.sh', { encoding: 'utf8' });
  if (found.status !== 0) return t.skip('no local signing identity');
  const identity = found.stdout.trim();
@@ -59,7 +61,8 @@ test('the signing check accepts an app signed with the stable local identity', {
 });
 test('the repository is MIT licensed under the copyright holder named in every manifest and the license file', () => {
  const license = readFileSync('LICENSE', 'utf8');
- assert.match(license, /^MIT License\n\nCopyright \(c\) 2026 Greer\n/);
+ // A Windows checkout can hold the file with CRLF line endings.
+ assert.match(license, /^MIT License\r?\n\r?\nCopyright \(c\) 2026 Greer\r?\n/);
  assert.match(license, /Permission is hereby granted, free of charge/);
  assert.equal(JSON.parse(readFileSync('package.json')).license, 'MIT');
  assert.match(readFileSync('src-tauri/Cargo.toml', 'utf8').split(/^\[dependencies\]/m)[0], /^license = "MIT"$/m);
