@@ -36,9 +36,16 @@ fn main() {
     let mut settings = storage::Settings::default();
     for (number, root) in roots.iter().enumerate() {
         let id = format!("repository-{number}");
-        let (scanned, took) = once(|| index::scan(Path::new(root), &id, &[]));
+        let mut cache = index::ScanCache::default();
+        let (scanned, took) = once(|| index::scan_with(Path::new(root), &id, &[], &mut cache));
         let scanned = scanned.expect("scan");
         println!("scan {id}: {} terms in {took:?}", scanned.entries.len());
+        let (again, took) = once(|| index::scan_with(Path::new(root), &id, &[], &mut cache));
+        println!(
+            "scan {id} again: {took:?}, {} files read, same index: {}",
+            cache.read,
+            again.expect("scan") == scanned
+        );
         let (saved, took) = once(|| storage::put_index(data.path(), &id, &scanned));
         saved.expect("save index");
         println!("save index {id}: {took:?}");

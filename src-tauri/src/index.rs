@@ -19,7 +19,82 @@ pub const SKIPPED_DIRECTORIES: [&str; 6] = [
     "vendor",
     "__pycache__",
 ];
+/// What a scan read from each file, so the next scan of the repository reads and
+/// parses only the files whose size or modification time changed.
+#[derive(Default)]
+pub struct ScanCache {
+    files: std::collections::HashMap<std::path::PathBuf, Scanned>,
+    /// Files the latest scan read, as opposed to took from the cache.
+    pub read: usize,
+}
+struct Scanned {
+    modified: std::time::SystemTime,
+    length: u64,
+    /// The declared names, `None` when the file has no supported parser or did not
+    /// parse, or nothing at all for a file that is not text.
+    text: Option<Option<Vec<String>>>,
+}
+/// A file changed this recently is read again by the next scan: a second change
+/// within the resolution of the file system's clock would keep the same time.
+const SETTLED: std::time::Duration = std::time::Duration::from_secs(2);
 pub fn scan(root: &Path, repository: &str, exclusions: &[String]) -> Result<Index, String> {
+    scan_with(root, repository, exclusions, &mut ScanCache::default())
+}
+/// The declared names of a text file, or `None` without a supported parser or when the
+/// file does not parse.
+fn symbols(path: &Path, source: &str) -> Result<Option<Vec<String>>, String> {
+    let language = match path.extension().and_then(|s| s.to_str()) {
+        Some("py") => tree_sitter_python::LANGUAGE.into(),
+        Some("js" | "jsx" | "mjs" | "cjs") => tree_sitter_javascript::LANGUAGE.into(),
+        Some("ts") => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        Some("tsx") => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        _ => return Ok(None),
+    };
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&language)
+        .map_err(|_| "Cannot initialize symbol parser")?;
+    let Some(tree) = parser.parse(source, None) else {
+        return Ok(None);
+    };
+    if tree.root_node().has_error() {
+        return Ok(None);
+    }
+    let mut names = vec![];
+    let mut pending = vec![tree.root_node()];
+    while let Some(node) = pending.pop() {
+        if matches!(
+            node.kind(),
+            "function_definition"
+                | "class_definition"
+                | "function_declaration"
+                | "class_declaration"
+                | "method_definition"
+                | "variable_declarator"
+                | "interface_declaration"
+                | "type_alias_declaration"
+                | "enum_declaration"
+        ) && let Some(name) = node.child_by_field_name("name")
+            && let Ok(text) = name.utf8_text(source.as_bytes())
+        {
+            names.push(text.to_owned());
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.named_children(&mut cursor));
+    }
+    Ok(Some(names))
+}
+/// `scan`, taking what an earlier scan read from the files that have not changed since
+/// from `cache` and leaving what this one read in it.
+pub fn scan_with(
+    root: &Path,
+    repository: &str,
+    exclusions: &[String],
+    cache: &mut ScanCache,
+) -> Result<Index, String> {
+    let mut known = std::mem::take(&mut cache.files);
+    cache.read = 0;
+    let started = std::time::SystemTime::now();
     if !root.is_dir() {
         return Ok(Index::default());
     }
@@ -69,14 +144,37 @@ pub fn scan(root: &Path, repository: &str, exclusions: &[String]) -> Result<Inde
             result.skipped += 1;
             continue;
         }
-        let Ok(bytes) = std::fs::read(path) else {
-            result.incomplete = true;
-            continue;
+        let unchanged = known.remove(path).filter(|scanned| {
+            scanned.length == meta.len() && meta.modified().is_ok_and(|at| at == scanned.modified)
+        });
+        let scanned = match unchanged {
+            Some(scanned) => scanned,
+            None => {
+                let Ok(bytes) = std::fs::read(path) else {
+                    result.incomplete = true;
+                    continue;
+                };
+                cache.read += 1;
+                let text = match std::str::from_utf8(&bytes) {
+                    Ok(source) if !bytes.contains(&0) => Some(symbols(path, source)?),
+                    _ => None,
+                };
+                Scanned {
+                    // A file whose time cannot be read is read again by every scan.
+                    modified: meta.modified().unwrap_or(started),
+                    length: meta.len(),
+                    text,
+                }
+            }
         };
-        if bytes.contains(&0) {
-            continue;
+        let text = scanned.text.clone();
+        if started
+            .duration_since(scanned.modified)
+            .is_ok_and(|age| age >= SETTLED)
+        {
+            cache.files.insert(path.to_owned(), scanned);
         }
-        let Ok(source) = std::str::from_utf8(&bytes) else {
+        let Some(declared) = text else {
             continue;
         };
         let file = path
@@ -101,48 +199,9 @@ pub fn scan(root: &Path, repository: &str, exclusions: &[String]) -> Result<Inde
         {
             add(name.into());
         }
-        let language = match path.extension().and_then(|s| s.to_str()) {
-            Some("py") => tree_sitter_python::LANGUAGE.into(),
-            Some("js" | "jsx" | "mjs" | "cjs") => tree_sitter_javascript::LANGUAGE.into(),
-            Some("ts") => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            Some("tsx") => tree_sitter_typescript::LANGUAGE_TSX.into(),
-            _ => {
-                result.skipped += 1;
-                continue;
-            }
-        };
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&language)
-            .map_err(|_| "Cannot initialize symbol parser")?;
-        let Some(tree) = parser.parse(source, None) else {
-            result.skipped += 1;
-            continue;
-        };
-        if tree.root_node().has_error() {
-            result.skipped += 1;
-            continue;
-        }
-        let mut pending = vec![tree.root_node()];
-        while let Some(node) = pending.pop() {
-            if matches!(
-                node.kind(),
-                "function_definition"
-                    | "class_definition"
-                    | "function_declaration"
-                    | "class_declaration"
-                    | "method_definition"
-                    | "variable_declarator"
-                    | "interface_declaration"
-                    | "type_alias_declaration"
-                    | "enum_declaration"
-            ) && let Some(name) = node.child_by_field_name("name")
-                && let Ok(text) = name.utf8_text(source.as_bytes())
-            {
-                add(text.into());
-            }
-            let mut cursor = node.walk();
-            pending.extend(node.named_children(&mut cursor));
+        match declared {
+            Some(names) => names.into_iter().for_each(&mut add),
+            None => result.skipped += 1,
         }
     }
     Ok(result)
@@ -188,6 +247,78 @@ mod tests {
                 .iter()
                 .any(|e| e.text == "max_groups")
         );
+    }
+    /// Writes a file and dates it `age` seconds in the past.
+    fn write_aged(path: &Path, text: &str, age: u64) {
+        std::fs::write(path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age))
+            .unwrap();
+    }
+    #[test]
+    fn a_rescan_reads_only_the_files_that_changed_and_finds_what_a_full_scan_finds() {
+        let d = tempfile::tempdir().unwrap();
+        write_aged(&d.path().join("main.py"), "def max_groups():\n pass", 600);
+        write_aged(
+            &d.path().join("module.ts"),
+            "export class Controller {}",
+            600,
+        );
+        write_aged(&d.path().join("notes.md"), "plain text", 600);
+        write_aged(&d.path().join("broken.py"), "def (:", 600);
+        std::fs::write(d.path().join("blob"), [0, 1, 2]).unwrap();
+        let mut cache = ScanCache::default();
+        let scan_again = |cache: &mut ScanCache| {
+            let found = scan_with(d.path(), "r", &[], cache).unwrap();
+            assert_eq!(found, scan(d.path(), "r", &[]).unwrap());
+            found
+        };
+        let first = scan_again(&mut cache);
+        assert_eq!(cache.read, 5);
+        assert_eq!(first.skipped, 2);
+        // The file written just now is read again; the others are not.
+        assert_eq!(scan_again(&mut cache), first);
+        assert_eq!(cache.read, 1);
+        // A changed file is read, and its old names are gone.
+        write_aged(&d.path().join("main.py"), "class Runner: pass", 500);
+        let changed = scan_again(&mut cache);
+        assert_eq!(cache.read, 2);
+        assert!(changed.entries.iter().any(|e| e.text == "Runner"));
+        assert!(!changed.entries.iter().any(|e| e.text == "max_groups"));
+        // A removed file leaves the index, and comes back when it is restored.
+        std::fs::remove_file(d.path().join("module.ts")).unwrap();
+        assert!(
+            !scan_again(&mut cache)
+                .entries
+                .iter()
+                .any(|e| e.text == "Controller")
+        );
+        write_aged(
+            &d.path().join("module.ts"),
+            "export class Controller {}",
+            600,
+        );
+        assert!(
+            scan_again(&mut cache)
+                .entries
+                .iter()
+                .any(|e| e.text == "Controller")
+        );
+        assert_eq!(cache.read, 2);
+    }
+    #[test]
+    fn the_same_size_and_an_older_time_still_count_as_a_change() {
+        let d = tempfile::tempdir().unwrap();
+        write_aged(&d.path().join("main.py"), "class Alpha: pass", 500);
+        let mut cache = ScanCache::default();
+        scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        write_aged(&d.path().join("main.py"), "class Gamma: pass", 900);
+        let found = scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        assert_eq!(cache.read, 1);
+        assert!(found.entries.iter().any(|e| e.text == "Gamma"));
     }
     #[cfg(unix)]
     #[test]

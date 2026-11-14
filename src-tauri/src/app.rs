@@ -15,8 +15,9 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex, atomic::AtomicU32, mpsc},
+    sync::{Arc, LazyLock, Mutex, atomic::AtomicU32, mpsc},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -298,21 +299,32 @@ pub async fn index_terms(
     .await
     .map_err(|_| "Index worker failed".into())
 }
+/// Indexes every repository again from the files on disk, for the Refresh button.
 #[tauri::command]
 pub async fn refresh(app: AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || refresh_now(&app))
+    tauri::async_runtime::spawn_blocking(move || refresh_now(&app, true))
         .await
         .map_err(|_| "Index worker failed")?
 }
-/// Held for a whole refresh, so a manual refresh and the background loop do not
-/// overlap and an older scan cannot replace a newer one.
-static REFRESHING: Mutex<()> = Mutex::new(());
-fn refresh_now(app: &AppHandle) -> Result<(), String> {
-    let _refreshing = REFRESHING.locked();
+/// What the latest scan of each repository read, by repository id. It is held for a
+/// whole refresh, so a manual refresh and the background loop do not overlap and an
+/// older scan cannot replace a newer one.
+static REFRESHING: LazyLock<Mutex<HashMap<String, index::ScanCache>>> =
+    LazyLock::new(Default::default);
+/// Scans every repository and stores the indexes that changed. A scan reads only the
+/// files that changed since the one before, unless `every_file` asks for all of them.
+fn refresh_now(app: &AppHandle, every_file: bool) -> Result<(), String> {
+    let mut scans = REFRESHING.locked();
     let state = app.state::<AppState>();
     let repositories = state.inner.locked().settings.repositories.clone();
+    scans.retain(|id, _| !every_file && repositories.iter().any(|r| &r.id == id));
     for repository in repositories {
-        let index = index::scan(&repository.root, &repository.id, &repository.exclusions)?;
+        let index = index::scan_with(
+            &repository.root,
+            &repository.id,
+            &repository.exclusions,
+            scans.entry(repository.id.clone()).or_default(),
+        )?;
         store_index(&state, &repository, index, |index| {
             storage::put_index(&state.data, &repository.id, index)
         })?;
@@ -1363,7 +1375,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             if schedule.due(&repositories, watching_all, Instant::now()) {
-                let refreshed = refresh_now(&handle);
+                let refreshed = refresh_now(&handle, false);
                 match &refreshed {
                     Ok(()) => logged_failure.clear(),
                     Err(error) => {
