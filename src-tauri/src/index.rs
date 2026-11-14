@@ -28,11 +28,44 @@ pub struct ScanCache {
     pub read: usize,
 }
 struct Scanned {
-    modified: std::time::SystemTime,
-    length: u64,
+    stamp: Stamp,
     /// The declared names, `None` when the file has no supported parser or did not
     /// parse, or nothing at all for a file that is not text.
     text: Option<Option<Vec<String>>>,
+}
+/// What tells a scan that a file is the one it read before.
+#[derive(Clone, Copy, PartialEq)]
+struct Stamp {
+    length: u64,
+    modified: std::time::SystemTime,
+    /// On Unix, when the file's content, permissions, or times last changed. Restoring
+    /// the modification time after an edit, or revoking read access, moves it.
+    changed: Option<std::time::SystemTime>,
+}
+impl Stamp {
+    /// `None` when the file system gives no modification time; the file is then read
+    /// by every scan.
+    fn of(meta: &std::fs::Metadata) -> Option<Self> {
+        #[cfg(unix)]
+        let changed = {
+            use std::os::unix::fs::MetadataExt;
+            let seconds = u64::try_from(meta.ctime()).ok()?;
+            let nanoseconds = u32::try_from(meta.ctime_nsec()).ok()?;
+            Some(std::time::UNIX_EPOCH + std::time::Duration::new(seconds, nanoseconds))
+        };
+        #[cfg(not(unix))]
+        let changed = None;
+        Some(Self {
+            length: meta.len(),
+            modified: meta.modified().ok()?,
+            changed,
+        })
+    }
+    /// The latest time the file changed in any way.
+    fn latest(&self) -> std::time::SystemTime {
+        self.changed
+            .map_or(self.modified, |at| at.max(self.modified))
+    }
 }
 /// A file changed this recently is read again by the next scan: a second change
 /// within the resolution of the file system's clock would keep the same time.
@@ -144,11 +177,12 @@ pub fn scan_with(
             result.skipped += 1;
             continue;
         }
-        let unchanged = known.remove(path).filter(|scanned| {
-            scanned.length == meta.len() && meta.modified().is_ok_and(|at| at == scanned.modified)
-        });
-        let scanned = match unchanged {
-            Some(scanned) => scanned,
+        let stamp = Stamp::of(&meta);
+        let unchanged = known
+            .remove(path)
+            .filter(|scanned| Some(scanned.stamp) == stamp);
+        let (scanned, settled) = match unchanged {
+            Some(scanned) => (scanned, true),
             None => {
                 let Ok(bytes) = std::fs::read(path) else {
                     result.incomplete = true;
@@ -159,26 +193,44 @@ pub fn scan_with(
                     Ok(source) if !bytes.contains(&0) => Some(symbols(path, source)?),
                     _ => None,
                 };
-                Scanned {
-                    // A file whose time cannot be read is read again by every scan.
-                    modified: meta.modified().unwrap_or(started),
-                    length: meta.len(),
-                    text,
-                }
+                let Some(stamp) = stamp else {
+                    // Nothing to compare the next scan with, so replay it here only.
+                    let declared = match text {
+                        Some(declared) => declared,
+                        None => continue,
+                    };
+                    replay(path, &root, repository, declared, &mut result)?;
+                    continue;
+                };
+                let settled = started
+                    .duration_since(stamp.latest())
+                    .is_ok_and(|age| age >= SETTLED);
+                (Scanned { stamp, text }, settled)
             }
         };
         let text = scanned.text.clone();
-        if started
-            .duration_since(scanned.modified)
-            .is_ok_and(|age| age >= SETTLED)
-        {
+        if settled {
             cache.files.insert(path.to_owned(), scanned);
         }
         let Some(declared) = text else {
             continue;
         };
+        replay(path, &root, repository, declared, &mut result)?;
+    }
+    Ok(result)
+}
+/// Adds the terms of one text file to `result`: its path, its name, and its declared
+/// names, or a skipped extraction when it has none to offer.
+fn replay(
+    path: &Path,
+    root: &Path,
+    repository: &str,
+    declared: Option<Vec<String>>,
+    result: &mut Index,
+) -> Result<(), String> {
+    {
         let file = path
-            .strip_prefix(&root)
+            .strip_prefix(root)
             .map_err(|_| "Invalid repository path")?
             .to_string_lossy()
             .replace('\\', "/");
@@ -204,7 +256,7 @@ pub fn scan_with(
             None => result.skipped += 1,
         }
     }
-    Ok(result)
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
@@ -258,6 +310,10 @@ mod tests {
             .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age))
             .unwrap();
     }
+    /// Long enough for a file written before it to count as unchanged.
+    fn settle() {
+        std::thread::sleep(SETTLED + std::time::Duration::from_millis(200));
+    }
     #[test]
     fn a_rescan_reads_only_the_files_that_changed_and_finds_what_a_full_scan_finds() {
         let d = tempfile::tempdir().unwrap();
@@ -276,16 +332,20 @@ mod tests {
             assert_eq!(found, scan(d.path(), "r", &[]).unwrap());
             found
         };
+        // Files written just now are read by every scan until they have settled.
         let first = scan_again(&mut cache);
         assert_eq!(cache.read, 5);
         assert_eq!(first.skipped, 2);
-        // The file written just now is read again; the others are not.
         assert_eq!(scan_again(&mut cache), first);
-        assert_eq!(cache.read, 1);
+        assert_eq!(cache.read, 5);
+        settle();
+        assert_eq!(scan_again(&mut cache), first);
+        assert_eq!(scan_again(&mut cache), first);
+        assert_eq!(cache.read, 0);
         // A changed file is read, and its old names are gone.
         write_aged(&d.path().join("main.py"), "class Runner: pass", 500);
         let changed = scan_again(&mut cache);
-        assert_eq!(cache.read, 2);
+        assert_eq!(cache.read, 1);
         assert!(changed.entries.iter().any(|e| e.text == "Runner"));
         assert!(!changed.entries.iter().any(|e| e.text == "max_groups"));
         // A removed file leaves the index, and comes back when it is restored.
@@ -314,11 +374,49 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         write_aged(&d.path().join("main.py"), "class Alpha: pass", 500);
         let mut cache = ScanCache::default();
+        settle();
         scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        assert_eq!(cache.read, 0);
         write_aged(&d.path().join("main.py"), "class Gamma: pass", 900);
         let found = scan_with(d.path(), "r", &[], &mut cache).unwrap();
         assert_eq!(cache.read, 1);
         assert!(found.entries.iter().any(|e| e.text == "Gamma"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn an_edit_that_restores_the_modification_time_or_revokes_access_is_still_seen() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("main.py");
+        write_aged(&path, "class Alpha: pass", 500);
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut cache = ScanCache::default();
+        settle();
+        scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        assert_eq!(cache.read, 0);
+        std::fs::write(&path, "class Gamma: pass").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let found = scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        assert_eq!(found, scan(d.path(), "r", &[]).unwrap());
+        assert!(found.entries.iter().any(|e| e.text == "Gamma"));
+        // A file that can no longer be read leaves the index, which says it is incomplete.
+        settle();
+        scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = std::fs::read(&path).is_err();
+        let found = scan_with(d.path(), "r", &[], &mut cache).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // Root reads any file, so the check applies only where the read fails.
+        if unreadable {
+            assert!(found.incomplete && found.entries.is_empty());
+        }
     }
     #[cfg(unix)]
     #[test]
