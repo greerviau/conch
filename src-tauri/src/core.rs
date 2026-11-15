@@ -1878,7 +1878,10 @@ mod tests {
             std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
             std::fs::write(path, &actual).unwrap();
         }
-        let recorded = std::fs::read_to_string(path).unwrap_or_default();
+        // A Windows checkout can hold the file with CRLF line endings.
+        let recorded = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
         assert!(
             actual == recorded,
             "preparation changed; compare with {path}"
