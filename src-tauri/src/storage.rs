@@ -1,5 +1,5 @@
 use crate::{
-    core::{Cleanup, Mapping, Snapshot, Vocabulary},
+    core::{Cleanup, Mapping, Snapshot, Terms, Vocabulary},
     index::Index,
 };
 use serde::{Deserialize, Serialize};
@@ -166,7 +166,10 @@ pub fn normalize(settings: &mut Settings) {
 pub const ENHANCED: [&str; 5] = ["disabled", "managed", "anthropic", "local", "remote"];
 /// The `user_version` of the current schema. Version 1 keeps each index's
 /// status in columns, so reading the status does not parse the entries.
-const SCHEMA: i64 = 1;
+/// Version 2 stores those columns before the entries: SQLite reads a row from
+/// its start, so a status column after megabytes of entries cost a walk
+/// through every page that holds them.
+const SCHEMA: i64 = 2;
 pub fn open(dir: &Path) -> Result<rusqlite::Connection, String> {
     std::fs::create_dir_all(dir).map_err(|_| "Cannot create local data directory")?;
     let mut db = rusqlite::Connection::open(dir.join("conch.sqlite3"))
@@ -187,7 +190,7 @@ pub fn open(dir: &Path) -> Result<rusqlite::Connection, String> {
             "CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, raw TEXT NOT NULL, text TEXT NOT NULL);
              DROP TABLE IF EXISTS indexes;
-             CREATE TABLE indexes (repository TEXT PRIMARY KEY, value TEXT NOT NULL, refreshed INTEGER NOT NULL, available INTEGER NOT NULL, incomplete INTEGER NOT NULL, skipped INTEGER NOT NULL, entries INTEGER NOT NULL);
+             CREATE TABLE indexes (repository TEXT PRIMARY KEY, refreshed INTEGER NOT NULL, available INTEGER NOT NULL, incomplete INTEGER NOT NULL, skipped INTEGER NOT NULL, entries INTEGER NOT NULL, value TEXT NOT NULL);
              PRAGMA user_version = {SCHEMA};"
         ))
         .map_err(|_| "Cannot initialize database")?;
@@ -245,15 +248,26 @@ pub fn save(dir: &Path, settings: &Settings) -> Result<(), String> {
 pub fn put_index(dir: &Path, repository: &str, index: &Index) -> Result<(), String> {
     open(dir)?
         .execute(
-            "INSERT OR REPLACE INTO indexes VALUES (?1,?2,unixepoch(),?3,?4,?5,?6)",
+            "INSERT OR REPLACE INTO indexes (repository,refreshed,available,incomplete,skipped,entries,value) \
+             VALUES (?1,unixepoch(),?2,?3,?4,?5,?6)",
             rusqlite::params![
                 repository,
-                serde_json::to_string(index).map_err(|_| "Cannot encode index")?,
                 index.available,
                 index.incomplete,
                 index.skipped as i64,
-                index.entries.len() as i64
+                index.entries.len() as i64,
+                serde_json::to_string(index).map_err(|_| "Cannot encode index")?
             ],
+        )
+        .map_err(|_| "Cannot save index")?;
+    Ok(())
+}
+/// Records that a rescan found the stored index unchanged.
+pub fn touch_index(dir: &Path, repository: &str) -> Result<(), String> {
+    open(dir)?
+        .execute(
+            "UPDATE indexes SET refreshed=unixepoch() WHERE repository=?1",
+            [repository],
         )
         .map_err(|_| "Cannot save index")?;
     Ok(())
@@ -275,9 +289,22 @@ pub fn indexes(dir: &Path) -> Result<Indexes, String> {
     })
     .collect()
 }
+/// The terms of the latest snapshot and the indexes they were collected from. A
+/// snapshot of the same indexes reuses the terms, so recordings share them and their
+/// lookup tables until a repository is indexed again with a different result.
+#[derive(Default)]
+pub struct TermsCache(Option<(Vec<Arc<Index>>, Terms)>);
 /// The context snapshot for a recording that starts with `settings`, from the
 /// vocabulary indexes held in memory.
 pub fn snapshot(settings: &Settings, indexes: &Indexes) -> Snapshot {
+    snapshot_reusing(settings, indexes, &mut TermsCache::default())
+}
+/// `snapshot`, taking the terms from `cache` when it holds those of the same indexes.
+pub fn snapshot_reusing(
+    settings: &Settings,
+    indexes: &Indexes,
+    cache: &mut TermsCache,
+) -> Snapshot {
     let profile = settings.active();
     let selected: Vec<_> = settings
         .repositories
@@ -285,12 +312,26 @@ pub fn snapshot(settings: &Settings, indexes: &Indexes) -> Snapshot {
         .filter(|r| profile.repositories.contains(&r.id) && r.root.is_dir())
         .map(|r| r.id.as_str())
         .collect();
-    let vocabulary = selected
+    let sources: Vec<Arc<Index>> = selected
         .iter()
         .filter_map(|id| indexes.get(*id))
         .filter(|index| index.available)
-        .flat_map(|index| index.entries.iter().cloned())
+        .cloned()
         .collect();
+    let cached = cache.0.as_ref().filter(|(from, _)| {
+        from.len() == sources.len() && from.iter().zip(&sources).all(|(a, b)| Arc::ptr_eq(a, b))
+    });
+    let vocabulary = match cached {
+        Some((_, terms)) => terms.clone(),
+        None => {
+            let terms: Terms = sources
+                .iter()
+                .flat_map(|index| index.entries.iter().cloned())
+                .collect();
+            cache.0 = Some((sources, terms.clone()));
+            terms
+        }
+    };
     let mappings = settings
         .mappings
         .iter()
@@ -359,51 +400,34 @@ pub struct TermPage {
 fn is_file_term(term: &Vocabulary) -> bool {
     term.text == term.file || term.file.rsplit('/').next() == Some(term.text.as_str())
 }
-/// One page of a repository's indexed terms that match `query` (a
-/// case-insensitive substring of the term) and `kind`. `total` counts every
-/// match, not only the page.
+/// One page of the terms of `index` that match `query` (a case-insensitive
+/// substring of the term) and `kind`. `total` counts every match, not only
+/// the page. A repository without an index has no terms.
 pub fn index_terms(
-    dir: &Path,
-    repository: &str,
+    index: Option<&Index>,
     query: &str,
     kind: TermKind,
     offset: usize,
     limit: usize,
-) -> Result<TermPage, String> {
-    use rusqlite::OptionalExtension;
-    let json: Option<String> = open(dir)?
-        .query_row(
-            "SELECT value FROM indexes WHERE repository=?1",
-            [repository],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(|_| "Cannot read index")?;
-    let Some(json) = json else {
-        return Ok(TermPage {
-            items: Vec::new(),
-            total: 0,
-        });
-    };
-    let index: Index = serde_json::from_str(&json).map_err(|_| "Invalid index")?;
+) -> TermPage {
     let query = query.trim().to_lowercase();
     let mut total = 0;
     let mut items = Vec::new();
-    for term in index.entries {
+    for term in index.into_iter().flat_map(|index| &index.entries) {
         let wanted = match kind {
             TermKind::All => true,
-            TermKind::Files => is_file_term(&term),
-            TermKind::Symbols => !is_file_term(&term),
+            TermKind::Files => is_file_term(term),
+            TermKind::Symbols => !is_file_term(term),
         };
         if !wanted || !term.text.to_lowercase().contains(&query) {
             continue;
         }
         if total >= offset && items.len() < limit {
-            items.push(term);
+            items.push(term.clone());
         }
         total += 1;
     }
-    Ok(TermPage { items, total })
+    TermPage { items, total }
 }
 #[cfg(test)]
 mod tests {
@@ -431,7 +455,7 @@ mod tests {
     #[test]
     fn status_is_read_without_parsing_the_stored_entries() {
         let dir = tempfile::tempdir().unwrap();
-        sample(dir.path());
+        put_index(dir.path(), "r", &sample()).unwrap();
         open(dir.path())
             .unwrap()
             .execute("UPDATE indexes SET value='not json'", [])
@@ -454,7 +478,7 @@ mod tests {
             .unwrap();
         assert!(index_status(dir.path()).unwrap().is_empty());
         assert_eq!(crate::history::revision(dir.path()).unwrap(), 1);
-        sample(dir.path());
+        put_index(dir.path(), "r", &sample()).unwrap();
         assert_eq!(index_status(dir.path()).unwrap()[0].1.entries, 6);
     }
     fn with_profile(profile: Profile) -> Settings {
@@ -497,10 +521,60 @@ mod tests {
         ]);
         let texts: Vec<_> = snapshot(&settings, &indexes)
             .vocabulary
-            .into_iter()
-            .map(|v| v.text)
+            .iter()
+            .map(|v| v.text.clone())
             .collect();
         assert_eq!(texts, ["Alpha"]);
+    }
+    #[test]
+    fn recordings_that_use_the_same_indexes_share_one_set_of_terms() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = with_profile(Profile {
+            repositories: vec!["a".into()],
+            ..Default::default()
+        });
+        let repository = |id: &str| Repository {
+            id: id.into(),
+            root: dir.path().into(),
+            exclusions: vec![],
+        };
+        settings.repositories = vec![repository("a"), repository("b")];
+        let index = |text: &str, available: bool| {
+            Arc::new(Index {
+                entries: vec![term(text, "x.ts")],
+                available,
+                ..Default::default()
+            })
+        };
+        let mut indexes = Indexes::from([
+            ("a".to_string(), index("Alpha", true)),
+            ("b".to_string(), index("Beta", true)),
+        ]);
+        let mut cache = TermsCache::default();
+        let texts = |snapshot: &Snapshot| -> Vec<String> {
+            snapshot.vocabulary.iter().map(|v| v.text.clone()).collect()
+        };
+        let first = snapshot_reusing(&settings, &indexes, &mut cache);
+        let second = snapshot_reusing(&settings, &indexes, &mut cache);
+        assert_eq!(texts(&first), ["Alpha"]);
+        assert!(std::ptr::eq(
+            first.vocabulary.as_ptr(),
+            second.vocabulary.as_ptr()
+        ));
+        // Another selection, or an index that was replaced, collects the terms again.
+        settings.profiles[0].repositories = vec!["a".into(), "b".into()];
+        let both = snapshot_reusing(&settings, &indexes, &mut cache);
+        assert_eq!(texts(&both), ["Alpha", "Beta"]);
+        indexes.insert("b".to_string(), index("Gamma", true));
+        let replaced = snapshot_reusing(&settings, &indexes, &mut cache);
+        assert_eq!(texts(&replaced), ["Alpha", "Gamma"]);
+        assert_eq!(texts(&both), ["Alpha", "Beta"]);
+        // Without a cache every snapshot collects its own.
+        let alone = snapshot(&settings, &indexes);
+        assert!(!std::ptr::eq(
+            alone.vocabulary.as_ptr(),
+            replaced.vocabulary.as_ptr()
+        ));
     }
     #[test]
     fn the_snapshot_uses_the_active_profile_and_ignores_the_others() {
@@ -765,8 +839,8 @@ mod tests {
             file: file.into(),
         }
     }
-    fn sample(dir: &Path) {
-        let index = Index {
+    fn sample() -> Index {
+        Index {
             entries: vec![
                 term("api/users.ts", "api/users.ts"),
                 term("users.ts", "api/users.ts"),
@@ -778,31 +852,73 @@ mod tests {
             skipped: 0,
             incomplete: false,
             available: true,
-        };
-        put_index(dir, "r", &index).unwrap();
+        }
     }
     #[test]
     fn status_counts_entries_without_loading_them() {
         let dir = tempfile::tempdir().unwrap();
-        sample(dir.path());
+        put_index(dir.path(), "r", &sample()).unwrap();
         assert_eq!(index_status(dir.path()).unwrap()[0].1.entries, 6);
     }
     #[test]
-    fn terms_come_back_in_pages_with_the_total() {
+    fn a_database_of_the_previous_schema_is_rebuilt_and_keeps_settings_and_history() {
         let dir = tempfile::tempdir().unwrap();
-        sample(dir.path());
-        let page = index_terms(dir.path(), "r", "", TermKind::All, 2, 3).unwrap();
+        let old = rusqlite::Connection::open(dir.path().join("conch.sqlite3")).unwrap();
+        old.execute_batch(
+            "CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
+             CREATE TABLE history (id INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, raw TEXT NOT NULL, text TEXT NOT NULL);
+             CREATE TABLE indexes (repository TEXT PRIMARY KEY, value TEXT NOT NULL, refreshed INTEGER NOT NULL, available INTEGER NOT NULL, incomplete INTEGER NOT NULL, skipped INTEGER NOT NULL, entries INTEGER NOT NULL);
+             INSERT INTO settings VALUES (1, '{\"hotkey\":\"Alt+Space\"}');
+             INSERT INTO history (created, raw, text) VALUES (1, 'raw', 'text');
+             INSERT INTO indexes VALUES ('r', '{}', 1, 1, 0, 0, 0);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+        drop(old);
+        assert_eq!(load(dir.path()).unwrap().hotkey, "Alt+Space");
+        assert_eq!(crate::history::revision(dir.path()).unwrap(), 1);
+        // The index is scanned again; its row had the entries before the status.
+        assert!(index_status(dir.path()).unwrap().is_empty());
+        put_index(dir.path(), "r", &sample()).unwrap();
+        assert_eq!(index_status(dir.path()).unwrap()[0].1.entries, 6);
+        assert_eq!(indexes(dir.path()).unwrap()["r"].entries.len(), 6);
+        let columns: Vec<String> = open(dir.path())
+            .unwrap()
+            .prepare("SELECT name FROM pragma_table_info('indexes')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(columns.last().map(String::as_str), Some("value"));
+    }
+    #[test]
+    fn an_unchanged_index_keeps_its_entries_when_only_its_time_is_updated() {
+        let dir = tempfile::tempdir().unwrap();
+        put_index(dir.path(), "r", &sample()).unwrap();
+        open(dir.path())
+            .unwrap()
+            .execute("UPDATE indexes SET refreshed=5", [])
+            .unwrap();
+        touch_index(dir.path(), "r").unwrap();
+        let status = index_status(dir.path()).unwrap();
+        assert!(status[0].2 > 5);
+        assert_eq!(status[0].1.entries, 6);
+        assert_eq!(indexes(dir.path()).unwrap()["r"].entries.len(), 6);
+    }
+    #[test]
+    fn terms_come_back_in_pages_with_the_total() {
+        let index = sample();
+        let page = index_terms(Some(&index), "", TermKind::All, 2, 3);
         assert_eq!(page.total, 6);
         let texts: Vec<_> = page.items.iter().map(|v| v.text.as_str()).collect();
         assert_eq!(texts, ["fetchUserProfile", "main.py", "FetchError"]);
-        let past_end = index_terms(dir.path(), "r", "", TermKind::All, 60, 3).unwrap();
+        let past_end = index_terms(Some(&index), "", TermKind::All, 60, 3);
         assert_eq!((past_end.items.len(), past_end.total), (0, 6));
     }
     #[test]
     fn terms_search_ignores_case_and_counts_only_matches() {
-        let dir = tempfile::tempdir().unwrap();
-        sample(dir.path());
-        let page = index_terms(dir.path(), "r", "FETCH", TermKind::All, 0, 10).unwrap();
+        let page = index_terms(Some(&sample()), "FETCH", TermKind::All, 0, 10);
         assert_eq!(page.total, 3);
         assert!(
             page.items
@@ -812,18 +928,16 @@ mod tests {
     }
     #[test]
     fn terms_filter_separates_file_names_from_symbols() {
-        let dir = tempfile::tempdir().unwrap();
-        sample(dir.path());
-        let files = index_terms(dir.path(), "r", "", TermKind::Files, 0, 10).unwrap();
+        let index = sample();
+        let files = index_terms(Some(&index), "", TermKind::Files, 0, 10);
         let texts: Vec<_> = files.items.iter().map(|v| v.text.as_str()).collect();
         assert_eq!(texts, ["api/users.ts", "users.ts", "main.py"]);
-        let symbols = index_terms(dir.path(), "r", "", TermKind::Symbols, 0, 10).unwrap();
+        let symbols = index_terms(Some(&index), "", TermKind::Symbols, 0, 10);
         assert_eq!(symbols.total, 3);
     }
     #[test]
     fn terms_of_an_unindexed_repository_are_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let page = index_terms(dir.path(), "missing", "", TermKind::All, 0, 10).unwrap();
+        let page = index_terms(None, "", TermKind::All, 0, 10);
         assert_eq!((page.items.len(), page.total), (0, 0));
     }
 }

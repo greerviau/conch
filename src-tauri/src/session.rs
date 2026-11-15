@@ -37,10 +37,16 @@ impl Session {
         self.phase = Phase::Processing;
         true
     }
+    /// Ends the recording or the preparation in progress, whose late result is then
+    /// rejected. With nothing in progress the generation stays, so a result that is
+    /// still being delivered after a cancel can tell that no recording started since.
     pub fn cancel(&mut self) {
+        self.pressed = false;
+        if self.phase == Phase::Idle {
+            return;
+        }
         self.generation += 1;
         self.phase = Phase::Idle;
-        self.pressed = false;
     }
     pub fn complete(&mut self, generation: u64) -> bool {
         if self.generation != generation || self.phase != Phase::Processing {
@@ -78,6 +84,20 @@ mod tests {
         assert!(s.finish());
         assert!(s.complete(next));
         assert!(!s.complete(next));
+    }
+    #[test]
+    fn cancelling_with_nothing_in_progress_changes_nothing_but_the_key_state() {
+        let mut s = Session::default();
+        let id = s.start().unwrap();
+        s.finish();
+        s.cancel();
+        assert_eq!((s.generation, &s.phase), (id + 1, &Phase::Idle));
+        s.pressed = true;
+        s.cancel();
+        s.cancel();
+        assert_eq!((s.generation, &s.phase), (id + 1, &Phase::Idle));
+        assert!(!s.pressed);
+        assert_eq!(s.start().unwrap(), id + 2);
     }
     #[test]
     fn hotkeys_ignore_repeat_and_push_release_finishes() {

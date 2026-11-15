@@ -1122,6 +1122,7 @@ mod tests {
         );
         assert_eq!(flatten_segments("one line"), "one line");
     }
+    #[cfg(unix)]
     fn silence(seconds: usize) -> Vec<u8> {
         crate::audio::wav(&vec![0.0; seconds * 16_000]).unwrap()
     }
@@ -1838,6 +1839,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             assert_eq!(error, "Remote cleanup is disabled", "{language}");
         }
     }
+    #[cfg(unix)]
     fn language_field(request: &str, value: &str) -> bool {
         request.contains(&format!("name=\"language\"\r\n\r\n{value}\r\n"))
     }
@@ -2343,11 +2345,13 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
             "Do not change podGC before 12."
         );
     }
+    #[cfg(unix)]
     /// The process-wide log, started once in a directory that outlives the test run's tests.
     fn logged() -> &'static crate::log::Log {
         static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
         crate::log::init(DIR.get_or_init(|| tempfile::tempdir().unwrap()).path())
     }
+    #[cfg(unix)]
     fn entries(source: &str, query: &str) -> Vec<crate::log::Entry> {
         logged().page("all", source, query, 0, 50).unwrap().items
     }

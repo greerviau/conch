@@ -15,8 +15,9 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
+    collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex, atomic::AtomicU32, mpsc},
+    sync::{Arc, LazyLock, Mutex, atomic::AtomicU32, mpsc},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -29,6 +30,9 @@ pub struct AppState {
     /// The stored vocabulary indexes, so a recording starts without reading the
     /// database. Lock it after `inner` when holding both.
     pub indexes: Mutex<storage::Indexes>,
+    /// The terms the latest recording used, for the next one that uses the same
+    /// indexes. Lock it after `indexes`.
+    pub terms: Mutex<storage::TermsCache>,
 }
 pub struct Inner {
     pub settings: Settings,
@@ -200,6 +204,7 @@ pub fn save_settings(
     state: State<'_, AppState>,
     mut settings: Settings,
 ) -> Result<(), String> {
+    let _writing = INDEX_WRITES.locked();
     let mut inner = state.inner.locked();
     if inner.session.phase != Phase::Idle {
         return Err("Finish or cancel before saving settings".into());
@@ -281,52 +286,96 @@ pub async fn index_terms(
     offset: usize,
     limit: usize,
 ) -> Result<storage::TermPage, String> {
-    let dir = app.state::<AppState>().data.clone();
+    // The index held in memory is the stored one, so the page needs no read of the database.
+    let index = app
+        .state::<AppState>()
+        .indexes
+        .locked()
+        .get(&repository)
+        .cloned();
     tauri::async_runtime::spawn_blocking(move || {
-        storage::index_terms(&dir, &repository, &query, kind, offset, limit.min(500))
+        storage::index_terms(index.as_deref(), &query, kind, offset, limit.min(500))
     })
     .await
-    .map_err(|_| "Index worker failed")?
+    .map_err(|_| "Index worker failed".into())
 }
+/// Indexes every repository again from the files on disk, for the Refresh button.
 #[tauri::command]
 pub async fn refresh(app: AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || refresh_now(&app))
+    tauri::async_runtime::spawn_blocking(move || refresh_now(&app, true))
         .await
         .map_err(|_| "Index worker failed")?
 }
-/// Held for a whole refresh, so a manual refresh and the background loop do not
-/// overlap and an older scan cannot replace a newer one.
-static REFRESHING: Mutex<()> = Mutex::new(());
-fn refresh_now(app: &AppHandle) -> Result<(), String> {
-    let _refreshing = REFRESHING.locked();
+/// What the latest scan of each repository read, by repository id. It is held for a
+/// whole refresh, so a manual refresh and the background loop do not overlap and an
+/// older scan cannot replace a newer one.
+static REFRESHING: LazyLock<Mutex<HashMap<String, index::ScanCache>>> =
+    LazyLock::new(Default::default);
+/// Scans every repository and stores the indexes that changed. A scan reads only the
+/// files that changed since the one before, unless `every_file` asks for all of them.
+fn refresh_now(app: &AppHandle, every_file: bool) -> Result<(), String> {
+    let mut scans = REFRESHING.locked();
     let state = app.state::<AppState>();
     let repositories = state.inner.locked().settings.repositories.clone();
+    scans.retain(|id, _| !every_file && repositories.iter().any(|r| &r.id == id));
     for repository in repositories {
-        let index = index::scan(&repository.root, &repository.id, &repository.exclusions)?;
-        let before = storage::index_status(&state.data)?
-            .into_iter()
-            .find(|row| row.0 == repository.id)
-            .map(|row| row.1);
-        let inner = state.inner.locked();
-        if inner.settings.repositories.iter().any(|r| {
-            r.id == repository.id
-                && r.root == repository.root
-                && r.exclusions == repository.exclusions
-        }) {
-            storage::put_index(&state.data, &repository.id, &index)?;
-            let name = repository.root.file_name().map_or_else(
-                || repository.id.clone(),
-                |n| n.to_string_lossy().into_owned(),
-            );
-            if let Some(message) = index_message(&name, before.as_ref(), &index) {
-                log::info("index", &message);
-            }
-            state
-                .indexes
-                .locked()
-                .insert(repository.id, Arc::new(index));
-        }
+        let index = index::scan_with(
+            &repository.root,
+            &repository.id,
+            &repository.exclusions,
+            scans.entry(repository.id.clone()).or_default(),
+        )?;
+        store_index(&state, &repository, index, |index| {
+            storage::put_index(&state.data, &repository.id, index)
+        })?;
     }
+    Ok(())
+}
+/// Held while an index is written and while settings are saved. A save can remove a
+/// repository, so it must not land between the check that the repository is still
+/// configured and the write of its index. `save_settings` takes it before `inner`.
+static INDEX_WRITES: Mutex<()> = Mutex::new(());
+/// Stores the index a scan of `repository` produced, unless the repository was removed
+/// or changed during the scan. `write` saves it to the database and runs without the
+/// lock on `inner`, because a large index takes long enough to write that a recording
+/// started meanwhile would wait. A scan that found what is already stored keeps the
+/// index in memory, so the recordings that follow share its terms, and records only
+/// the time.
+fn store_index(
+    state: &AppState,
+    repository: &storage::Repository,
+    index: index::Index,
+    write: impl FnOnce(&index::Index) -> Result<(), String>,
+) -> Result<(), String> {
+    let _writing = INDEX_WRITES.locked();
+    let configured = state.inner.locked().settings.repositories.iter().any(|r| {
+        r.id == repository.id && r.root == repository.root && r.exclusions == repository.exclusions
+    });
+    if !configured {
+        return Ok(());
+    }
+    let stored = state.indexes.locked().get(&repository.id).cloned();
+    if stored.as_deref() == Some(&index) {
+        return storage::touch_index(&state.data, &repository.id);
+    }
+    write(&index)?;
+    let name = repository.root.file_name().map_or_else(
+        || repository.id.clone(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let before = stored.as_deref().map(|stored| storage::IndexStatus {
+        available: stored.available,
+        incomplete: stored.incomplete,
+        skipped: stored.skipped,
+        entries: stored.entries.len(),
+    });
+    if let Some(message) = index_message(&name, before.as_ref(), &index) {
+        log::info("index", &message);
+    }
+    state
+        .indexes
+        .locked()
+        .insert(repository.id.clone(), Arc::new(index));
     Ok(())
 }
 #[tauri::command]
@@ -340,7 +389,11 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     if cfg!(target_os = "macos") && platform::microphone_status() != "granted" {
         return Err("Enable Conch microphone access in Setup before recording".into());
     }
-    let snapshot = storage::snapshot(&inner.settings, &state.indexes.locked());
+    let snapshot = storage::snapshot_reusing(
+        &inner.settings,
+        &state.indexes.locked(),
+        &mut state.terms.locked(),
+    );
     let worker = inference::new_worker();
     let (model, recognize, clean) = recognition_for(&state, &snapshot, &worker)?;
     let generation = inner.session.start()?;
@@ -369,6 +422,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     });
     drop(inner);
     std::thread::spawn(platform::prepare);
+    warm_terms(&snapshot);
     warm_cleanup(&state, &snapshot, &worker);
     let handle = app.clone();
     std::thread::spawn(move || {
@@ -508,7 +562,11 @@ pub fn switch_profile(state: &AppState, id: &str) -> Result<(), String> {
     settings.active_profile = profile.id.clone();
     let recording = inner.session.phase == Phase::Recording && inner.live.is_some();
     let switch = if recording {
-        let snapshot = storage::snapshot(&settings, &state.indexes.locked());
+        let snapshot = storage::snapshot_reusing(
+            &settings,
+            &state.indexes.locked(),
+            &mut state.terms.locked(),
+        );
         let (_, recognize, clean) = recognition_for(state, &snapshot, &inner.worker)
             .map_err(|_| format!("Download the recognition model of {} first", profile.name))?;
         Some((snapshot, recognize, clean))
@@ -529,6 +587,7 @@ pub fn switch_profile(state: &AppState, id: &str) -> Result<(), String> {
             "dictation",
             "Switched the recording to another profile; recognizing the audio so far again",
         );
+        warm_terms(&snapshot);
         warm_cleanup(state, &snapshot, &worker);
     }
     Ok(())
@@ -587,6 +646,12 @@ fn recognition_for(
             }) as pipeline::Cleaner
         });
     Ok((model, recognize, clean))
+}
+/// Builds the lookup tables of the snapshot's indexed terms while the user speaks, so
+/// preparing the result does not wait for them.
+fn warm_terms(snapshot: &Snapshot) {
+    let snapshot = snapshot.clone();
+    std::thread::spawn(move || snapshot.vocabulary.warm(&snapshot.language));
 }
 /// Loads managed S1-mini while the user speaks, when the recording cleans with it.
 fn warm_cleanup(state: &AppState, snapshot: &Snapshot, worker: &Worker) {
@@ -709,12 +774,37 @@ fn process(
             note_model_time(&mut watch, &worker);
         }
     }
-    let mut inner = state.inner.locked();
-    if !inner.session.complete(generation) {
-        return;
-    }
-    let paste = inner.settings.auto_paste;
-    let delivered = delivery::deliver(&mut platform::NativeDesktop::default(), &result.text, paste);
+    deliver_result(
+        &state,
+        generation,
+        result,
+        &mut watch,
+        &mut platform::NativeDesktop::default(),
+    );
+}
+/// Delivers the prepared result of recording `generation` and makes it the current
+/// result. Nothing is delivered for a recording that was cancelled before this.
+///
+/// The lock on `inner` is free while the text is delivered.
+/// Reading the focused field waits on the app being dictated into, for seconds when
+/// that app is still building its accessibility tree, and the interface, the shortcut,
+/// and the recording indicator all wait on the lock. The phase stays Processing until
+/// the result is stored, so nothing else starts in between.
+fn deliver_result(
+    state: &AppState,
+    generation: u64,
+    mut result: ResultText,
+    watch: &mut Stopwatch,
+    desktop: &mut impl Desktop,
+) {
+    let paste = {
+        let inner = state.inner.locked();
+        if inner.session.generation != generation || inner.session.phase != Phase::Processing {
+            return;
+        }
+        inner.settings.auto_paste
+    };
+    let delivered = delivery::deliver(desktop, &result.text, paste);
     watch.lap("delivery");
     log::record(
         log::Level::Info,
@@ -722,35 +812,54 @@ fn process(
         &watch.headline(),
         Some(&watch.detail()),
     );
+    let mut notice = None;
+    let mut failure = None;
     match delivered {
         Ok(status) => {
-            let notice = crate::indicator::delivery_notice(&status, result.text.is_empty());
+            notice = crate::indicator::delivery_notice(&status, result.text.is_empty());
             let level = if notice.is_some() {
                 log::Level::Warn
             } else {
                 log::Level::Info
             };
             log::record(level, "delivery", &status, None);
-            inner.indicator_notice = notice.map(|text| (Instant::now(), text));
             result.status.push_str(&format!(". {status}"));
         }
         Err(error) => {
             log::error("delivery", &error);
-            inner.error = error;
+            failure = Some(error);
         }
     }
+    let mut inner = state.inner.locked();
+    let current = inner.session.complete(generation);
+    // A cancel during delivery cannot take the paste back, so the text stays the
+    // current result, unless another recording has started since: that one owns the
+    // result, its history entry, and the retry.
+    let cancelled = !current
+        && inner.session.phase == Phase::Idle
+        && inner.session.generation == generation + 1;
+    if !current && !cancelled {
+        return;
+    }
+    if current {
+        inner.indicator_notice = notice.map(|text| (Instant::now(), text));
+        if let Some(error) = failure {
+            inner.error = error;
+        }
+        inner.retry = None;
+    }
+    // The setting is read now, under the lock, so a save after a cancel is honored.
     match history::record(&state.data, inner.settings.keep_history, &result) {
         Ok(id) => inner.history_id = id,
         Err(error) => {
             log::error("history", &error);
             inner.history_id = None;
-            if inner.error.is_empty() {
+            if current && inner.error.is_empty() {
                 inner.error = error;
             }
         }
     }
     inner.result = Some(result);
-    inner.retry = None;
 }
 /// Whether the recording flow recognizes the audio since the last chunk
 /// before the stop (`Chunker::settle`, `Transcriber::speculate`). It is off:
@@ -1223,6 +1332,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         workers,
         inner: Mutex::new(Inner::new(settings.clone())),
         indexes: Mutex::new(indexes),
+        terms: Mutex::default(),
     });
     app.manage(crate::update::Tracker::new());
     if let Err(error) = crate::indicator::setup(app.handle()) {
@@ -1309,7 +1419,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             if schedule.due(&repositories, watching_all, Instant::now()) {
-                let refreshed = refresh_now(&handle);
+                let refreshed = refresh_now(&handle, false);
                 match &refreshed {
                     Ok(()) => logged_failure.clear(),
                     Err(error) => {
@@ -1793,7 +1903,246 @@ mod tests {
             workers: dir.join("workers"),
             inner: Mutex::new(Inner::new(settings)),
             indexes: Mutex::new(storage::Indexes::new()),
+            terms: Mutex::default(),
         }
+    }
+    /// App state whose settings hold one repository at `root`, and that repository.
+    fn with_repository(dir: &std::path::Path, root: &str) -> (AppState, storage::Repository) {
+        let state = profiled(dir);
+        let repository = storage::Repository {
+            id: "r".into(),
+            root: root.into(),
+            exclusions: vec![],
+        };
+        state
+            .inner
+            .locked()
+            .settings
+            .repositories
+            .push(repository.clone());
+        (state, repository)
+    }
+    fn index_of(texts: &[&str]) -> index::Index {
+        index::Index {
+            entries: texts
+                .iter()
+                .map(|text| core::Vocabulary {
+                    text: (*text).into(),
+                    repository: "r".into(),
+                    file: "a.ts".into(),
+                })
+                .collect(),
+            available: true,
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn a_scanned_index_is_written_without_the_lock_that_recording_needs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, repository) = with_repository(dir.path(), "/work/app");
+        let mut written = false;
+        store_index(&state, &repository, index_of(&["maxGroups"]), |index| {
+            written = true;
+            assert!(state.inner.try_lock().is_ok());
+            assert!(state.indexes.try_lock().is_ok());
+            storage::put_index(dir.path(), "r", index)
+        })
+        .unwrap();
+        assert!(written);
+        assert_eq!(state.indexes.locked()["r"].entries.len(), 1);
+        assert_eq!(storage::index_status(dir.path()).unwrap()[0].1.entries, 1);
+    }
+    #[test]
+    fn a_rescan_that_finds_the_same_terms_keeps_the_index_and_records_only_the_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, repository) = with_repository(dir.path(), "/work/app");
+        let save = |index: &index::Index| storage::put_index(dir.path(), "r", index);
+        store_index(&state, &repository, index_of(&["maxGroups"]), save).unwrap();
+        let first = state.indexes.locked()["r"].clone();
+        storage::open(dir.path())
+            .unwrap()
+            .execute("UPDATE indexes SET refreshed=5", [])
+            .unwrap();
+        store_index(&state, &repository, index_of(&["maxGroups"]), |_| {
+            panic!("an unchanged index is not written again")
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&first, &state.indexes.locked()["r"]));
+        assert!(storage::index_status(dir.path()).unwrap()[0].2 > 5);
+        // A changed index replaces it.
+        store_index(&state, &repository, index_of(&["maxGroups", "podGC"]), save).unwrap();
+        assert_eq!(state.indexes.locked()["r"].entries.len(), 2);
+        assert_eq!(storage::index_status(dir.path()).unwrap()[0].1.entries, 2);
+    }
+    #[test]
+    fn the_index_of_a_repository_removed_or_changed_during_its_scan_is_not_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, repository) = with_repository(dir.path(), "/work/app");
+        let unwritten = |_: &index::Index| -> Result<(), String> { panic!("not written") };
+        state.inner.locked().settings.repositories[0].exclusions = vec!["docs".into()];
+        store_index(&state, &repository, index_of(&["maxGroups"]), unwritten).unwrap();
+        state.inner.locked().settings.repositories.clear();
+        store_index(&state, &repository, index_of(&["maxGroups"]), unwritten).unwrap();
+        assert!(state.indexes.locked().is_empty());
+    }
+    /// A desktop with a focused field that runs `on_copy` when the text is copied.
+    struct Field<F: FnMut()> {
+        on_copy: F,
+        copies: usize,
+        pastes: usize,
+    }
+    impl<F: FnMut()> Desktop for Field<F> {
+        type Focus = u8;
+        fn focus(&mut self) -> Option<u8> {
+            Some(1)
+        }
+        fn copy(&mut self, _: &str) -> Result<(), String> {
+            self.copies += 1;
+            (self.on_copy)();
+            Ok(())
+        }
+        fn paste(&mut self) -> Result<(), String> {
+            self.pastes += 1;
+            Ok(())
+        }
+    }
+    /// App state that is preparing the result of a recording, and that recording.
+    fn preparing(dir: &std::path::Path) -> (AppState, u64) {
+        let state = profiled(dir);
+        let generation = {
+            let mut inner = state.inner.locked();
+            inner.settings.keep_history = true;
+            inner.retry = Some((vec![], Snapshot::default()));
+            let generation = inner.session.start().unwrap();
+            inner.session.finish();
+            generation
+        };
+        (state, generation)
+    }
+    fn deliver_with(state: &AppState, generation: u64, on_copy: impl FnMut()) -> (usize, usize) {
+        let mut desktop = Field {
+            on_copy,
+            copies: 0,
+            pastes: 0,
+        };
+        deliver_result(
+            state,
+            generation,
+            core::prepare("hello world", &Snapshot::default()),
+            &mut Stopwatch::start(Instant::now()),
+            &mut desktop,
+        );
+        (desktop.copies, desktop.pastes)
+    }
+    #[test]
+    fn the_result_is_delivered_without_the_lock_the_interface_waits_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        let delivered = deliver_with(&state, generation, || {
+            let inner = state.inner.try_lock().expect("the lock is free");
+            // The interface still shows the result as being prepared.
+            assert_eq!(inner.session.phase, Phase::Processing);
+        });
+        assert_eq!(delivered, (1, 1));
+        let inner = state.inner.locked();
+        assert_eq!(inner.session.phase, Phase::Idle);
+        let result = inner.result.as_ref().unwrap();
+        assert_eq!(result.text, "hello world");
+        assert!(result.status.contains("paste requested"));
+        assert!(inner.retry.is_none() && inner.indicator_notice.is_none());
+        assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 1);
+        assert_eq!(
+            inner.history_id,
+            Some(history::revision(dir.path()).unwrap())
+        );
+    }
+    #[test]
+    fn a_result_cancelled_while_it_was_delivered_is_still_the_current_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || state.inner.locked().session.cancel());
+        let inner = state.inner.locked();
+        assert_eq!(inner.session.phase, Phase::Idle);
+        assert_eq!(inner.result.as_ref().unwrap().text, "hello world");
+        assert!(inner.history_id.is_some());
+    }
+    #[test]
+    fn a_result_cancelled_twice_while_it_was_delivered_is_still_the_current_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            inner.session.cancel();
+        });
+        let inner = state.inner.locked();
+        assert_eq!(inner.result.as_ref().unwrap().text, "hello world");
+        assert!(inner.history_id.is_some());
+    }
+    #[test]
+    fn a_result_delivered_after_the_next_recording_began_does_not_replace_its_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            inner.session.start().unwrap();
+            inner.retry = Some((vec![1], Snapshot::default()));
+        });
+        let inner = state.inner.locked();
+        assert_eq!(inner.session.phase, Phase::Recording);
+        assert!(inner.result.is_none() && inner.retry.is_some());
+    }
+    #[test]
+    fn a_result_delivered_after_a_later_recording_finished_does_not_replace_its_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            let next = inner.session.start().unwrap();
+            inner.session.finish();
+            assert!(inner.session.complete(next));
+            inner.result = Some(core::prepare("the later one", &Snapshot::default()));
+            inner.history_id = Some(41);
+        });
+        let inner = state.inner.locked();
+        assert_eq!(inner.result.as_ref().unwrap().text, "the later one");
+        assert_eq!(inner.history_id, Some(41));
+        assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 0);
+        drop(inner);
+        // The same holds when the later recording was cancelled.
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            inner.session.start().unwrap();
+            inner.session.cancel();
+        });
+        assert!(state.inner.locked().result.is_none());
+    }
+    #[test]
+    fn history_turned_off_after_a_cancel_during_delivery_saves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        deliver_with(&state, generation, || {
+            let mut inner = state.inner.locked();
+            inner.session.cancel();
+            inner.settings.keep_history = false;
+        });
+        let inner = state.inner.locked();
+        assert_eq!(inner.result.as_ref().unwrap().text, "hello world");
+        assert_eq!(inner.history_id, None);
+        assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 0);
+    }
+    #[test]
+    fn a_recording_cancelled_before_delivery_delivers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, generation) = preparing(dir.path());
+        state.inner.locked().session.cancel();
+        assert_eq!(deliver_with(&state, generation, || ()), (0, 0));
+        assert!(state.inner.locked().result.is_none());
+        assert_eq!(history::page(dir.path(), "", 0, 10).unwrap().total, 0);
     }
     #[test]
     fn choosing_a_profile_between_recordings_saves_it_as_active() {

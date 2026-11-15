@@ -46,7 +46,11 @@ const LETTER_NAMES: [&str; 26] = [
 /// How English names the letters. Only English has a table; the sound of a letter in
 /// another language is not known.
 fn letter_names(language: &str) -> Option<&'static [&'static str; 26]> {
-    (language == "en").then_some(&LETTER_NAMES)
+    names_letters(language).then_some(&LETTER_NAMES)
+}
+/// Whether the sound keys of `language` spell acronyms by letter name.
+pub fn names_letters(language: &str) -> bool {
+    language == "en"
 }
 /// The form two spellings are compared in: lower case, `ss` for the German sharp s, and
 /// every case variant of a letter folded together (all three Greek sigmas, for one).
@@ -67,7 +71,7 @@ pub struct Match {
     pub term: usize,
 }
 
-struct Entry {
+pub struct Entry {
     key: Vec<char>,
     term: usize,
     tolerance: usize,
@@ -206,6 +210,41 @@ fn within(a: &[char], b: &[char], max: usize) -> Option<usize> {
     previous.last().copied().filter(|&d| d <= max)
 }
 
+/// The sound keys of a vocabulary by their first three letters, each list shortest key
+/// first. Building it reads every term, so a vocabulary searched more than once keeps it.
+#[derive(Default)]
+pub struct Index(HashMap<[char; 3], Vec<Entry>>);
+impl Index {
+    pub fn build(vocabulary: &[Vocabulary], language: &str) -> Self {
+        let letters = letter_names(language);
+        let mut index = HashMap::<[char; 3], Vec<Entry>>::new();
+        for (term, v) in vocabulary.iter().enumerate() {
+            let words = words(&v.text);
+            if words.is_empty() || words.len() > MAX_WORDS {
+                continue;
+            }
+            let structured = words.len() >= 2;
+            for key in keys(&words, letters) {
+                let key: Vec<char> = key.chars().collect();
+                let tolerance = if structured { tolerance(key.len()) } else { 0 };
+                index
+                    .entry([key[0], key[1], key[2]])
+                    .or_default()
+                    .push(Entry {
+                        key,
+                        term,
+                        tolerance,
+                        words: words.len(),
+                    });
+            }
+        }
+        for entries in index.values_mut() {
+            entries.sort_by_key(|e| e.key.len());
+        }
+        Self(index)
+    }
+}
+
 /// Finds runs of transcript words that sound like an indexed term but are not
 /// written like it. Runs that overlap a range in `blocked` are skipped.
 pub fn find(
@@ -214,34 +253,25 @@ pub fn find(
     blocked: &[(usize, usize)],
     language: &str,
 ) -> Vec<Match> {
-    let letters = letter_names(language);
+    find_in(
+        text,
+        &Index::build(vocabulary, language),
+        vocabulary,
+        blocked,
+    )
+}
+
+/// `find` with the `index` built from `vocabulary` for the recording's language.
+pub fn find_in(
+    text: &str,
+    index: &Index,
+    vocabulary: &[Vocabulary],
+    blocked: &[(usize, usize)],
+) -> Vec<Match> {
+    let index = &index.0;
     let tokens = tokens(text);
     if tokens.is_empty() {
         return vec![];
-    }
-    let mut index = HashMap::<[char; 3], Vec<Entry>>::new();
-    for (term, v) in vocabulary.iter().enumerate() {
-        let words = words(&v.text);
-        if words.is_empty() || words.len() > MAX_WORDS {
-            continue;
-        }
-        let structured = words.len() >= 2;
-        for key in keys(&words, letters) {
-            let key: Vec<char> = key.chars().collect();
-            let tolerance = if structured { tolerance(key.len()) } else { 0 };
-            index
-                .entry([key[0], key[1], key[2]])
-                .or_default()
-                .push(Entry {
-                    key,
-                    term,
-                    tolerance,
-                    words: words.len(),
-                });
-        }
-    }
-    for entries in index.values_mut() {
-        entries.sort_by_key(|e| e.key.len());
     }
     let mut found = vec![];
     for size in 1..=MAX_WORDS.min(tokens.len()) {

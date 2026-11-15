@@ -94,6 +94,7 @@ Concurrent build activity can affect the duration.
 This sample excludes the desktop UI, capture, and inference workers and does not establish an application performance threshold.
 `context-benchmark.txt` records the operating-system measurements.
 The experiment prompted caching identifier-tokenization regexes and filtering nonmatching vocabulary before compiling phrase matchers.
+[context-latency.md](context-latency.md) records later measurements on real repositories at the 50,000-term limit and the changes they prompted.
 
 ## Latency and background operation
 
