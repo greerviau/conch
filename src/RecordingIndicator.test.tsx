@@ -23,13 +23,16 @@ it("shows the spinner while processing", () => {
   );
   expect(container.querySelector(".spiral")).not.toBeNull();
 });
-it("renders neither animation while hidden, so a stale mode cannot flash on show", () => {
+it("renders the next recording's pill while hidden, so the window never shows an empty frame", () => {
   const { container } = render(
-    <IndicatorView state={{ ...base, visible: false, mode: "processing" }} />,
+    <IndicatorView
+      state={{ ...base, visible: false, mode: "recording", seconds: 0 }}
+    />,
   );
+  expect(container.querySelector(".recording-indicator")).not.toBeNull();
+  expect(container.querySelector(".audio-bars")).not.toBeNull();
   expect(container.querySelector(".spiral")).toBeNull();
-  expect(container.querySelector(".audio-bars")).toBeNull();
-  expect(container.querySelector("time")).toBeNull();
+  expect(container.querySelector("time")?.textContent).toBe("0:00");
 });
 it("shows no profile with one profile, so the pill is the bars and the time", () => {
   const { container } = render(<IndicatorView state={base} />);

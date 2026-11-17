@@ -46,9 +46,8 @@ export function IndicatorView({
   onToggleList?: (open: boolean) => void;
   onChoose?: (id: string) => void;
 }) {
-  // The window is reused between dictations. Rendering nothing while hidden
-  // keeps the previous mode from showing before the first event of the next one.
-  if (!state.visible) return null;
+  // The window shows the frame painted before it appeared, so the hidden state
+  // renders too: the backend sends it as the next recording's pill at 0:00.
   const time = `${Math.floor(state.seconds / 60)}:${String(state.seconds % 60).padStart(2, "0")}`;
   const open = state.profiles.length > 0;
   return (

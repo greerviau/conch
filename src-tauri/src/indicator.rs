@@ -1,17 +1,19 @@
 use crate::lock::Locked;
 use crate::session::Phase;
 use serde::Serialize;
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 pub struct Indicator {
     pub visible: bool,
     /// "recording", "processing", or "notice" (a delivery outcome or error).
+    /// Hidden, it is "recording" at zero seconds: the webview paints the next
+    /// recording's pill before the window is shown.
     pub mode: String,
     pub label: String,
     pub hint: String,
     pub level: f32,
     pub seconds: u64,
-    /// The active profile's name while recording with more than one profile, so
-    /// it can be switched; empty otherwise.
+    /// The active profile's name while recording, or hidden, with more than one
+    /// profile, so it can be switched; empty otherwise.
     pub profile: String,
     /// The profiles to switch to, while the list is open.
     pub profiles: Vec<ProfileChoice>,
@@ -31,18 +33,19 @@ impl Indicator {
     }
 }
 /// The profile name and the open list for the indicator. Only a recording with
-/// more than one profile shows them.
+/// more than one profile shows them. The hidden indicator holds the name for
+/// the next recording.
 pub fn profiles(
     phase: &Phase,
     settings: &crate::storage::Settings,
     menu_open: bool,
     installed: impl Fn(&str) -> bool,
 ) -> (String, Vec<ProfileChoice>) {
-    if *phase != Phase::Recording || settings.profiles.len() < 2 {
+    if *phase == Phase::Processing || settings.profiles.len() < 2 {
         return (String::new(), vec![]);
     }
     let active = settings.active();
-    let list = if menu_open {
+    let list = if menu_open && *phase == Phase::Recording {
         settings
             .profiles
             .iter()
@@ -79,12 +82,14 @@ pub fn presentation(
         Phase::Processing => ("Preparing text", "You can keep working"),
         Phase::Idle => (notice.unwrap_or(""), ""),
     };
+    let visible = *phase != Phase::Idle || notice.is_some();
     Indicator {
-        visible: *phase != Phase::Idle || notice.is_some(),
+        visible,
         mode: match phase {
             Phase::Recording => "recording",
             Phase::Processing => "processing",
-            Phase::Idle => "notice",
+            Phase::Idle if visible => "notice",
+            Phase::Idle => "recording",
         }
         .into(),
         label: label.into(),
@@ -94,7 +99,7 @@ pub fn presentation(
         } else {
             0.0
         },
-        seconds,
+        seconds: if visible { seconds } else { 0 },
         profile: String::new(),
         profiles: vec![],
     }
@@ -258,9 +263,20 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
         let mut was_visible = false;
         let mut was_interactive = false;
         let mut last_placement = None;
+        let mut last_sent = None;
+        let mut hidden_size = None;
         loop {
             let value = state(&app);
-            if value.visible {
+            if !value.visible {
+                // Size the hidden window for the next recording's pill, so the
+                // frame the webview paints now fits the window when it is shown.
+                let size = size_for(&value);
+                if hidden_size != Some(size) {
+                    let _ = window.set_size(tauri::LogicalSize::new(size.0, size.1));
+                    hidden_size = Some(size);
+                }
+            } else {
+                hidden_size = None;
                 let monitor = if was_visible {
                     window.current_monitor().ok().flatten()
                 } else {
@@ -295,11 +311,12 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
                     }
                 }
             }
-            // Send the state before the window is shown or after it is hidden,
-            // so the webview never holds the previous dictation's mode when the
-            // window appears.
-            if value.visible || was_visible {
+            // Send every change, hidden or not, before the window is shown. The
+            // window appears with the webview's last painted frame, so it must
+            // already be the pill this state shows.
+            if last_sent.as_ref() != Some(&value) {
                 let _ = app.emit_to("recording", "recording-state", value.clone());
+                last_sent = Some(value.clone());
             }
             if value.visible != was_visible {
                 let window = window.clone();
@@ -400,6 +417,17 @@ mod tests {
         assert!(p.visible);
         assert_eq!(p.label, "Preparing text");
         assert!(!presentation(&Phase::Idle, false, false, 0.0, 0, None).visible);
+    }
+    #[test]
+    fn the_hidden_indicator_holds_the_next_recordings_pill_at_zero() {
+        let p = presentation(&Phase::Idle, true, false, 0.7, 42, None);
+        assert!(!p.visible);
+        assert_eq!(p.mode, "recording");
+        assert_eq!((p.seconds, p.level), (0, 0.0));
+        assert!(!p.interactive());
+        let (name, list) = profiles(&Phase::Idle, &two_profiles(), true, |_| true);
+        assert_eq!(name, "conch");
+        assert!(list.is_empty());
     }
     #[test]
     fn toggle_and_microphone_startup_have_different_instructions() {
