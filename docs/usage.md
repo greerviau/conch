@@ -88,6 +88,7 @@ If cleaning any part fails, the whole result gets Basic cleanup and the status l
 Microphone in Settings starts at System default, which follows the input your system uses, including when you switch it.
 Choose a device to always record from it. If it is unplugged, Settings says so and Conch records from the system input.
 Settings lists the devices when you open it, so reopen Settings after plugging one in.
+On macOS, Conch keeps the microphone open and paused between recordings, so a recording starts as you press the shortcut. The system shows the microphone as in use only while you record, and for a moment when Conch opens it at launch or after you change the Microphone setting.
 Automatic paste is on by default. Turn it off and Conch only copies each result; paste it yourself.
 With Automatic paste off, Conch does not ask for the Accessibility permission.
 

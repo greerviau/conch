@@ -33,6 +33,8 @@ pub struct AppState {
     /// The terms the latest recording used, for the next one that uses the same
     /// indexes. Lock it after `indexes`.
     pub terms: Mutex<storage::TermsCache>,
+    /// The input, kept open and paused between recordings so one starts at once.
+    pub microphone: audio::Microphone,
 }
 pub struct Inner {
     pub settings: Settings,
@@ -264,6 +266,9 @@ pub fn save_settings(
         ids
     };
     let changed = models(&inner.settings) != models(&settings);
+    if settings.microphone != inner.settings.microphone {
+        prepare_microphone(&app, settings.microphone.clone());
+    }
     state
         .indexes
         .locked()
@@ -421,13 +426,16 @@ pub fn start(app: AppHandle) -> Result<(), String> {
         switcher: transcriber.switcher(),
     });
     drop(inner);
+    crate::indicator::wake();
     std::thread::spawn(platform::prepare);
     warm_terms(&snapshot);
     warm_cleanup(&state, &snapshot, &worker);
     let handle = app.clone();
     std::thread::spawn(move || {
         let mut chunker = Chunker::default();
+        let state = handle.state::<AppState>();
         let captured = audio::capture(
+            &state.microphone,
             &microphone,
             receive,
             || {
@@ -447,7 +455,6 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                 }
             },
         );
-        let state = handle.state::<AppState>();
         match captured {
             Ok(Some(audio::Captured { wav, samples })) => {
                 let reuse = if SPECULATE {
@@ -510,6 +517,7 @@ pub fn finish(state: State<'_, AppState>) -> Result<(), String> {
         inner.stopped = Some(Instant::now());
         let _ = stop.send(true);
     }
+    crate::indicator::wake();
     Ok(())
 }
 #[tauri::command]
@@ -527,6 +535,7 @@ pub fn cancel(app: AppHandle) -> Result<(), String> {
         }
         inner.worker.clone()
     };
+    crate::indicator::wake();
     inference::stop(&worker);
     Ok(())
 }
@@ -646,6 +655,15 @@ fn recognition_for(
             }) as pipeline::Cleaner
         });
     Ok((model, recognize, clean))
+}
+/// Opens the input for the Microphone setting `wanted` in the background, so
+/// the next recording starts without opening it. Waits for microphone access,
+/// so opening the input never asks for it.
+fn prepare_microphone(app: &AppHandle, wanted: String) {
+    if platform::microphone_status() == "granted" {
+        let app = app.clone();
+        std::thread::spawn(move || app.state::<AppState>().microphone.prepare(&wanted));
+    }
 }
 /// Builds the lookup tables of the snapshot's indexed terms while the user speaks, so
 /// preparing the result does not wait for them.
@@ -1333,7 +1351,9 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         inner: Mutex::new(Inner::new(settings.clone())),
         indexes: Mutex::new(indexes),
         terms: Mutex::default(),
+        microphone: audio::Microphone::default(),
     });
+    prepare_microphone(app.handle(), settings.microphone.clone());
     app.manage(crate::update::Tracker::new());
     if let Err(error) = crate::indicator::setup(app.handle()) {
         log::error(
@@ -1482,6 +1502,7 @@ pub fn shortcut(
                 let mut inner = state.inner.locked();
                 inner.indicator_notice = Some((Instant::now(), error.clone()));
                 inner.error = error;
+                crate::indicator::wake();
             }
         }
         Some("finish") => {
@@ -1904,6 +1925,7 @@ mod tests {
             inner: Mutex::new(Inner::new(settings)),
             indexes: Mutex::new(storage::Indexes::new()),
             terms: Mutex::default(),
+            microphone: audio::Microphone::default(),
         }
     }
     /// App state whose settings hold one repository at `root`, and that repository.
