@@ -126,11 +126,15 @@ export function RecordingIndicator() {
   });
   useEffect(() => {
     let disposed = false;
+    // The backend sends only changes, so an event that arrives before the
+    // initial state is newer and must not be replaced by it.
+    let received = false;
     const subscription = listen<IndicatorState>("recording-state", (e) => {
+      received = true;
       if (!disposed) setState(e.payload);
     });
     void invoke<IndicatorState>("indicator_state").then((s) => {
-      if (!disposed) setState(s);
+      if (!disposed && !received) setState(s);
     });
     return () => {
       disposed = true;

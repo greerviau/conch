@@ -1,6 +1,29 @@
 import { it, expect, afterEach, vi } from "vitest";
-import { render, cleanup, fireEvent, screen } from "@testing-library/react";
-import { IndicatorView, type IndicatorState } from "./RecordingIndicator";
+import {
+  render,
+  cleanup,
+  fireEvent,
+  screen,
+  act,
+} from "@testing-library/react";
+import {
+  IndicatorView,
+  RecordingIndicator,
+  type IndicatorState,
+} from "./RecordingIndicator";
+const ipc = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: ipc }));
+const events = vi.hoisted(() => ({
+  state: null as null | ((event: { payload: unknown }) => void),
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(
+    async (name: string, callback: (event: { payload: unknown }) => void) => {
+      if (name === "recording-state") events.state = callback;
+      return () => {};
+    },
+  ),
+}));
 afterEach(cleanup);
 const base: IndicatorState = {
   visible: true,
@@ -88,4 +111,15 @@ it("shows no profile while processing", () => {
     <IndicatorView state={{ ...base, mode: "processing", profile: "conch" }} />,
   );
   expect(container.querySelector(".indicator-profile")).toBeNull();
+});
+it("keeps an event that arrives before the initial state, since the backend sends only changes", async () => {
+  let answer: (state: IndicatorState) => void = () => {};
+  ipc.mockImplementation(
+    () => new Promise<IndicatorState>((resolve) => (answer = resolve)),
+  );
+  const { container } = render(<RecordingIndicator />);
+  await act(async () => {});
+  act(() => events.state!({ payload: { ...base, mode: "processing" } }));
+  await act(async () => answer({ ...base, visible: false }));
+  expect(container.querySelector(".spiral")).not.toBeNull();
 });
