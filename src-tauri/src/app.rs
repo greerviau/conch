@@ -132,6 +132,9 @@ pub fn view(app: AppHandle, state: State<'_, AppState>) -> Result<View, String> 
         for (level, message) in permission_changes(inner.permissions.as_ref(), &permissions) {
             log::record(level, "permissions", &message, None);
         }
+        if microphone_granted(inner.permissions.as_ref(), &permissions) {
+            prepare_microphone(&app, inner.settings.microphone.clone());
+        }
         inner.permissions = Some(permissions);
     }
     Ok(View {
@@ -921,6 +924,11 @@ fn apply_enhanced(
         }
         Err(error) => result.status = error,
     }
+}
+/// Whether microphone access was granted since the previous permission
+/// reading. The first reading is at launch, which prepares the microphone itself.
+fn microphone_granted(before: Option<&(bool, String)>, now: &(bool, String)) -> bool {
+    before.is_some_and(|before| before.1 != "granted") && now.1 == "granted"
 }
 /// The log entries for a change in the permissions Conch reads while it runs.
 /// The first reading states them; later ones report only what changed.
@@ -1808,6 +1816,28 @@ mod tests {
         );
         recognizer = "small.en";
         assert!(recognition_model(dir.path(), recognizer).is_err());
+    }
+    #[test]
+    fn microphone_access_granted_while_conch_runs_prepares_the_microphone() {
+        let reading = |microphone: &str| (true, microphone.to_string());
+        assert!(microphone_granted(
+            Some(&reading("unknown")),
+            &reading("granted")
+        ));
+        assert!(microphone_granted(
+            Some(&reading("denied")),
+            &reading("granted")
+        ));
+        // Launch prepares it already, and an unchanged grant needs nothing.
+        assert!(!microphone_granted(None, &reading("granted")));
+        assert!(!microphone_granted(
+            Some(&reading("granted")),
+            &reading("granted")
+        ));
+        assert!(!microphone_granted(
+            Some(&reading("unknown")),
+            &reading("denied")
+        ));
     }
     #[test]
     fn the_first_permission_reading_is_stated_and_later_ones_report_changes() {

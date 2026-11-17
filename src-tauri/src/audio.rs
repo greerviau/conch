@@ -192,30 +192,31 @@ impl Lease<'_> {
     fn open(&self) -> &Open {
         self.open.as_ref().expect("a lease holds a stream")
     }
-    /// Stops the audio reaching the recording's buffer.
-    fn stop(&self) {
-        if let Some(open) = &self.open {
-            open.sink.locked().take();
-            if KEEP {
-                let _ = open.stream.pause();
-            }
-        }
-    }
 }
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
-        self.stop();
         let mut slot = self.microphone.0.locked();
         slot.recording = false;
-        if let Some(open) = self.open.take()
-            && KEEP
-            && slot.kept.is_none()
-            && open.device.is_some()
-            && !open.failed.load(Ordering::Relaxed)
+        let Some(open) = self.open.take() else {
+            return;
+        };
+        open.sink.locked().take();
+        let paused = KEEP && open.stream.pause().is_ok();
+        if slot.kept.is_none()
+            && kept_after(
+                paused,
+                open.failed.load(Ordering::Relaxed),
+                open.device.is_some(),
+            )
         {
             slot.kept = Some(open);
         }
     }
+}
+/// Whether a stream a recording used is kept for the next one. One that did
+/// not pause would leave the microphone on between recordings.
+fn kept_after(paused: bool, failed: bool, known_device: bool) -> bool {
+    KEEP && paused && !failed && known_device
 }
 /// Opens the input for `wanted`. The stream may already be running.
 fn open(wanted: &str) -> Result<Open, String> {
@@ -495,6 +496,16 @@ mod tests {
         assert!(reusable(&kept, "", || Some(device("built-in-uid"))));
         assert!(!reusable(&kept, "", || Some(device("usb-uid"))));
         assert!(!reusable(&kept, "", || None));
+    }
+    #[test]
+    fn a_stream_kept_after_a_recording_must_be_paused_healthy_and_for_a_known_device() {
+        assert_eq!(kept_after(true, false, true), KEEP);
+        assert!(
+            !kept_after(false, false, true),
+            "a stream that did not pause would keep recording"
+        );
+        assert!(!kept_after(true, true, true));
+        assert!(!kept_after(true, false, false));
     }
     #[test]
     fn a_stream_that_reported_an_error_is_never_reused() {
