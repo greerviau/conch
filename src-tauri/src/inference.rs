@@ -1435,7 +1435,7 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     #[test]
     fn a_request_never_overrides_the_window_or_the_decoding_of_the_recognizer() {
         // A per-request `audio_ctx` made the worker drop most of the text of a
-        // later request (see `docs/validation/latency.md`), so none is sent.
+        // later request on the same worker, so none is sent.
         let dir = tempfile::tempdir().unwrap();
         fake::install(dir.path());
         let model = dir.path().join("model.bin");

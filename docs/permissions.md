@@ -30,4 +30,3 @@ Windows builds, Linux builds, X11, Wayland, target-app paste behavior, and micro
 A native macOS experiment confirms that showing the recording indicator preserves the foreground application and ignores pointer events.
 The CI workflow builds, lints, and tests on macOS, Windows, and Ubuntu. It runs only when started by hand from the Actions tab.
 A passing run on all three is not recorded here; see the Actions tab for current results.
-See [validation](validation/README.md) for evidence and remaining acceptance work.

@@ -55,7 +55,7 @@ To build a copy that never updates, clear `endpoints` with `--config '{"plugins"
 Notarization and Windows signing are not set up, so first installs from a browser show Gatekeeper and SmartScreen warnings.
 
 Synthetic inference evaluation uses macOS `say` and FFmpeg to create disposable test audio.
-It requires the models under `.runtime` and writes the synthetic results to `docs/validation/synthetic-inference.json`.
+It requires the models under `.runtime` and prints the synthetic results as JSON.
 
 The recognizer runs with voice detection, so `ggml-silero-v5.1.2.bin` must sit next to the recognizer model.
 `scripts/evaluate.py` does not use it. The acceptance test and `src-tauri/examples/latency.rs` need it, and recognition fails with "Download the required model in Settings first" without it.

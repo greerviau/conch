@@ -888,7 +888,6 @@ fn deliver_result(
 /// `whisper-server` cannot cancel a request. With a pause of 0.35 to 0.5 s, a
 /// short last phrase and a quick release, it raised the median wait for the
 /// cleaned text from 1884 to 2207 ms (23 of 32 runs more than 150 ms slower).
-/// See `docs/validation/latency.md`.
 const SPECULATE: bool = false;
 /// Shows the time the cleanup model reported for its latest request next to
 /// the cleanup stage, so a slow model shows apart from slow work around it.

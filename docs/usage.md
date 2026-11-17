@@ -34,7 +34,7 @@ Each profile has a Language menu on the Profiles page, with English first and th
 English is the default, and settings saved before the menu existed load as English.
 Auto-detect is the first entry of the menu. It lets the recognizer detect the language, and the menu offers it while a multilingual model exists. Choosing it keeps a multilingual model, and otherwise selects Small.
 With Auto-detect, the first chunk of a recording that has speech is recognized with detection, and the rest of that recording reuses the language it found, because short chunks are often misdetected. The next recording detects again.
-Auto-detect is less reliable for recordings under a few seconds. On synthetic speech in eight languages, Small identified the language of 48 of 48 sentences of 1.6 s or longer but only 38 of 48 phrases under 1.6 s, and a misdetected chunk comes back in the wrong language. Choose a language in the profile when you can. `docs/validation/recognition-languages.md` has the measurements.
+Auto-detect is less reliable for recordings under a few seconds. On synthetic speech in eight languages, Small identified the language of 48 of 48 sentences of 1.6 s or longer but only 38 of 48 phrases under 1.6 s, and a misdetected chunk comes back in the wrong language. Choose a language in the profile when you can.
 Auto-detect also turns off hesitation-token removal, spelled-letter matching, and managed Enhanced cleanup, each of which needs a known language.
 The recognition hint still goes to the recognizer with Auto-detect. It does not affect which language is detected, because the recognizer detects from the audio before it reads the hint.
 The Recognition model menu lists only the models that support the chosen language.
@@ -51,7 +51,6 @@ Mixed speech, such as prose in one language with English identifiers, was measur
 Each profile has a Recognition model menu with the English models Tiny (77.7 MB), Base (148.0 MB), and Small (487.6 MB), and the multilingual models Tiny (77.7 MB), Base (148.0 MB), Small (487.6 MB), and Large Turbo (574.0 MB, quantized q5_0).
 English-only models recognize English alone. Multilingual Tiny, Base, and Small recognize 99 languages, every one in the table but Cantonese. Large Turbo recognizes all 100, so choosing Cantonese selects it.
 Larger models make fewer errors and take longer to finish after you stop speaking.
-`docs/validation/recognition-models.md` has the measurements.
 The menu shows Installed in place of the size for a model on disk.
 Under the menu, the selected model shows Installed, a Download button, or a progress bar. Conch has no separate list of models.
 Enhanced cleanup shows the same status for S1-mini once Managed S1-mini is chosen.

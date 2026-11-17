@@ -1,8 +1,8 @@
 # Conch agent guide
 
 Conch is a cross-platform desktop dictation app built with Tauri 2, React/TypeScript, and Rust.
-Read `README.md` and `docs/usage.md` for behavior, `docs/plans/2026-11-09-conch.md` for the spec, and `docs/UBIQUITOUS-LANGUAGE.md` for terms.
-Use the glossary's terms verbatim and update the spec and glossary when a decision changes.
+Read `README.md` and `docs/usage.md` for behavior and `docs/UBIQUITOUS-LANGUAGE.md` for terms.
+Use the glossary's terms verbatim and update `docs/usage.md` and the glossary when a decision changes.
 
 ## Layout
 
@@ -16,7 +16,6 @@ Use the glossary's terms verbatim and update the spec and glossary when a decisi
 - `src-tauri/src/update.rs`: update check, install, and restart with `tauri-plugin-updater`. `scripts/check-version.mjs`, `scripts/verify-signing.sh`, and `.github/workflows/release.yml` publish releases. `scripts/install.sh` is the one-line installer; it finds assets by name (`Conch_aarch64.app.tar.gz`, `*_amd64.AppImage`), so renaming them breaks it.
 - `src-tauri/src/tray.rs`: menu bar icon, state display, show and hide of the main window. `indicator.rs`: floating recording indicator.
 - `scripts/`: runtime build (`build-runtimes.py`), brand assets, `setup-local-signing.sh`, `bundle-local.sh`, `measure-auto-detect.py` (language detection measurements with its `auto-detect-samples.json`).
-- `docs/validation/`: evidence and measurements. Do not state a result there that was not observed.
 
 ## Commands
 
