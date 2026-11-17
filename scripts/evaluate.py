@@ -64,5 +64,4 @@ for cpu in (True,False):
             result['worker_startup_seconds'] = process.startup_seconds
             result['worker_ru_maxrss'] = usage.ru_maxrss
 
-(ROOT/'docs/validation/synthetic-inference.json').write_text(json.dumps(results,indent=2)+'\n')
 print(json.dumps(results,indent=2))
