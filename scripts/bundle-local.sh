@@ -35,7 +35,7 @@ for name in "${workers[@]}"; do
 done
 
 identity=$(scripts/setup-local-signing.sh)
-app="src-tauri/target/$profile/bundle/macos/Conch.app"
+app="${CARGO_TARGET_DIR:-src-tauri/target}/$profile/bundle/macos/Conch.app"
 
 # The command-line config overrides the "-" (ad-hoc) default in tauri.conf.json
 # and skips updater artifacts, which need the release signing key.

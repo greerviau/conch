@@ -209,6 +209,25 @@ pub fn placement(
         size: tauri::PhysicalSize::new(width, height),
     }
 }
+/// The wait between readings of the state while nothing calls `wake`.
+const POLL: std::time::Duration = std::time::Duration::from_millis(60);
+static WOKEN: (std::sync::Mutex<bool>, std::sync::Condvar) =
+    (std::sync::Mutex::new(false), std::sync::Condvar::new());
+/// Makes the indicator read the state now, so it appears as the recording
+/// starts instead of at the next poll.
+pub fn wake() {
+    *WOKEN.0.locked() = true;
+    WOKEN.1.notify_one();
+}
+/// Waits for `POLL` or until `wake` is called.
+fn pause() {
+    let woken = WOKEN.0.locked();
+    let (mut woken, _) = WOKEN
+        .1
+        .wait_timeout_while(woken, POLL, |woken| !*woken)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *woken = false;
+}
 pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     let window = WebviewWindowBuilder::new(
@@ -323,7 +342,7 @@ pub fn setup(app: &tauri::AppHandle) -> Result<(), String> {
                 });
                 was_interactive = interactive;
             }
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            pause();
         }
     });
     Ok(())
@@ -336,6 +355,13 @@ mod tests {
             position: (x, y).into(),
             size: (width, height).into(),
         }
+    }
+    #[test]
+    fn a_wake_ends_the_wait_between_polls_at_once() {
+        wake();
+        let started = std::time::Instant::now();
+        pause();
+        assert!(started.elapsed() < POLL / 2, "{:?}", started.elapsed());
     }
     #[test]
     fn popup_stays_above_bottom_dock_and_inside_work_area() {
