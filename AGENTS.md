@@ -23,11 +23,14 @@ Use the glossary's terms verbatim and update `docs/usage.md` and the glossary wh
 npm ci
 python3 scripts/build-runtimes.py   # builds src-tauri/workers; needs CMake and a C++ toolchain
 npm test && npm run lint && npm run check
+npx titer check --json              # do the changed vitest tests test the change; see .claude/skills/titer
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run bundle:local -- --install   # macOS: build, verify signing, replace /Applications/Conch.app
 ```
+
+`titer.toml` points titer at the vitest tests in `src/`. titer does not support Rust, so it does not check `src-tauri/`. The titer workflow runs it on every pull request.
 
 Acceptance tests marked `#[ignore]` need `.runtime/` (models, `ggml-silero-v5.1.2.bin`, and a synthetic WAV) and built workers: `cargo test --test acceptance -- --ignored`.
 `src-tauri/examples/latency.rs` measures stop-to-text latency on real workers. `src-tauri/examples/dictation_check.rs` runs dictations through the chunker and transcriber on real workers and reports any that lose words. `src-tauri/examples/cleanup_latency.rs` measures the wait for Enhanced cleanup after the stop. `src-tauri/examples/context_latency.rs` times indexing and result preparation on real repositories. `src-tauri/examples/microphone_start.rs` times how long a recording waits for the microphone, opened and kept.

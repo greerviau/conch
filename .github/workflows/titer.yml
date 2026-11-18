@@ -1,0 +1,22 @@
+name: titer
+on: pull_request
+permissions:
+  contents: read
+concurrency:
+  group: titer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  titer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # The pull request head, so annotations land on the diff lines.
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: greerviau/titer@v0.1

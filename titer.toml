@@ -1,0 +1,14 @@
+# titer configuration. See https://github.com/greerviau/titer for every option.
+# titer covers the React interface only; it does not support Rust, so src-tauri is unchecked.
+
+[[runner]]
+kind = "vitest"
+command = ["npx", "--no-install", "vitest", "run"]
+# Match vitest.config.ts. tests/*.test.mjs run under node --test, not vitest.
+test_globs = ["src/**/*.test.tsx"]
+
+[gate]
+# fail_on_survivors = false
+# fail_on_passes_on_base = false
+# fail_on_scan = false
+# fail_on_crap = false
