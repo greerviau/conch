@@ -10,9 +10,6 @@ name = "src-tauri"
 kind = "cargo"
 cwd = "src-tauri"
 command = ["cargo", "test", "--locked"]
-# Worktrees lack the gitignored src-tauri/workers, and tauri_build fails on the
-# unmatched "workers/*" resource glob. Unit tests do not need bundle resources.
-env = { TAURI_CONFIG = '{"bundle":{"resources":["licenses/*"]}}' }
 
 [gate]
 # fail_on_survivors = false
