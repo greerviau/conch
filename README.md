@@ -36,7 +36,7 @@ npm run tauri -- dev
 - [Permissions and platform status](docs/permissions.md)
 - [Cleanup and privacy](docs/privacy.md)
 - [Development, packaging, and branding](docs/development.md)
-- [Glossary](docs/UBIQUITOUS-LANGUAGE.md)
+- [Glossary](GLOSSARY.md)
 - [AGENTS.md](AGENTS.md)
 
 ## License

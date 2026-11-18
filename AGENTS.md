@@ -1,7 +1,7 @@
 # Conch agent guide
 
 Conch is a cross-platform desktop dictation app built with Tauri 2, React/TypeScript, and Rust.
-Read `README.md` and `docs/usage.md` for behavior and `docs/UBIQUITOUS-LANGUAGE.md` for terms.
+Read `README.md` and `docs/usage.md` for behavior and `GLOSSARY.md` for terms.
 Use the glossary's terms verbatim and update `docs/usage.md` and the glossary when a decision changes.
 
 ## Layout
