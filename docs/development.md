@@ -11,7 +11,7 @@ npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
-npm run tauri -- build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+npm run tauri -- build --config src-tauri/tauri.bundle.conf.json --config '{"bundle":{"createUpdaterArtifacts":false}}'
 ```
 
 Updater artifacts are on in `tauri.conf.json`, so a bundle build fails without `TAURI_SIGNING_PRIVATE_KEY` unless it passes the override above. `bundle:local` and the check workflow already do.

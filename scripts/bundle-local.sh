@@ -37,9 +37,11 @@ done
 identity=$(scripts/setup-local-signing.sh)
 app="${CARGO_TARGET_DIR:-src-tauri/target}/$profile/bundle/macos/Conch.app"
 
-# The command-line config overrides the "-" (ad-hoc) default in tauri.conf.json
-# and skips updater artifacts, which need the release signing key.
+# tauri.bundle.conf.json adds the workers to the bundle resources. The second
+# config overrides the "-" (ad-hoc) default in tauri.conf.json and skips
+# updater artifacts, which need the release signing key.
 npm run tauri -- build --bundles app ${extra[@]+"${extra[@]}"} \
+  --config src-tauri/tauri.bundle.conf.json \
   --config "{\"bundle\":{\"createUpdaterArtifacts\":false,\"macOS\":{\"signingIdentity\":\"$identity\"}}}"
 
 for name in "${workers[@]}"; do

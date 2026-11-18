@@ -1,0 +1,29 @@
+name: titer
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+concurrency:
+  group: titer-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  titer:
+    runs-on: ubuntu-24.04
+    # A Rust change builds the Tauri crate from scratch in each titer worktree.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # The pull request head, so annotations land on the right diff lines.
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev librsvg2-dev libayatana-appindicator3-dev libasound2-dev libxdo-dev libsecret-1-dev
+      - run: npm ci
+      - uses: greerviau/titer@v0.1.3
+        with:
+          comment: true

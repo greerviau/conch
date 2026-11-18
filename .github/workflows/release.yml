@@ -56,6 +56,7 @@ jobs:
           releaseName: ${{ github.ref_name }}
           releaseDraft: true
           includeUpdaterJson: true
+          args: --config src-tauri/tauri.bundle.conf.json
       - if: runner.os == 'macOS'
         env:
           IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
