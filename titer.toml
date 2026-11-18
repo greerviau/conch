@@ -1,0 +1,25 @@
+# titer configuration. See https://github.com/greerviau/titer for every option.
+
+[[runner]]
+name = "root"
+kind = "vitest"
+command = ["npx", "--no-install", "vitest", "run"]
+
+[[runner]]
+name = "src-tauri"
+kind = "cargo"
+cwd = "src-tauri"
+command = ["cargo", "test", "--locked"]
+# Worktrees lack the gitignored src-tauri/workers, and tauri_build fails on the
+# unmatched "workers/*" resource glob. Unit tests do not need bundle resources.
+env = { TAURI_CONFIG = '{"bundle":{"resources":["licenses/*"]}}' }
+
+[gate]
+# fail_on_survivors = false
+# fail_on_passes_on_base = false
+# fail_on_scan = false
+# fail_on_crap = false
+
+[mutate]
+# Tool configuration, not application code.
+exclude_globs = ["vitest.config.ts", "eslint.config.js"]

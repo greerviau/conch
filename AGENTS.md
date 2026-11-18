@@ -27,6 +27,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run bundle:local -- --install   # macOS: build, verify signing, replace /Applications/Conch.app
+npx titer check --json              # do the changed tests test the change? see .claude/skills/titer
 ```
 
 Acceptance tests marked `#[ignore]` need `.runtime/` (models, `ggml-silero-v5.1.2.bin`, and a synthetic WAV) and built workers: `cargo test --test acceptance -- --ignored`.
