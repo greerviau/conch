@@ -264,9 +264,6 @@ it("lets the user choose a larger recognition model, download it, and save the c
     "tiny.en",
     "base.en",
     "small.en",
-    "tiny",
-    "base",
-    "small",
     "large-v3-turbo",
   ]);
   fireEvent.change(choice, { target: { value: "small.en" } });
@@ -984,6 +981,7 @@ it("builds the recognition model menu from the models the view returns", async (
     size: 2_000_000_000,
     engine: "whisper",
     languages: ["en"],
+    english_variant: null,
     ready: false,
   });
   render(<App />);
@@ -994,11 +992,8 @@ it("builds the recognition model menu from the models the view returns", async (
   expect(Array.from(menu.options).map((option) => option.textContent)).toEqual([
     "Tiny (from the catalog) - 77.7 MB - Quick",
     "Base (English) - 148.0 MB - Balanced",
-    "Small (English) - 487.6 MB - Most accurate",
+    "Small (English) - 487.6 MB - Accurate",
     "Extra (English) - 2000.0 MB - Experimental",
-    "Tiny (multilingual) - 77.7 MB - Fastest",
-    "Base (multilingual) - 148.0 MB - Balanced",
-    "Small (multilingual) - 487.6 MB - Accurate",
     "Large Turbo (multilingual) - 574.0 MB - Most accurate",
   ]);
   fireEvent.change(menu, { target: { value: "extra.en" } });
@@ -1092,7 +1087,33 @@ it("chooses Auto-detect on the setup card and saves it with a multilingual model
     }),
   );
 });
-it("shows only the models that support the chosen language and switches an unsupported model to Small", async () => {
+it("swaps multilingual Tiny, Base, or Small for its English-only variant when English is chosen", async () => {
+  view.settings.profiles[0].language = "fr";
+  view.settings.profiles[0].recognizer = "base";
+  render(<App />);
+  await openProfiles();
+  await chooseLanguage("en");
+  expect(
+    menuOptions("Recognition model").map((option) => option.value),
+  ).toEqual(["tiny.en", "base.en", "small.en", "large-v3-turbo"]);
+  const saved = await savedSettings();
+  expect(saved.profiles[0].language).toBe("en");
+  expect(saved.profiles[0].recognizer).toBe("base.en");
+});
+it("chooses English on the setup card and saves the English-only variant of the multilingual model at once", async () => {
+  view.settings.profiles[0].language = "fr";
+  view.settings.profiles[0].recognizer = "tiny";
+  render(<App />);
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "en" },
+  });
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: profileWith({ language: "en", recognizer: "tiny.en" }),
+    }),
+  );
+});
+it("shows only the models offered for the chosen language and switches an unsupported model to Small", async () => {
   render(<App />);
   await openProfiles();
   fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
@@ -1334,10 +1355,7 @@ it("marks installed recognition models in the menu and confirms the selected one
   expect(Array.from(menu.options).map((option) => option.textContent)).toEqual([
     "Tiny (English) - Installed - Fastest",
     "Base (English) - Installed - Balanced",
-    "Small (English) - 487.6 MB - Most accurate",
-    "Tiny (multilingual) - 77.7 MB - Fastest",
-    "Base (multilingual) - 148.0 MB - Balanced",
-    "Small (multilingual) - 487.6 MB - Accurate",
+    "Small (English) - 487.6 MB - Accurate",
     "Large Turbo (multilingual) - 574.0 MB - Most accurate",
   ]);
   expect(

@@ -154,6 +154,8 @@ export type ModelView = {
   engine: "whisper" | "transcribe" | "llama" | null;
   /** ISO codes of the languages the model recognizes. */
   languages: string[];
+  /** The English-only model offered in place of this one for English. */
+  english_variant: string | null;
   ready: boolean;
 };
 export type Language = { code: string; name: string };

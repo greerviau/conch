@@ -2,7 +2,7 @@
 
 ## Setup
 
-The Dictation page shows the setup checklist. Its first step has a Language menu, a menu of the recognition models that support that language, and a button that names the selected model, for example Download Small (English), 487.6 MB.
+The Dictation page shows the setup checklist. Its first step has a Language menu, a menu of the recognition models offered for that language, and a button that names the selected model, for example Download Small (English), 487.6 MB.
 English and Small (Whisper small.en, 487.6 MB) are the defaults for a new install. Picking another language or model there saves it to the active profile at once.
 Once a model is installed the step names it and offers Change model.
 Enable microphone access and automatic paste from the same checklist.
@@ -37,9 +37,10 @@ With Auto-detect, the first chunk of a recording that has speech is recognized w
 Auto-detect is less reliable for recordings under a few seconds. On synthetic speech in eight languages, Small identified the language of 48 of 48 sentences of 1.6 s or longer but only 38 of 48 phrases under 1.6 s, and a misdetected chunk comes back in the wrong language. Choose a language in the profile when you can.
 Auto-detect also turns off hesitation-token removal, spelled-letter matching, and managed Enhanced cleanup, each of which needs a known language.
 The recognition hint still goes to the recognizer with Auto-detect. It does not affect which language is detected, because the recognizer detects from the audio before it reads the hint.
-The Recognition model menu lists only the models that support the chosen language.
-Changing the language keeps the current model when it supports the new language, and otherwise selects Small, or Small (English) for English.
-A profile saved with a model that does not support its language loads with the smallest model that does, and Dictation asks for its download.
+The Recognition model menu lists only the models offered for the chosen language. English offers the English-only Tiny, Base, and Small in place of the multilingual ones, plus Large Turbo.
+Changing the language keeps the current model when it is offered for the new language. Otherwise English selects the English-only model of the same size, or Small (English), and other languages select Small.
+A profile saved with a model not offered for its language loads with the English-only model of the same size for English, and otherwise with the smallest model offered, and Dictation asks for its download.
+An English profile that used multilingual Tiny, Base, or Small before English offered only the English-only models loads with the English-only one, so Dictation asks for that download even though the multilingual model is on disk.
 Conch sends the language with each recognition request, so a change takes effect on the next recording without restarting the recognizer.
 A recording uses the language and model of the active profile, including one you switch to during the recording, and Retry recognizes the kept recording the same way.
 The interface stays in English.
@@ -48,7 +49,7 @@ Mixed speech, such as prose in one language with English identifiers, was measur
 
 ## Choosing a recognition model
 
-Each profile has a Recognition model menu with the English models Tiny (77.7 MB), Base (148.0 MB), and Small (487.6 MB), and the multilingual models Tiny (77.7 MB), Base (148.0 MB), Small (487.6 MB), and Large Turbo (574.0 MB, quantized q5_0).
+Each profile has a Recognition model menu. For English it lists the English-only models Tiny (77.7 MB), Base (148.0 MB), and Small (487.6 MB), and Large Turbo (574.0 MB, quantized q5_0). For any other language or Auto-detect it lists the multilingual models Tiny, Base, Small, and Large Turbo, with the same sizes.
 English-only models recognize English alone. Multilingual Tiny, Base, and Small recognize 99 languages, every one in the table but Cantonese. Large Turbo recognizes all 100, so choosing Cantonese selects it.
 Larger models make fewer errors and take longer to finish after you stop speaking.
 The menu shows Installed in place of the size for a model on disk.

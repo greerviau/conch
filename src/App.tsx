@@ -233,7 +233,7 @@ export default function App() {
       });
   }
   const chooseRecognizer = (id: string) => saveActive({ recognizer: id });
-  /** Saves the language and the model that supports it. */
+  /** Saves the language and the model offered for it. */
   const chooseLanguage = (code: string) =>
     view &&
     saveActive({

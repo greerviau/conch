@@ -137,13 +137,17 @@ pub fn normalize(settings: &mut Settings) {
         if !crate::languages::known(&profile.language) {
             profile.language = Profile::default().language;
         }
-        // Keep the language and move to a model that can recognize it. If that
-        // model is not installed, recording asks for the download.
-        if crate::inference::recognizer(&profile.recognizer)
-            .is_some_and(|model| !model.supports(&profile.language))
-            && let Some(model) = crate::inference::smallest_supporting(&profile.language)
+        // Keep the language and move to a model offered for it: the English-only
+        // variant for English, else the smallest. If that model is not
+        // installed, recording asks for the download.
+        if let Some(model) = crate::inference::recognizer(&profile.recognizer)
+            && !model.offered(&profile.language)
+            && let Some(id) = model
+                .english_variant
+                .filter(|_| profile.language == "en")
+                .or_else(|| crate::inference::smallest_offered(&profile.language).map(|m| m.id))
         {
-            profile.recognizer = model.id.into();
+            profile.recognizer = id.into();
         }
         if !ENHANCED.contains(&profile.enhanced.as_str()) {
             profile.enhanced = Profile::default().enhanced;
@@ -799,6 +803,32 @@ mod tests {
             assert_eq!(saved("yue", recognizer).recognizer, "large-v3-turbo");
         }
         assert_eq!(saved("de", "large-v3-turbo").recognizer, "large-v3-turbo");
+    }
+    #[test]
+    fn an_english_profile_saved_with_multilingual_tiny_base_or_small_loads_with_the_english_only_one()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = |language: &str, recognizer: &str| {
+            save(
+                dir.path(),
+                &with_profile(Profile {
+                    language: language.into(),
+                    recognizer: recognizer.into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+            load(dir.path()).unwrap().active().recognizer.clone()
+        };
+        for (multilingual, english) in [
+            ("tiny", "tiny.en"),
+            ("base", "base.en"),
+            ("small", "small.en"),
+        ] {
+            assert_eq!(saved("en", multilingual), english);
+            assert_eq!(saved("fr", multilingual), multilingual);
+        }
+        assert_eq!(saved("en", "large-v3-turbo"), "large-v3-turbo");
     }
     #[test]
     fn a_hesitation_list_saved_before_languages_loads_as_the_english_list() {

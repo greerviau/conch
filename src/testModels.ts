@@ -23,6 +23,7 @@ export const catalog = (installed: string[] = []): ModelView[] =>
         size: 77704715,
         engine: "whisper",
         languages: ["en"],
+        english_variant: null,
       },
       {
         id: "base.en",
@@ -31,14 +32,16 @@ export const catalog = (installed: string[] = []): ModelView[] =>
         size: 147964211,
         engine: "whisper",
         languages: ["en"],
+        english_variant: null,
       },
       {
         id: "small.en",
         label: "Small (English)",
-        note: "Most accurate",
+        note: "Accurate",
         size: 487614201,
         engine: "whisper",
         languages: ["en"],
+        english_variant: null,
       },
       {
         id: "tiny",
@@ -47,6 +50,7 @@ export const catalog = (installed: string[] = []): ModelView[] =>
         size: 77691713,
         engine: "whisper",
         languages: CODES_99,
+        english_variant: "tiny.en",
       },
       {
         id: "base",
@@ -55,6 +59,7 @@ export const catalog = (installed: string[] = []): ModelView[] =>
         size: 147951465,
         engine: "whisper",
         languages: CODES_99,
+        english_variant: "base.en",
       },
       {
         id: "small",
@@ -63,6 +68,7 @@ export const catalog = (installed: string[] = []): ModelView[] =>
         size: 487601967,
         engine: "whisper",
         languages: CODES_99,
+        english_variant: "small.en",
       },
       {
         id: "large-v3-turbo",
@@ -71,6 +77,7 @@ export const catalog = (installed: string[] = []): ModelView[] =>
         size: 574041195,
         engine: "whisper",
         languages: CODES,
+        english_variant: null,
       },
       {
         id: "silero-vad",
@@ -79,6 +86,7 @@ export const catalog = (installed: string[] = []): ModelView[] =>
         size: 885098,
         engine: null,
         languages: [],
+        english_variant: null,
       },
       {
         id: "s1-mini",
@@ -87,6 +95,7 @@ export const catalog = (installed: string[] = []): ModelView[] =>
         size: 484219808,
         engine: "llama",
         languages: ["en"],
+        english_variant: null,
       },
     ] satisfies Omit<ModelView, "ready">[]
   ).map((model) => ({ ...model, ready: installed.includes(model.id) }));
