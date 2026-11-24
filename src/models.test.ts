@@ -30,7 +30,14 @@ describe("recognizersFor", () => {
       "small",
       "large-v3-turbo",
     ]);
-    expect(recognizersFor(models, "en")).toHaveLength(7);
+  });
+  it("offers the English-only models in place of multilingual Tiny, Base, and Small for English", () => {
+    expect(recognizersFor(models, "en").map((m) => m.id)).toEqual([
+      "tiny.en",
+      "base.en",
+      "small.en",
+      "large-v3-turbo",
+    ]);
   });
 });
 describe("languageMenu", () => {
@@ -47,16 +54,22 @@ describe("languageMenu", () => {
 });
 describe("modelForLanguage", () => {
   it("keeps a model that supports the language", () => {
-    expect(modelForLanguage(models, "en", "base")).toBe("base");
+    expect(modelForLanguage(models, "en", "large-v3-turbo")).toBe(
+      "large-v3-turbo",
+    );
     expect(modelForLanguage(models, "fr", "large-v3-turbo")).toBe(
       "large-v3-turbo",
     );
   });
+  it("switches a multilingual Tiny, Base, or Small to its English-only variant for English", () => {
+    expect(modelForLanguage(models, "en", "tiny")).toBe("tiny.en");
+    expect(modelForLanguage(models, "en", "base")).toBe("base.en");
+  });
   it("switches to Small for another language and to Small (English) for English", () => {
     expect(modelForLanguage(models, "fr", "tiny.en")).toBe("small");
     const lacking = catalog();
-    lacking.find((m) => m.id === "tiny")!.languages = ["fr"];
-    expect(modelForLanguage(lacking, "en", "tiny")).toBe("small.en");
+    lacking.find((m) => m.id === "large-v3-turbo")!.languages = ["fr"];
+    expect(modelForLanguage(lacking, "en", "large-v3-turbo")).toBe("small.en");
   });
   it("switches to Large Turbo for Cantonese because the other multilingual models lack it", () => {
     expect(supports(model("small"), "yue")).toBe(false);

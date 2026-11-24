@@ -171,7 +171,7 @@ fn profile_valid(profile: &storage::Profile) -> bool {
     !profile.name.trim().is_empty()
         && storage::ENHANCED.contains(&profile.enhanced.as_str())
         && inference::recognizer(&profile.recognizer)
-            .is_some_and(|model| model.supports(&profile.language))
+            .is_some_and(|model| model.offered(&profile.language))
 }
 /// Whether Enhanced cleanup runs on each chunk during the recording. Managed S1-mini supports
 /// English only, so other languages and Auto-detect use Basic, and the final result reports why.
@@ -1754,7 +1754,9 @@ mod tests {
         assert!(!with("small.en", "fr"));
         assert!(!with("small.en", "auto"));
         assert!(with("small", "fr"));
-        assert!(with("small", "en"));
+        assert!(!with("small", "en"));
+        assert!(!with("tiny", "en"));
+        assert!(with("large-v3-turbo", "en"));
         assert!(with("large-v3-turbo", "auto"));
         assert!(with("large-v3-turbo", "yue"));
         assert!(!with("small", "yue"));

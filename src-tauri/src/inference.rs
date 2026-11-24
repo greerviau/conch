@@ -884,6 +884,8 @@ pub struct Model {
     pub engine: Option<Kind>,
     /// ISO codes of the languages the model recognizes.
     pub languages: &'static [&'static str],
+    /// The English-only model offered in place of this one for English.
+    pub english_variant: Option<&'static str>,
 }
 impl Model {
     /// Whether the model recognizes `language`, an ISO code or `auto`. Only a
@@ -893,6 +895,11 @@ impl Model {
             return self.languages.len() > 1;
         }
         self.languages.contains(&language)
+    }
+    /// Whether Settings offers the model for `language`. English offers the
+    /// English-only Whisper models in place of their multilingual variants.
+    pub fn offered(&self, language: &str) -> bool {
+        self.supports(language) && !(language == ENGLISH[0] && self.english_variant.is_some())
     }
 }
 /// What the interface shows for a model, with whether it is on disk.
@@ -904,6 +911,7 @@ pub struct ModelView {
     pub size: u64,
     pub engine: Option<Kind>,
     pub languages: &'static [&'static str],
+    pub english_variant: Option<&'static str>,
     pub ready: bool,
 }
 pub fn catalog(data: &Path) -> Vec<ModelView> {
@@ -916,12 +924,14 @@ pub fn catalog(data: &Path) -> Vec<ModelView> {
             size: m.size,
             engine: m.engine,
             languages: m.languages,
+            english_variant: m.english_variant,
             ready: data.join(m.name).is_file(),
         })
         .collect()
 }
 /// Recognizers the user can choose between: the English-only Whisper models,
-/// then the multilingual ones, each smallest first. Larger models make fewer
+/// then the multilingual ones, each smallest first. English offers the
+/// English-only models and Large Turbo. Larger models make fewer
 /// errors and take longer to recognize a chunk.
 pub const RECOGNIZERS: [Model; 7] = [
     Model {
@@ -934,6 +944,7 @@ pub const RECOGNIZERS: [Model; 7] = [
         note: "Fastest",
         engine: Some(Kind::Whisper),
         languages: ENGLISH,
+        english_variant: None,
     },
     Model {
         id: "base.en",
@@ -945,6 +956,7 @@ pub const RECOGNIZERS: [Model; 7] = [
         note: "Balanced",
         engine: Some(Kind::Whisper),
         languages: ENGLISH,
+        english_variant: None,
     },
     Model {
         id: "small.en",
@@ -953,9 +965,10 @@ pub const RECOGNIZERS: [Model; 7] = [
         sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
         size: 487614201,
         label: "Small (English)",
-        note: "Most accurate",
+        note: "Accurate",
         engine: Some(Kind::Whisper),
         languages: ENGLISH,
+        english_variant: None,
     },
     Model {
         id: "tiny",
@@ -967,6 +980,7 @@ pub const RECOGNIZERS: [Model; 7] = [
         note: "Fastest",
         engine: Some(Kind::Whisper),
         languages: &CODES_99,
+        english_variant: Some("tiny.en"),
     },
     Model {
         id: "base",
@@ -978,6 +992,7 @@ pub const RECOGNIZERS: [Model; 7] = [
         note: "Balanced",
         engine: Some(Kind::Whisper),
         languages: &CODES_99,
+        english_variant: Some("base.en"),
     },
     Model {
         id: "small",
@@ -989,6 +1004,7 @@ pub const RECOGNIZERS: [Model; 7] = [
         note: "Accurate",
         engine: Some(Kind::Whisper),
         languages: &CODES_99,
+        english_variant: Some("small.en"),
     },
     Model {
         id: "large-v3-turbo",
@@ -1000,6 +1016,7 @@ pub const RECOGNIZERS: [Model; 7] = [
         note: "Most accurate",
         engine: Some(Kind::Whisper),
         languages: &CODES,
+        english_variant: None,
     },
 ];
 /// Silero voice detection model. The recognizer runs only on the
@@ -1015,6 +1032,7 @@ pub const VAD: Model = Model {
     note: "",
     engine: None,
     languages: &[],
+    english_variant: None,
 };
 pub const CLEANUP: Model = Model {
     id: "s1-mini",
@@ -1026,6 +1044,7 @@ pub const CLEANUP: Model = Model {
     note: "",
     engine: Some(Kind::Llama),
     languages: ENGLISH,
+    english_variant: None,
 };
 pub const MODELS: [Model; 9] = [
     RECOGNIZERS[0],
@@ -1041,11 +1060,11 @@ pub const MODELS: [Model; 9] = [
 pub fn recognizer(id: &str) -> Option<Model> {
     RECOGNIZERS.iter().find(|m| m.id == id).copied()
 }
-/// The smallest recognition model that supports `language`.
-pub fn smallest_supporting(language: &str) -> Option<Model> {
+/// The smallest recognition model offered for `language`.
+pub fn smallest_offered(language: &str) -> Option<Model> {
     RECOGNIZERS
         .iter()
-        .filter(|m| m.supports(language))
+        .filter(|m| m.offered(language))
         .min_by_key(|m| m.size)
         .copied()
 }
@@ -1592,11 +1611,12 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         }
     }
     #[test]
-    fn the_smallest_model_for_a_language_is_the_smallest_download_that_supports_it() {
-        assert_eq!(smallest_supporting("fr").unwrap().id, "tiny");
-        assert_eq!(smallest_supporting("auto").unwrap().id, "tiny");
-        assert_eq!(smallest_supporting("yue").unwrap().id, "large-v3-turbo");
-        assert!(smallest_supporting("xx").is_none());
+    fn the_smallest_model_for_a_language_is_the_smallest_download_offered_for_it() {
+        assert_eq!(smallest_offered("en").unwrap().id, "tiny.en");
+        assert_eq!(smallest_offered("fr").unwrap().id, "tiny");
+        assert_eq!(smallest_offered("auto").unwrap().id, "tiny");
+        assert_eq!(smallest_offered("yue").unwrap().id, "large-v3-turbo");
+        assert!(smallest_offered("xx").is_none());
     }
     #[cfg(unix)]
     #[test]
@@ -2132,6 +2152,35 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         assert!(!multilingual.supports("de"));
     }
     #[test]
+    fn english_offers_the_english_only_models_and_large_turbo_with_distinct_notes() {
+        let offered = |language: &str| -> Vec<&str> {
+            RECOGNIZERS
+                .iter()
+                .filter(|m| m.offered(language))
+                .map(|m| m.id)
+                .collect()
+        };
+        assert_eq!(
+            offered("en"),
+            ["tiny.en", "base.en", "small.en", "large-v3-turbo"]
+        );
+        for language in ["fr", "auto"] {
+            assert_eq!(
+                offered(language),
+                ["tiny", "base", "small", "large-v3-turbo"],
+                "{language}"
+            );
+        }
+        assert_eq!(offered("yue"), ["large-v3-turbo"]);
+        let mut notes: Vec<_> = RECOGNIZERS
+            .iter()
+            .filter(|m| m.offered("en"))
+            .map(|m| m.note)
+            .collect();
+        notes.dedup();
+        assert_eq!(notes.len(), 4, "{notes:?}");
+    }
+    #[test]
     fn the_catalog_gives_the_interface_each_models_metadata_and_install_state() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("ggml-base.en.bin"), b"x").unwrap();
@@ -2168,9 +2217,12 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
                 "size": 77704715,
                 "engine": "whisper",
                 "languages": ["en"],
+                "english_variant": null,
                 "ready": false,
             })
         );
+        assert_eq!(catalog[3]["english_variant"], "tiny.en");
+        assert_eq!(catalog[6]["english_variant"], Value::Null);
         assert_eq!(catalog[1]["ready"], true);
         assert_eq!(catalog[7]["engine"], Value::Null);
         assert_eq!(catalog[8]["engine"], "llama");

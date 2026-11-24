@@ -145,9 +145,6 @@ describe("recognition model step", () => {
       "tiny.en",
       "base.en",
       "small.en",
-      "tiny",
-      "base",
-      "small",
       "large-v3-turbo",
     ]);
     fireEvent.click(
@@ -171,10 +168,7 @@ describe("recognition model step", () => {
     expect(options().map((option) => option.textContent)).toEqual([
       "Tiny (English) - Installed - Fastest",
       "Base (English) - 148.0 MB - Balanced",
-      "Small (English) - 487.6 MB - Most accurate",
-      "Tiny (multilingual) - 77.7 MB - Fastest",
-      "Base (multilingual) - 148.0 MB - Balanced",
-      "Small (multilingual) - 487.6 MB - Accurate",
+      "Small (English) - 487.6 MB - Accurate",
       "Large Turbo (multilingual) - 574.0 MB - Most accurate",
     ]);
   });
@@ -190,10 +184,7 @@ describe("recognition model step", () => {
     expect(options().map((option) => option.textContent)).toEqual([
       "Tiny (catalog) - 77.7 MB - Fastest",
       "Base (English) - 148.0 MB - Balanced",
-      "Small (English) - 487.6 MB - Most accurate",
-      "Tiny (multilingual) - 77.7 MB - Fastest",
-      "Base (multilingual) - 148.0 MB - Balanced",
-      "Small (multilingual) - 487.6 MB - Accurate",
+      "Small (English) - 487.6 MB - Accurate",
       "Large Turbo (multilingual) - 574.0 MB - Most accurate",
     ]);
     expect(

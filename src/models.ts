@@ -31,9 +31,16 @@ export const supports = (
   language === "auto"
     ? model.languages.length > 1
     : model.languages.includes(language);
-/** The recognition models that support the language, in catalog order. */
+/** Whether Settings offers the model for the language. English offers the English-only models in place of their multilingual variants. */
+export const offered = (
+  model: Pick<ModelView, "languages" | "english_variant">,
+  language: string,
+) =>
+  supports(model, language) &&
+  !(language === "en" && model.english_variant !== null);
+/** The recognition models offered for the language, in catalog order. */
 export const recognizersFor = (models: ModelView[], language: string) =>
-  recognizers(models).filter((model) => supports(model, language));
+  recognizers(models).filter((model) => offered(model, language));
 /** English first, then the other languages by name. */
 export const languageMenu = (languages: Language[]) => [
   ...languages.filter((language) => language.code === "en"),
@@ -42,8 +49,9 @@ export const languageMenu = (languages: Language[]) => [
     .sort((a, b) => a.name.localeCompare(b.name, "en")),
 ];
 /**
- * The model to use after the language changes: the current one if it supports
- * the language, otherwise Small (Small (English) for English).
+ * The model to use after the language changes: the current one if it is
+ * offered for the language, its English-only variant for English, otherwise
+ * Small (Small (English) for English).
  */
 export function modelForLanguage(
   models: ModelView[],
@@ -52,6 +60,11 @@ export function modelForLanguage(
 ) {
   const options = recognizersFor(models, language);
   if (options.some((model) => model.id === current)) return current;
+  const variant =
+    language === "en"
+      ? models.find((model) => model.id === current)?.english_variant
+      : null;
+  if (variant && options.some((model) => model.id === variant)) return variant;
   const preferred = language === "en" ? "small.en" : "small";
   return (
     (options.find((model) => model.id === preferred) ?? options[0])?.id ??
