@@ -1,0 +1,39 @@
+name: titer skill
+
+# Dependabot bumps the titer pin but cannot run titer init --update, so this
+# workflow regenerates the repo skill for the new version on its PR.
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  refresh:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@v3.1.0
+      - if: contains(steps.meta.outputs.dependency-names, 'titer') && steps.meta.outputs.package-ecosystem != 'github_actions'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - if: contains(steps.meta.outputs.dependency-names, 'titer') && steps.meta.outputs.package-ecosystem != 'github_actions'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: contains(steps.meta.outputs.dependency-names, 'titer') && steps.meta.outputs.package-ecosystem != 'github_actions'
+        env:
+          VERSION: ${{ steps.meta.outputs.new-version }}
+        run: |
+          test -n "$VERSION"
+          npx -y "@greerviau/titer@$VERSION" init --update
+          # Keep only the skill; Dependabot already set the pins and lockfiles.
+          git add -- .agents/skills/titer .claude/skills/titer
+          git restore .
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: refresh the titer skill for $VERSION"
+          git push
