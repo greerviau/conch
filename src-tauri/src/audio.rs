@@ -278,11 +278,9 @@ pub fn capture(
         &heard,
         &buffer,
         || {
-            log::info(
-                "audio",
-                &format!("First audio after {} ms", started.elapsed().as_millis()),
-            );
+            let waited = started.elapsed().as_millis();
             ready();
+            log::info("audio", &format!("First audio after {waited} ms"));
         },
         &mut observe,
     )?;
@@ -316,12 +314,12 @@ fn record(
     let mut ready = Some(ready);
     let start = Instant::now();
     let mut observed: Option<Instant> = None;
-    loop {
+    let keep = loop {
         if failed.load(Ordering::Relaxed) {
             return Err("Microphone capture failed".into());
         }
         if start.elapsed().as_secs() >= MAX_SECONDS as u64 {
-            return Ok(true);
+            break true;
         }
         if heard.load(Ordering::Relaxed)
             && let Some(ready) = ready.take()
@@ -335,11 +333,18 @@ fn record(
         // Until the first audio, polls often so the indicator changes as it arrives.
         let wait = if ready.is_some() { 5 } else { 100 };
         match stop.recv_timeout(Duration::from_millis(wait)) {
-            Ok(keep) => return Ok(keep),
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(false),
+            Ok(keep) => break keep,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
             Err(mpsc::RecvTimeoutError::Timeout) => (),
         }
+    };
+    // Audio can arrive between the last check and the stop.
+    if heard.load(Ordering::Relaxed)
+        && let Some(ready) = ready.take()
+    {
+        ready();
     }
+    Ok(keep)
 }
 fn build<T>(
     device: &cpal::Device,
@@ -617,14 +622,14 @@ mod tests {
         stop: mpsc::Sender<bool>,
         /// Stands for the first audio arriving.
         heard: Arc<AtomicBool>,
-        /// Whether `ready` ran.
-        ready: Arc<AtomicBool>,
+        /// When `ready` ran.
+        ready: Arc<Mutex<Option<Instant>>>,
         thread: std::thread::JoinHandle<Result<bool, String>>,
     }
     fn recording() -> Recording {
         let (stop, receive) = mpsc::channel();
         let heard = Arc::new(AtomicBool::new(false));
-        let ready = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(Mutex::new(None));
         let thread = {
             let (heard, ready) = (heard.clone(), ready.clone());
             std::thread::spawn(move || {
@@ -633,7 +638,7 @@ mod tests {
                     &AtomicBool::new(false),
                     &heard,
                     &Mutex::new(vec![]),
-                    || ready.store(true, Ordering::Relaxed),
+                    || *ready.locked() = Some(Instant::now()),
                     |_| (),
                 )
             })
@@ -654,35 +659,52 @@ mod tests {
             thread,
         } = recording();
         std::thread::sleep(Duration::from_millis(250));
-        assert!(
-            !ready.load(Ordering::Relaxed),
-            "ready before any audio arrived"
-        );
+        assert_eq!(*ready.locked(), None, "ready before any audio arrived");
         let arrived = Instant::now();
         heard.store(true, Ordering::Relaxed);
-        while !ready.load(Ordering::Relaxed) && arrived.elapsed() < Duration::from_secs(2) {
+        while ready.locked().is_none() && arrived.elapsed() < Duration::from_secs(2) {
             std::thread::sleep(Duration::from_millis(1));
         }
+        let at = ready.locked().expect("the first audio never made it ready");
+        // The record thread polls every 5 ms; the margin absorbs a slow scheduler.
         assert!(
-            ready.load(Ordering::Relaxed),
-            "the first audio never made it ready"
-        );
-        assert!(
-            arrived.elapsed() < Duration::from_millis(60),
+            at - arrived < Duration::from_millis(50),
             "ready {} ms after the first audio",
-            arrived.elapsed().as_millis()
+            (at - arrived).as_millis()
         );
         stop.send(true).unwrap();
         assert_eq!(thread.join().unwrap(), Ok(true));
     }
     #[test]
+    fn audio_that_arrives_as_the_recording_stops_still_makes_it_ready() {
+        let (stop, receive) = mpsc::channel();
+        stop.send(true).unwrap();
+        let heard = AtomicBool::new(false);
+        let ready = std::cell::Cell::new(false);
+        // The audio arrives after the check for it and before the stop is read.
+        let kept = record(
+            &receive,
+            &AtomicBool::new(false),
+            &heard,
+            &Mutex::new(vec![]),
+            || ready.set(true),
+            |_| heard.store(true, Ordering::Relaxed),
+        );
+        assert_eq!(kept, Ok(true));
+        assert!(
+            ready.get(),
+            "the recording kept audio but never became ready"
+        );
+    }
+    #[test]
     fn waiting_for_the_first_audio_still_observes_the_recording_only_every_100_ms() {
         let (stop, receive) = mpsc::channel();
-        let observed = std::cell::Cell::new(0);
+        let observed = std::cell::Cell::new(0u128);
         let stopper = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(350));
             stop.send(true).unwrap();
         });
+        let started = Instant::now();
         let kept = record(
             &receive,
             &AtomicBool::new(false),
@@ -691,11 +713,12 @@ mod tests {
             || (),
             |_| observed.set(observed.get() + 1),
         );
+        let elapsed = started.elapsed().as_millis();
         stopper.join().unwrap();
         assert_eq!(kept, Ok(true));
         assert!(
-            (3..=5).contains(&observed.get()),
-            "observed {} times in 350 ms",
+            (2..=elapsed / 100 + 1).contains(&observed.get()),
+            "observed {} times in {elapsed} ms",
             observed.get()
         );
     }
@@ -710,6 +733,6 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         stop.send(true).unwrap();
         assert_eq!(thread.join().unwrap(), Ok(true));
-        assert!(!ready.load(Ordering::Relaxed));
+        assert_eq!(*ready.locked(), None);
     }
 }

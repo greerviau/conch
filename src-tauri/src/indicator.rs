@@ -102,7 +102,9 @@ pub fn presentation(
             Phase::Processing => false,
             Phase::Idle => !visible,
         },
-        level: if *phase == Phase::Recording {
+        // The audio callback sets the level just before the recording is
+        // ready; the starting bars stay flat until then.
+        level: if *phase == Phase::Recording && ready {
             level.clamp(0.0, 1.0)
         } else {
             0.0
@@ -461,6 +463,12 @@ mod tests {
             false,
             Some("Copied - paste manually")
         ));
+        // The callback sets the level before the recording is marked ready;
+        // starting bars must stay flat.
+        assert_eq!(
+            presentation(&Phase::Recording, false, false, 0.8, 0, None).level,
+            0.0
+        );
     }
     fn shown(mode: &str) -> Indicator {
         Indicator {
