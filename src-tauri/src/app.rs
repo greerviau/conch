@@ -1739,7 +1739,7 @@ mod tests {
         assert!(!chunk_cleaning("disabled", "en"));
     }
     #[test]
-    fn the_language_must_be_one_the_model_supports() {
+    fn the_model_must_be_offered_for_the_language() {
         let with = |recognizer: &str, language: &str| {
             choices_valid(&Settings {
                 profiles: vec![storage::Profile {

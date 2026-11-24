@@ -96,7 +96,7 @@ describe("recognition language", () => {
     expect(menu("Language").value).toBe("auto");
     expect(menu("Language").selectedOptions[0].textContent).toBe("Auto-detect");
   });
-  it("lists only the models that support the saved language", () => {
+  it("lists only the models offered for the saved language", () => {
     render(
       <Subject
         installed={false}

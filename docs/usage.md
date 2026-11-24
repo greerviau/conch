@@ -40,6 +40,7 @@ The recognition hint still goes to the recognizer with Auto-detect. It does not 
 The Recognition model menu lists only the models offered for the chosen language. English offers the English-only Tiny, Base, and Small in place of the multilingual ones, plus Large Turbo.
 Changing the language keeps the current model when it is offered for the new language. Otherwise English selects the English-only model of the same size, or Small (English), and other languages select Small.
 A profile saved with a model not offered for its language loads with the English-only model of the same size for English, and otherwise with the smallest model offered, and Dictation asks for its download.
+An English profile that used multilingual Tiny, Base, or Small before English offered only the English-only models loads with the English-only one, so Dictation asks for that download even though the multilingual model is on disk.
 Conch sends the language with each recognition request, so a change takes effect on the next recording without restarting the recognizer.
 A recording uses the language and model of the active profile, including one you switch to during the recording, and Retry recognizes the kept recording the same way.
 The interface stays in English.

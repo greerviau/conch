@@ -42,7 +42,7 @@ export function LanguageMenu({
   );
 }
 
-/** The recognition models that support the language. An installed one shows Installed where the others show a size. */
+/** The recognition models offered for the language. An installed one shows Installed where the others show a size. */
 export function RecognizerMenu({
   models,
   language,

@@ -53,7 +53,7 @@ describe("languageMenu", () => {
   });
 });
 describe("modelForLanguage", () => {
-  it("keeps a model that supports the language", () => {
+  it("keeps a model offered for the language", () => {
     expect(modelForLanguage(models, "en", "large-v3-turbo")).toBe(
       "large-v3-turbo",
     );
@@ -64,6 +64,7 @@ describe("modelForLanguage", () => {
   it("switches a multilingual Tiny, Base, or Small to its English-only variant for English", () => {
     expect(modelForLanguage(models, "en", "tiny")).toBe("tiny.en");
     expect(modelForLanguage(models, "en", "base")).toBe("base.en");
+    expect(modelForLanguage(models, "en", "small")).toBe("small.en");
   });
   it("switches to Small for another language and to Small (English) for English", () => {
     expect(modelForLanguage(models, "fr", "tiny.en")).toBe("small");

@@ -1087,7 +1087,33 @@ it("chooses Auto-detect on the setup card and saves it with a multilingual model
     }),
   );
 });
-it("shows only the models that support the chosen language and switches an unsupported model to Small", async () => {
+it("swaps multilingual Tiny, Base, or Small for its English-only variant when English is chosen", async () => {
+  view.settings.profiles[0].language = "fr";
+  view.settings.profiles[0].recognizer = "base";
+  render(<App />);
+  await openProfiles();
+  await chooseLanguage("en");
+  expect(
+    menuOptions("Recognition model").map((option) => option.value),
+  ).toEqual(["tiny.en", "base.en", "small.en", "large-v3-turbo"]);
+  const saved = await savedSettings();
+  expect(saved.profiles[0].language).toBe("en");
+  expect(saved.profiles[0].recognizer).toBe("base.en");
+});
+it("chooses English on the setup card and saves the English-only variant of the multilingual model at once", async () => {
+  view.settings.profiles[0].language = "fr";
+  view.settings.profiles[0].recognizer = "tiny";
+  render(<App />);
+  fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
+    target: { value: "en" },
+  });
+  await waitFor(() =>
+    expect(ipc).toHaveBeenCalledWith("save_settings", {
+      settings: profileWith({ language: "en", recognizer: "tiny.en" }),
+    }),
+  );
+});
+it("shows only the models offered for the chosen language and switches an unsupported model to Small", async () => {
   render(<App />);
   await openProfiles();
   fireEvent.change(await screen.findByRole("combobox", { name: "Language" }), {
