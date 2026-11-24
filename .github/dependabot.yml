@@ -1,0 +1,19 @@
+# Keeps titer on its latest release. Other dependencies are updated by hand.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: "@greerviau/titer"
+    commit-message:
+      prefix: chore
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: greerviau/titer
+    commit-message:
+      prefix: ci
