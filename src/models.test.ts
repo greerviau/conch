@@ -66,6 +66,10 @@ describe("modelForLanguage", () => {
     expect(modelForLanguage(models, "en", "base")).toBe("base.en");
     expect(modelForLanguage(models, "en", "small")).toBe("small.en");
   });
+  it("falls back to Small (English) when the catalog lacks the English-only variant", () => {
+    const lacking = catalog().filter((m) => m.id !== "tiny.en");
+    expect(modelForLanguage(lacking, "en", "tiny")).toBe("small.en");
+  });
   it("switches to Small for another language and to Small (English) for English", () => {
     expect(modelForLanguage(models, "fr", "tiny.en")).toBe("small");
     const lacking = catalog();
