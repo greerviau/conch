@@ -447,6 +447,8 @@ pub fn start(app: AppHandle) -> Result<(), String> {
                 if inner.session.generation == generation {
                     inner.audio_ready = true;
                     inner.recording_since = Some(Instant::now());
+                    drop(inner);
+                    crate::indicator::wake();
                 }
             },
             level,

@@ -30,6 +30,7 @@ const base: IndicatorState = {
   mode: "recording",
   label: "Listening",
   hint: "",
+  starting: false,
   level: 0,
   seconds: 0,
   profile: "",
@@ -39,6 +40,17 @@ it("shows the audio bars while recording", () => {
   const { container } = render(<IndicatorView state={base} />);
   expect(container.querySelector(".audio-bars")).not.toBeNull();
   expect(container.querySelector(".spiral")).toBeNull();
+});
+it("marks a recording that has no audio yet as starting, and drops the mark when audio arrives", () => {
+  const { container, rerender } = render(
+    <IndicatorView state={{ ...base, starting: true }} />,
+  );
+  const pill = container.querySelector(".recording-indicator")!;
+  expect(pill.getAttribute("data-starting")).toBe("true");
+  expect(container.querySelector(".audio-bars")).not.toBeNull();
+  expect(container.querySelector("time")?.textContent).toBe("0:00");
+  rerender(<IndicatorView state={base} />);
+  expect(pill.hasAttribute("data-starting")).toBe(false);
 });
 it("shows the spinner while processing", () => {
   const { container } = render(
