@@ -18,5 +18,8 @@ command = ["cargo", "test", "--locked"]
 # fail_on_crap = false
 
 [mutate]
+# The budget counts from the start of the check, and the head and base runs
+# build the Tauri crate first, so the 120 s default leaves no mutant time.
+budget = "30m"
 # Tool configuration, not application code.
 exclude_globs = ["vitest.config.ts", "eslint.config.js"]
