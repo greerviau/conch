@@ -43,6 +43,7 @@ fn main() {
             mode: "recording".into(),
             label: String::new(),
             hint: String::new(),
+            starting: false,
             level: 0.0,
             seconds: 0,
             profile: String::new(),

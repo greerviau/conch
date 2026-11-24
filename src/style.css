@@ -1360,6 +1360,26 @@ body.overlay-surface {
   border-radius: 3px;
   transition: height 80ms ease;
 }
+/* Starting: the microphone sends no audio yet, so the bars stay flat and grey
+   and fade together. They never change height, which would read as listening. */
+[data-starting] .audio-bars {
+  animation: breathe 1.4s ease-in-out infinite;
+}
+[data-starting] .audio-bars span {
+  background: #5e6864;
+}
+[data-starting] time {
+  color: #6f7a75;
+}
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
 .spiral {
   width: 28px;
   height: 28px;
@@ -1399,6 +1419,9 @@ body.overlay-surface {
 @media (prefers-reduced-motion: reduce) {
   .audio-bars span {
     transition: none;
+  }
+  [data-starting] .audio-bars {
+    animation: none;
   }
   .spiral path {
     animation: none;

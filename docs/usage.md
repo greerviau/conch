@@ -87,7 +87,9 @@ If cleaning any part fails, the whole result gets Basic cleanup and the status l
 Microphone in Settings starts at System default, which follows the input your system uses, including when you switch it.
 Choose a device to always record from it. If it is unplugged, Settings says so and Conch records from the system input.
 Settings lists the devices when you open it, so reopen Settings after plugging one in.
-On macOS, Conch keeps the microphone open and paused between recordings, so a recording starts as you press the shortcut. The system shows the microphone as in use only while you record, and for a moment when Conch opens it at launch, after you grant access, or after you change the Microphone setting.
+On macOS, Conch keeps the microphone open and paused between recordings, so a recording starts as you press the shortcut.
+A Bluetooth headset is the exception: measured on Sony WH-1000XM4 headphones, its microphone sent only silence for 0.6 to 1.2 seconds after each recording started, so speech in that time is lost. The recording indicator shows when audio arrives. A wired or USB microphone started in about 0.1 seconds.
+The system shows the microphone as in use only while you record, and for a moment when Conch opens it at launch, after you grant access, or after you change the Microphone setting.
 Automatic paste is on by default. Turn it off and Conch only copies each result; paste it yourself.
 With Automatic paste off, Conch does not ask for the Accessibility permission.
 
@@ -129,7 +131,8 @@ Conch stops workers left by a crashed earlier run when it starts.
 ## Recording indicator
 
 A small dark pill floats above other apps while you dictate.
-It shows animated level bars and the elapsed time while recording.
+Until the microphone sends its first audio, the bars are flat and grey and fade in and out together, and the time stays at 0:00; speech in that time is not recorded.
+When audio arrives, the bars turn green and follow your voice, and the time starts.
 While Conch prepares the result, the bars become a single line that draws the conch spiral from its center, then erases from the center.
 When Conch pastes the result, the pill disappears without a message.
 It shows text only when the result was copied but not pasted, when there was no text to copy, or when something failed.
@@ -174,8 +177,8 @@ Entries are stored unencrypted in Conch's local database; see [privacy](privacy.
 
 The Logs page shows what Conch did and why, newest first, 50 entries at a time.
 Each entry has a time, a level (Info, Warning, or Error), a source, and a message, and some have details behind a Details link.
-The sources are `app`, `cleanup`, `delivery`, `dictation`, `download`, `index`, `permissions`, `recognizer`, `ui`, and `update`.
-Conch logs each dictation's stop-to-text time with its stages, how each result was delivered and why a clipboard fallback happened, cleanup and recognition failures, inference worker starts, stops with the reason, and failures with the recognizer's last diagnostic lines, errors that the Dictation page showed for a failed command (source `ui`, cut at 500 characters, with a repeat within a minute and more than 20 a minute dropped), model downloads, update checks, permission changes, and repository indexing.
+The sources are `app`, `audio`, `cleanup`, `delivery`, `dictation`, `download`, `index`, `permissions`, `recognizer`, `ui`, and `update`.
+Conch logs how long each recording waited for the microphone to start and for its first audio, a warning when a recording got only silence, each dictation's stop-to-text time with its stages, how each result was delivered and why a clipboard fallback happened, cleanup and recognition failures, inference worker starts, stops with the reason, and failures with the recognizer's last diagnostic lines, errors that the Dictation page showed for a failed command (source `ui`, cut at 500 characters, with a repeat within a minute and more than 20 a minute dropped), model downloads, update checks, permission changes, and repository indexing.
 The buttons above the list narrow it to warnings (warnings and errors) or to errors, and to one source. Search matches the message, the details, and the source.
 Copy shown entries puts the entries on the page on the clipboard as text with UTC times, which suits a bug report.
 Show log file opens the file manager at `conch.log` in Conch's data directory.

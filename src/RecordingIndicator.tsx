@@ -7,6 +7,8 @@ export type IndicatorState = {
   mode: "recording" | "processing" | "notice";
   label: string;
   hint: string;
+  /** A recording that has no audio yet; speech is not captured. */
+  starting: boolean;
   level: number;
   seconds: number;
   /** The active profile while recording with more than one; empty otherwise. */
@@ -55,6 +57,7 @@ export function IndicatorView({
       className="recording-indicator"
       data-mode={state.mode}
       data-open={open || undefined}
+      data-starting={state.starting || undefined}
     >
       {open && (
         <div className="indicator-profiles" role="menu" aria-label="Profile">
@@ -119,6 +122,7 @@ export function RecordingIndicator() {
     mode: "recording",
     label: "",
     hint: "",
+    starting: true,
     level: 0,
     seconds: 0,
     profile: "",

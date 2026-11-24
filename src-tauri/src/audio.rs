@@ -104,12 +104,18 @@ impl Open {
         })
     }
     /// Sends the audio to `buffer` from now on.
-    fn listen(&self, buffer: &Arc<Mutex<Vec<f32>>>, level: &Arc<AtomicU32>) -> Result<(), String> {
+    fn listen(
+        &self,
+        buffer: &Arc<Mutex<Vec<f32>>>,
+        level: &Arc<AtomicU32>,
+        heard: &Arc<AtomicBool>,
+    ) -> Result<(), String> {
         *self.sink.locked() = Some(Sink {
             buffer: buffer.clone(),
             resampler: Resampler::new(self.rate),
             channels: self.channels,
             level: level.clone(),
+            heard: heard.clone(),
         });
         self.stream
             .play()
@@ -144,6 +150,7 @@ impl Microphone {
         wanted: &str,
         buffer: &Arc<Mutex<Vec<f32>>>,
         level: &Arc<AtomicU32>,
+        heard: &Arc<AtomicBool>,
     ) -> Result<Lease<'_>, String> {
         let started = Instant::now();
         let kept = {
@@ -157,7 +164,7 @@ impl Microphone {
         };
         let reused = kept
             .filter(|open| open.serves(wanted))
-            .filter(|open| open.listen(buffer, level).is_ok());
+            .filter(|open| open.listen(buffer, level, heard).is_ok());
         let how = if reused.is_some() {
             "kept open"
         } else {
@@ -167,7 +174,7 @@ impl Microphone {
             Some(open) => open,
             None => {
                 let open = open(wanted)?;
-                open.listen(buffer, level)?;
+                open.listen(buffer, level, heard)?;
                 open
             }
         };
@@ -247,7 +254,9 @@ fn open(wanted: &str) -> Result<Open, String> {
         device: if exact { device.id().ok() } else { None },
     })
 }
-/// Records until `stop` fires. `observe` sees the whole recording so far about
+/// Records until `stop` fires. `ready` runs when the first audio that is not
+/// silence arrives: a Bluetooth headset sends silence for up to a second after
+/// its microphone starts. `observe` sees the whole recording so far about
 /// every 100 ms while the audio callback waits, so it must return quickly.
 pub fn capture(
     microphone: &Microphone,
@@ -260,24 +269,25 @@ pub fn capture(
     let buffer = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
         RATE as usize * MAX_SECONDS,
     )));
-    let lease = microphone.start(wanted, &buffer, &level)?;
-    ready();
-    let start = Instant::now();
-    let keep = loop {
-        if lease.open().failed.load(Ordering::Relaxed) {
-            return Err("Microphone capture failed".into());
-        }
-        if start.elapsed().as_secs() >= MAX_SECONDS as u64 {
-            break true;
-        }
-        observe(&buffer.locked());
-        match stop.recv_timeout(Duration::from_millis(100)) {
-            Ok(keep) => break keep,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
-            Err(mpsc::RecvTimeoutError::Timeout) => (),
-        }
-    };
+    let heard = Arc::new(AtomicBool::new(false));
+    let started = Instant::now();
+    let lease = microphone.start(wanted, &buffer, &level, &heard)?;
+    let keep = record(
+        &stop,
+        &lease.open().failed,
+        &heard,
+        &buffer,
+        || {
+            let waited = started.elapsed().as_millis();
+            ready();
+            log::info("audio", &format!("First audio after {waited} ms"));
+        },
+        &mut observe,
+    )?;
     drop(lease);
+    if !heard.load(Ordering::Relaxed) {
+        log::warn("audio", "The microphone sent only silence");
+    }
     if !keep {
         return Ok(None);
     }
@@ -289,6 +299,52 @@ pub fn capture(
         wav: wav(&buffer)?,
         samples: std::mem::take(&mut *buffer),
     }))
+}
+/// Waits for `stop`, showing `observe` the recording about every 100 ms, and
+/// runs `ready` within a few milliseconds of `heard`. Returns whether to keep
+/// the recording.
+fn record(
+    stop: &mpsc::Receiver<bool>,
+    failed: &AtomicBool,
+    heard: &AtomicBool,
+    buffer: &Mutex<Vec<f32>>,
+    ready: impl FnOnce(),
+    mut observe: impl FnMut(&[f32]),
+) -> Result<bool, String> {
+    let mut ready = Some(ready);
+    let start = Instant::now();
+    let mut observed: Option<Instant> = None;
+    let keep = loop {
+        if failed.load(Ordering::Relaxed) {
+            return Err("Microphone capture failed".into());
+        }
+        if start.elapsed().as_secs() >= MAX_SECONDS as u64 {
+            break true;
+        }
+        if heard.load(Ordering::Relaxed)
+            && let Some(ready) = ready.take()
+        {
+            ready();
+        }
+        if observed.is_none_or(|at| at.elapsed() >= Duration::from_millis(100)) {
+            observe(&buffer.locked());
+            observed = Some(Instant::now());
+        }
+        // Until the first audio, polls often so the indicator changes as it arrives.
+        let wait = if ready.is_some() { 5 } else { 100 };
+        match stop.recv_timeout(Duration::from_millis(wait)) {
+            Ok(keep) => break keep,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break false,
+            Err(mpsc::RecvTimeoutError::Timeout) => (),
+        }
+    };
+    // Audio can arrive between the last check and the stop.
+    if heard.load(Ordering::Relaxed)
+        && let Some(ready) = ready.take()
+    {
+        ready();
+    }
+    Ok(keep)
 }
 fn build<T>(
     device: &cpal::Device,
@@ -315,6 +371,8 @@ struct Sink {
     resampler: Resampler,
     channels: usize,
     level: Arc<AtomicU32>,
+    /// Set by the first audio that is not silence.
+    heard: Arc<AtomicBool>,
 }
 /// Mixes `samples` to mono, resamples them into the recording's buffer, and
 /// sets the level. Without a recording the audio is dropped.
@@ -330,6 +388,7 @@ where
         resampler,
         channels,
         level,
+        heard,
     }) = sink.as_mut()
     else {
         return;
@@ -346,6 +405,9 @@ where
         });
     }
     level.store((peak * 6.0).min(1.0).to_bits(), Ordering::Relaxed);
+    if peak > 0.0 {
+        heard.store(true, Ordering::Relaxed);
+    }
 }
 /// Converts the microphone's mono frames at its own rate to samples at `RATE`.
 struct Resampler {
@@ -526,6 +588,7 @@ mod tests {
             resampler: Resampler::new(RATE as f64),
             channels: 2,
             level: level.clone(),
+            heard: Arc::new(AtomicBool::new(false)),
         });
         deliver(&slot, &[0.2f32, 0.4, -0.1, -0.3]);
         let got = buffer.locked().clone();
@@ -533,5 +596,143 @@ mod tests {
         assert!((got[0] - 0.3).abs() < 1e-6 && (got[1] + 0.2).abs() < 1e-6);
         let peak = f32::from_bits(level.load(std::sync::atomic::Ordering::Relaxed));
         assert!((peak - 1.0).abs() < 1e-6, "level {peak}");
+    }
+    #[test]
+    fn silence_before_the_first_audio_is_not_heard() {
+        let heard = Arc::new(AtomicBool::new(false));
+        let slot = Mutex::new(Some(Sink {
+            buffer: Arc::new(Mutex::new(vec![])),
+            resampler: Resampler::new(RATE as f64),
+            channels: 1,
+            level: Arc::new(AtomicU32::new(0)),
+            heard: heard.clone(),
+        }));
+        deliver(&slot, &[0.0f32; 160]);
+        assert!(!heard.load(Ordering::Relaxed), "silence was taken as audio");
+        deliver(&slot, &[0.001f32; 160]);
+        assert!(heard.load(Ordering::Relaxed));
+        deliver(&slot, &[0.0f32; 160]);
+        assert!(
+            heard.load(Ordering::Relaxed),
+            "later silence undid the first audio"
+        );
+    }
+    /// A `record` running on its own thread.
+    struct Recording {
+        stop: mpsc::Sender<bool>,
+        /// Stands for the first audio arriving.
+        heard: Arc<AtomicBool>,
+        /// When `ready` ran.
+        ready: Arc<Mutex<Option<Instant>>>,
+        thread: std::thread::JoinHandle<Result<bool, String>>,
+    }
+    fn recording() -> Recording {
+        let (stop, receive) = mpsc::channel();
+        let heard = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(Mutex::new(None));
+        let thread = {
+            let (heard, ready) = (heard.clone(), ready.clone());
+            std::thread::spawn(move || {
+                record(
+                    &receive,
+                    &AtomicBool::new(false),
+                    &heard,
+                    &Mutex::new(vec![]),
+                    || *ready.locked() = Some(Instant::now()),
+                    |_| (),
+                )
+            })
+        };
+        Recording {
+            stop,
+            heard,
+            ready,
+            thread,
+        }
+    }
+    #[test]
+    fn a_recording_is_ready_only_once_the_first_audio_arrives() {
+        let Recording {
+            stop,
+            heard,
+            ready,
+            thread,
+        } = recording();
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(*ready.locked(), None, "ready before any audio arrived");
+        let arrived = Instant::now();
+        heard.store(true, Ordering::Relaxed);
+        while ready.locked().is_none() && arrived.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let at = ready.locked().expect("the first audio never made it ready");
+        // The record thread polls every 5 ms; the margin absorbs a slow scheduler.
+        assert!(
+            at - arrived < Duration::from_millis(50),
+            "ready {} ms after the first audio",
+            (at - arrived).as_millis()
+        );
+        stop.send(true).unwrap();
+        assert_eq!(thread.join().unwrap(), Ok(true));
+    }
+    #[test]
+    fn audio_that_arrives_as_the_recording_stops_still_makes_it_ready() {
+        let (stop, receive) = mpsc::channel();
+        stop.send(true).unwrap();
+        let heard = AtomicBool::new(false);
+        let ready = std::cell::Cell::new(false);
+        // The audio arrives after the check for it and before the stop is read.
+        let kept = record(
+            &receive,
+            &AtomicBool::new(false),
+            &heard,
+            &Mutex::new(vec![]),
+            || ready.set(true),
+            |_| heard.store(true, Ordering::Relaxed),
+        );
+        assert_eq!(kept, Ok(true));
+        assert!(
+            ready.get(),
+            "the recording kept audio but never became ready"
+        );
+    }
+    #[test]
+    fn waiting_for_the_first_audio_still_observes_the_recording_only_every_100_ms() {
+        let (stop, receive) = mpsc::channel();
+        let observed = std::cell::Cell::new(0u128);
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(350));
+            stop.send(true).unwrap();
+        });
+        let started = Instant::now();
+        let kept = record(
+            &receive,
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+            &Mutex::new(vec![]),
+            || (),
+            |_| observed.set(observed.get() + 1),
+        );
+        let elapsed = started.elapsed().as_millis();
+        stopper.join().unwrap();
+        assert_eq!(kept, Ok(true));
+        assert!(
+            (2..=elapsed / 100 + 1).contains(&observed.get()),
+            "observed {} times in {elapsed} ms",
+            observed.get()
+        );
+    }
+    #[test]
+    fn a_recording_stopped_before_any_audio_never_becomes_ready() {
+        let Recording {
+            stop,
+            ready,
+            thread,
+            ..
+        } = recording();
+        std::thread::sleep(Duration::from_millis(50));
+        stop.send(true).unwrap();
+        assert_eq!(thread.join().unwrap(), Ok(true));
+        assert_eq!(*ready.locked(), None);
     }
 }

@@ -10,6 +10,9 @@ pub struct Indicator {
     pub mode: String,
     pub label: String,
     pub hint: String,
+    /// A recording that has no audio yet: the microphone is starting, and
+    /// speech is not captured. Hidden, it is true for the next recording's pill.
+    pub starting: bool,
     pub level: f32,
     pub seconds: u64,
     /// The active profile's name while recording, or hidden, with more than one
@@ -70,7 +73,7 @@ pub fn presentation(
     notice: Option<&str>,
 ) -> Indicator {
     let (label, hint) = match phase {
-        Phase::Recording if !ready => ("Opening microphone", "Waiting for audio access"),
+        Phase::Recording if !ready => ("Opening microphone", "Wait for the bars to turn green"),
         Phase::Recording => (
             "Listening",
             if toggle {
@@ -94,7 +97,14 @@ pub fn presentation(
         .into(),
         label: label.into(),
         hint: hint.into(),
-        level: if *phase == Phase::Recording {
+        starting: match phase {
+            Phase::Recording => !ready,
+            Phase::Processing => false,
+            Phase::Idle => !visible,
+        },
+        // The audio callback sets the level just before the recording is
+        // ready; the starting bars stay flat until then.
+        level: if *phase == Phase::Recording && ready {
             level.clamp(0.0, 1.0)
         } else {
             0.0
@@ -438,6 +448,26 @@ mod tests {
         assert_eq!(
             presentation(&Phase::Recording, true, true, 0.0, 0, None).hint,
             "Press shortcut to finish"
+        );
+    }
+    #[test]
+    fn a_recording_is_starting_until_its_first_audio_and_the_hidden_pill_waits_for_it() {
+        let starting =
+            |phase, ready, notice| presentation(&phase, ready, false, 0.0, 0, notice).starting;
+        assert!(starting(Phase::Recording, false, None));
+        assert!(!starting(Phase::Recording, true, None));
+        assert!(!starting(Phase::Processing, false, None));
+        assert!(starting(Phase::Idle, false, None));
+        assert!(!starting(
+            Phase::Idle,
+            false,
+            Some("Copied - paste manually")
+        ));
+        // The callback sets the level before the recording is marked ready;
+        // starting bars must stay flat.
+        assert_eq!(
+            presentation(&Phase::Recording, false, false, 0.8, 0, None).level,
+            0.0
         );
     }
     fn shown(mode: &str) -> Indicator {
