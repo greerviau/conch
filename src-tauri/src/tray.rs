@@ -37,6 +37,13 @@ pub fn presentation(phase: &Phase, microphone_ready: bool) -> Presentation {
         },
     }
 }
+/// The menu bar icon's tooltip, or `None` on macOS. AppKit can leave a status
+/// item's tooltip on screen after Conch changes it, until the pointer passes
+/// over the icon again, so on macOS the status shows only in the menu.
+pub fn tooltip(status: &str, macos: bool) -> Option<String> {
+    (!macos).then(|| format!("Conch - {status}"))
+}
+const MACOS: bool = cfg!(target_os = "macos");
 pub fn version_label(version: &str) -> String {
     format!("Conch {version}")
 }
@@ -157,7 +164,6 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
     let tray = TrayIconBuilder::with_id("conch")
         .icon(Image::from_bytes(include_bytes!("../icons/tray.png")).map_err(failed)?)
         .icon_as_template(true)
-        .tooltip("Conch")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
@@ -213,7 +219,9 @@ pub fn setup(app: &AppHandle) -> Result<(), String> {
             }
             let look = presentation(&now.0, now.1);
             let _ = tray.set_title(Some(look.title));
-            let _ = tray.set_tooltip(Some(format!("Conch - {}", look.status)));
+            if let Some(text) = tooltip(look.status, MACOS) {
+                let _ = tray.set_tooltip(Some(text));
+            }
             let _ = status.set_text(look.status);
             shown = Some(now);
         }
@@ -261,6 +269,15 @@ mod tests {
         assert_eq!(
             presentation(&Phase::Processing, true).status,
             "Preparing text"
+        );
+    }
+    #[test]
+    fn the_menu_bar_icon_shows_the_status_in_a_tooltip_except_on_macos() {
+        assert_eq!(tooltip("Ready", false).as_deref(), Some("Conch - Ready"));
+        assert_eq!(
+            tooltip("Ready", true),
+            None,
+            "AppKit can leave a changed status item tooltip on screen"
         );
     }
     #[test]

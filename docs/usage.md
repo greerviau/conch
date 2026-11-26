@@ -149,6 +149,7 @@ Minimize Conch to leave it available while dictating in other apps.
 Closing its main window hides it and removes the Dock icon on macOS.
 Conch keeps running with its menu bar icon, global shortcut, and recording indicator.
 The icon shows a dot while recording and an ellipsis while preparing text, and its menu has Show Conch, Profile when there is more than one profile, Check for Updates, the installed version, and Quit Conch. The menu bar shows the icon only.
+The first menu item names the current state. On Windows the icon's tooltip names it too. On macOS the icon has no tooltip, because macOS can leave a changed tooltip on screen.
 Clicking the Dock icon or choosing Show Conch brings the window back.
 If the menu bar icon cannot be created, closing the window quits Conch instead.
 Quit Conch cancels active work and stops the inference workers.
