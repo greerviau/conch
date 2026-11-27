@@ -1216,7 +1216,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body)
-http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+# HTTPServer.server_bind looks up the full host name, which waits seconds
+# on some networks' DNS before the server listens.
+import socketserver
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+Server(("127.0.0.1", port), Handler).serve_forever()
 "#;
         const LLAMA_SCRIPT: &str = r#"#!/usr/bin/env python3
 import http.server, json, os, sys
@@ -1256,7 +1263,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(data)
-http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+# HTTPServer.server_bind looks up the full host name, which waits seconds
+# on some networks' DNS before the server listens.
+import socketserver
+class Server(http.server.ThreadingHTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+Server(("127.0.0.1", port), Handler).serve_forever()
 "#;
         /// Installs a `llama-server` that echoes the text after the control
         /// line, with fixed timings, and the managed cleanup model file.
@@ -1282,10 +1296,14 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         /// and exits half a second later.
         pub fn install_crashing(dir: &Path, message: &str) {
             let exe = dir.join("whisper-server");
+            // The timer starts at the first health check, so the worker is
+            // ready before it exits however long Python takes to start.
+            let get = "    def do_GET(self):\n        self.send_response(200)\n        self.end_headers()\n";
+            assert!(SCRIPT.contains(get));
             let script = SCRIPT.replace(
-                "http.server.ThreadingHTTPServer",
+                get,
                 &format!(
-                    "import threading\nthreading.Timer(0.5, lambda: (sys.stderr.write('{message}\\n'), sys.stderr.flush(), os._exit(3))).start()\nhttp.server.ThreadingHTTPServer"
+                    "{get}        import threading\n        threading.Timer(0.5, lambda: (sys.stderr.write('{message}\\n'), sys.stderr.flush(), os._exit(3))).start()\n"
                 ),
             );
             std::fs::write(&exe, script).unwrap();
@@ -1302,10 +1320,8 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
         /// A recognizer that takes three seconds to answer its health check.
         pub fn install_slow(dir: &Path) {
             let exe = dir.join("whisper-server");
-            let script = SCRIPT.replace(
-                "http.server.ThreadingHTTPServer",
-                "import time\ntime.sleep(3)\nhttp.server.ThreadingHTTPServer",
-            );
+            let script =
+                SCRIPT.replace("class Server(", "import time\ntime.sleep(3)\nclass Server(");
             std::fs::write(&exe, script).unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
             std::fs::write(dir.join(super::VAD.name), b"vad").unwrap();

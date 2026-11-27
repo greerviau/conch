@@ -109,4 +109,5 @@ pub mod update;
 
 pub mod history;
 pub mod lock;
+pub mod wake;
 pub mod watch;

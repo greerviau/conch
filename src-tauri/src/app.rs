@@ -430,11 +430,13 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     });
     drop(inner);
     crate::indicator::wake();
+    let hold = platform::Hold::begin();
     std::thread::spawn(platform::prepare);
     warm_terms(&snapshot);
     warm_cleanup(&state, &snapshot, &worker);
     let handle = app.clone();
     std::thread::spawn(move || {
+        let _hold = hold;
         let mut chunker = Chunker::default();
         let state = handle.state::<AppState>();
         let captured = audio::capture(
@@ -1040,7 +1042,11 @@ pub fn retry(app: AppHandle) -> Result<(), String> {
     inner.error.clear();
     inner.worker = inference::new_worker();
     drop(inner);
-    std::thread::spawn(move || process(&app, generation, wav, snapshot, None));
+    let hold = platform::Hold::begin();
+    std::thread::spawn(move || {
+        let _hold = hold;
+        process(&app, generation, wav, snapshot, None)
+    });
     Ok(())
 }
 #[tauri::command]
