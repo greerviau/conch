@@ -30,6 +30,11 @@ void conch_frontmost_name(char *buffer, int size) {
     if (size > 0) buffer[0] = 0;
     if (name) [name getCString:buffer maxLength:size encoding:NSUTF8StringEncoding];
 }
+void conch_bundle_path(int pid, char *buffer, int size) {
+    NSString *path = [NSRunningApplication runningApplicationWithProcessIdentifier:pid].bundleURL.path;
+    if (size > 0) buffer[0] = 0;
+    if (path) [path getCString:buffer maxLength:size encoding:NSUTF8StringEncoding];
+}
 void conch_overlay_visibility(void *window, bool visible) {
     NSWindow *panel = (__bridge NSWindow *)window;
     panel.ignoresMouseEvents = YES;

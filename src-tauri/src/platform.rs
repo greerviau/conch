@@ -120,50 +120,80 @@ mod macos {
     pub fn permission() -> bool {
         unsafe { AXIsProcessTrusted() }
     }
-    const ATTRIBUTE_UNSUPPORTED: i32 = -25205;
-    /// How long a freshly woken Electron app gets to build its tree.
-    const WAKE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
-    static WOKEN: std::sync::Mutex<Vec<(i32, std::time::Instant)>> =
-        std::sync::Mutex::new(Vec::new());
+    /// How long a freshly woken app gets to build its tree. Chromium waits 2 s
+    /// after `AXEnhancedUserInterface` is set before it starts.
+    const WAKE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+    static WAKES: std::sync::Mutex<crate::wake::Wakes> =
+        std::sync::Mutex::new(crate::wake::Wakes::new());
     unsafe extern "C" {
         fn conch_frontmost_pid() -> i32;
         fn conch_frontmost_name(buffer: *mut u8, size: i32);
+        fn conch_bundle_path(pid: i32, buffer: *mut u8, size: i32);
         fn conch_return_focus(pid: i32);
     }
     /// The application that was frontmost when the recording started.
     static DICTATING_INTO: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
     /// The frontmost application, from the window server rather than the
     /// accessibility tree. The system-wide accessibility element cannot name the
-    /// focused application of an Electron app that has not built its tree.
+    /// focused application of an app that has not built its tree.
     fn frontmost() -> Option<i32> {
         let pid = unsafe { conch_frontmost_pid() };
         (pid > 0 && pid != std::process::id() as i32).then_some(pid)
     }
-    /// Electron and Chromium build no accessibility tree for a process until an
-    /// assistive client sets AXManualAccessibility on its application element.
-    /// Returns when this process woke the application, if it has not already.
-    /// A failed request is retried on the next call.
-    fn wake_application(pid: i32) -> Option<std::time::Instant> {
-        use core_foundation::boolean::CFBoolean;
-        let mut woken = WOKEN.locked();
-        if let Some((_, at)) = woken.iter().find(|(woken_pid, _)| *woken_pid == pid) {
-            return Some(*at);
-        }
-        let element = Focus(unsafe { AXUIElementCreateApplication(pid) });
-        let key = CFString::new("AXManualAccessibility");
-        let code = unsafe {
-            AXUIElementSetAttributeValue(
-                element.0,
-                key.as_concrete_TypeRef().cast(),
-                CFBoolean::true_value().as_concrete_TypeRef().cast(),
-            )
-        };
-        if code != 0 && code != ATTRIBUTE_UNSUPPORTED {
+    fn bool_attr(element: CFTypeRef, key: &str) -> Option<bool> {
+        use core_foundation::{base::CFGetTypeID, boolean::CFBoolean};
+        let value = attr(element, key)?;
+        if unsafe { CFGetTypeID(value.0) } != CFBoolean::type_id() {
             return None;
         }
-        let now = std::time::Instant::now();
-        woken.push((pid, now));
-        Some(now)
+        Some(unsafe { CFBoolean::wrap_under_get_rule(value.0.cast()) }.into())
+    }
+    fn application(pid: i32) -> Focus {
+        let element = Focus(unsafe { AXUIElementCreateApplication(pid) });
+        unsafe {
+            AXUIElementSetMessagingTimeout(element.0, 0.5);
+        }
+        element
+    }
+    struct Applications;
+    impl crate::wake::Apps for Applications {
+        fn electron(&mut self, pid: i32) -> bool {
+            let mut path = [0u8; 1024];
+            unsafe { conch_bundle_path(pid, path.as_mut_ptr(), path.len() as i32) };
+            let end = path.iter().position(|b| *b == 0).unwrap_or(path.len());
+            end > 0
+                && crate::wake::electron_bundle(std::path::Path::new(&*String::from_utf8_lossy(
+                    &path[..end],
+                )))
+        }
+        fn read(&mut self, pid: i32, attribute: &str) -> Option<bool> {
+            bool_attr(application(pid).0, attribute)
+        }
+        fn set(&mut self, pid: i32, attribute: &str, value: bool) -> i32 {
+            use core_foundation::boolean::CFBoolean;
+            let key = CFString::new(attribute);
+            let value = if value {
+                CFBoolean::true_value()
+            } else {
+                CFBoolean::false_value()
+            };
+            unsafe {
+                AXUIElementSetAttributeValue(
+                    application(pid).0,
+                    key.as_concrete_TypeRef().cast(),
+                    value.as_concrete_TypeRef().cast(),
+                )
+            }
+        }
+    }
+    /// Electron and Chromium build no accessibility tree for a process until an
+    /// assistive client asks for one. Returns when this process woke the app.
+    fn wake_application(pid: i32) -> Option<std::time::Instant> {
+        WAKES.locked().wake(&mut Applications, pid)
+    }
+    /// Turns off the accessibility this process turned on for recordings.
+    pub fn release() {
+        WAKES.locked().release(&mut Applications);
     }
     /// "Code, pid 123" for the frontmost application, for failure messages.
     fn focused_application() -> String {
@@ -202,12 +232,10 @@ mod macos {
         }
         let pid = frontmost().ok_or("The focused app is Conch or cannot be identified")?;
         let woke = wake_application(pid);
-        let application = Focus(unsafe { AXUIElementCreateApplication(pid) });
+        let application = application(pid);
         let system = Focus(unsafe { AXUIElementCreateSystemWide() });
-        for element in [&application, &system] {
-            unsafe {
-                AXUIElementSetMessagingTimeout(element.0, 0.5);
-            }
+        unsafe {
+            AXUIElementSetMessagingTimeout(system.0, 0.5);
         }
         let deadline = std::time::Instant::now()
             .max(woke.map_or(std::time::Instant::now(), |at| at + WAKE_GRACE))
@@ -239,13 +267,7 @@ mod macos {
         if unsafe { AXUIElementGetPid(element.0, &mut pid) } != 0 {
             return Err("Cannot identify the focused application".into());
         }
-        let enabled = attr(element.0, "AXEnabled").and_then(|value| {
-            use core_foundation::{base::CFGetTypeID, boolean::CFBoolean};
-            if unsafe { CFGetTypeID(value.0) } != CFBoolean::type_id() {
-                return None;
-            }
-            Some(unsafe { CFBoolean::wrap_under_get_rule(value.0.cast()) }.into())
-        });
+        let enabled = bool_attr(element.0, "AXEnabled");
         let settable = |name: &str| {
             let mut value = 0;
             let key = CFString::new(name);
@@ -301,7 +323,7 @@ mod macos {
     }
 }
 #[cfg(target_os = "macos")]
-pub use macos::{Focus, permission, prepare, return_focus};
+pub use macos::{Focus, permission, prepare, release, return_focus};
 #[cfg(target_os = "macos")]
 use macos::{focused, paste};
 
@@ -324,6 +346,15 @@ pub fn permission() -> bool {
 }
 #[cfg(not(target_os = "macos"))]
 pub fn prepare() {}
+#[cfg(not(target_os = "macos"))]
+pub fn release() {}
+/// Calls `release` when dropped, so every way a recording ends releases it.
+pub struct Release;
+impl Drop for Release {
+    fn drop(&mut self) {
+        release();
+    }
+}
 /// The recording indicator does not take focus on Windows and Linux.
 #[cfg(not(target_os = "macos"))]
 pub fn return_focus() {}

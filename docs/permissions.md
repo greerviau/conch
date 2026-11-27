@@ -19,6 +19,9 @@ Repair and restart are unavailable while recording, processing, downloading a mo
 Missing Accessibility permission keeps clipboard delivery available.
 Conch accepts enabled AXTextField, AXTextArea, and AXComboBox controls when Accessibility exposes a writable value or selected-text setter.
 It excludes secure fields and its own process.
+When a recording starts, Conch asks the app in front for its accessibility tree: Electron apps through AXManualAccessibility, which stays on, and other apps through AXEnhancedUserInterface, which Chromium browsers need.
+Conch turns AXEnhancedUserInterface off again when the recording ends, unless it was already on, for example under VoiceOver.
+A browser takes about 2 s to build its tree, so a shorter dictation into a browser waits for it before the paste.
 Clipboard fallback reports the reason when permission, editability, or stable focus is missing.
 Windows uses UI Automation Edit controls with a writable Value pattern and excludes password fields.
 Linux uses clipboard fallback for automatic delivery.

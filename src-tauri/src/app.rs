@@ -435,6 +435,7 @@ pub fn start(app: AppHandle) -> Result<(), String> {
     warm_cleanup(&state, &snapshot, &worker);
     let handle = app.clone();
     std::thread::spawn(move || {
+        let _release = platform::Release;
         let mut chunker = Chunker::default();
         let state = handle.state::<AppState>();
         let captured = audio::capture(
@@ -1040,7 +1041,10 @@ pub fn retry(app: AppHandle) -> Result<(), String> {
     inner.error.clear();
     inner.worker = inference::new_worker();
     drop(inner);
-    std::thread::spawn(move || process(&app, generation, wav, snapshot, None));
+    std::thread::spawn(move || {
+        let _release = platform::Release;
+        process(&app, generation, wav, snapshot, None)
+    });
     Ok(())
 }
 #[tauri::command]
