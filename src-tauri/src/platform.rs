@@ -140,13 +140,15 @@ mod macos {
         let pid = unsafe { conch_frontmost_pid() };
         (pid > 0 && pid != std::process::id() as i32).then_some(pid)
     }
-    fn bool_attr(element: CFTypeRef, key: &str) -> Option<bool> {
+    /// The boolean value of `key`, false when it is not a boolean, or the
+    /// accessibility error code.
+    fn bool_attr_result(element: CFTypeRef, key: &str) -> Result<bool, i32> {
         use core_foundation::{base::CFGetTypeID, boolean::CFBoolean};
-        let value = attr(element, key)?;
+        let value = attr_result(element, key)?;
         if unsafe { CFGetTypeID(value.0) } != CFBoolean::type_id() {
-            return None;
+            return Ok(false);
         }
-        Some(unsafe { CFBoolean::wrap_under_get_rule(value.0.cast()) }.into())
+        Ok(unsafe { CFBoolean::wrap_under_get_rule(value.0.cast()) }.into())
     }
     fn application(pid: i32) -> Focus {
         let element = Focus(unsafe { AXUIElementCreateApplication(pid) });
@@ -166,8 +168,8 @@ mod macos {
                     &path[..end],
                 )))
         }
-        fn read(&mut self, pid: i32, attribute: &str) -> Option<bool> {
-            bool_attr(application(pid).0, attribute)
+        fn read(&mut self, pid: i32, attribute: &str) -> Result<bool, i32> {
+            bool_attr_result(application(pid).0, attribute)
         }
         fn set(&mut self, pid: i32, attribute: &str, value: bool) -> i32 {
             use core_foundation::boolean::CFBoolean;
@@ -191,7 +193,11 @@ mod macos {
     fn wake_application(pid: i32) -> Option<std::time::Instant> {
         WAKES.locked().wake(&mut Applications, pid)
     }
-    /// Turns off the accessibility this process turned on for recordings.
+    pub fn hold() {
+        WAKES.locked().hold();
+    }
+    /// Turns off the accessibility this process turned on for recordings,
+    /// once no recording holds it.
     pub fn release() {
         WAKES.locked().release(&mut Applications);
     }
@@ -267,7 +273,11 @@ mod macos {
         if unsafe { AXUIElementGetPid(element.0, &mut pid) } != 0 {
             return Err("Cannot identify the focused application".into());
         }
-        let enabled = bool_attr(element.0, "AXEnabled");
+        let enabled = attr(element.0, "AXEnabled").and_then(|value| {
+            use core_foundation::{base::CFGetTypeID, boolean::CFBoolean};
+            (unsafe { CFGetTypeID(value.0) } == CFBoolean::type_id())
+                .then(|| unsafe { CFBoolean::wrap_under_get_rule(value.0.cast()) }.into())
+        });
         let settable = |name: &str| {
             let mut value = 0;
             let key = CFString::new(name);
@@ -323,9 +333,11 @@ mod macos {
     }
 }
 #[cfg(target_os = "macos")]
-pub use macos::{Focus, permission, prepare, release, return_focus};
+pub use macos::{Focus, permission, prepare, return_focus};
 #[cfg(target_os = "macos")]
 use macos::{focused, paste};
+#[cfg(target_os = "macos")]
+use macos::{hold, release};
 
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]
@@ -347,10 +359,20 @@ pub fn permission() -> bool {
 #[cfg(not(target_os = "macos"))]
 pub fn prepare() {}
 #[cfg(not(target_os = "macos"))]
-pub fn release() {}
-/// Calls `release` when dropped, so every way a recording ends releases it.
-pub struct Release;
-impl Drop for Release {
+fn hold() {}
+#[cfg(not(target_os = "macos"))]
+fn release() {}
+/// Holds the accessibility woken for one recording. Create it before the
+/// recording wakes the app it dictates into; dropping it releases the hold,
+/// however the recording ends.
+pub struct Hold(());
+impl Hold {
+    pub fn begin() -> Self {
+        hold();
+        Self(())
+    }
+}
+impl Drop for Hold {
     fn drop(&mut self) {
         release();
     }
